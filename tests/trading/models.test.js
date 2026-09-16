@@ -47,6 +47,17 @@ test('market order validates and pending order types require their trigger price
   }).validate();
 });
 
+test('order volume invariants reject impossible fill state', async () => {
+  await assert.rejects(
+    baseOrder({ clientOrderId: 'zero-volume', requestedVolume: '0' }).validate(),
+    error => Boolean(error.errors?.requestedVolume),
+  );
+  await assert.rejects(
+    baseOrder({ clientOrderId: 'overfill', requestedVolume: '1', filledVolume: '1.01' }).validate(),
+    error => Boolean(error.errors?.filledVolume),
+  );
+});
+
 test('specified expiration requires an explicit expiry timestamp', async () => {
   await assert.rejects(
     baseOrder({ clientOrderId: 'expiry-1', timeInForce: 'SPECIFIED' }).validate(),
@@ -54,7 +65,7 @@ test('specified expiration requires an explicit expiry timestamp', async () => {
   );
 });
 
-test('position lifecycle requires closedAt when status is CLOSED', async () => {
+test('position lifecycle requires zero remaining volume and closedAt when CLOSED', async () => {
   const position = new Position({
     accountId,
     sourceOrderId: orderObjectId,
@@ -66,12 +77,26 @@ test('position lifecycle requires closedAt when status is CLOSED', async () => {
     status: 'CLOSED',
   });
 
-  await assert.rejects(position.validate(), error => Boolean(error.errors?.closedAt));
+  await assert.rejects(position.validate(), error => Boolean(error.errors?.closedAt) && Boolean(error.errors?.openVolume));
   position.closedAt = new Date();
+  position.openVolume = '0';
   await position.validate();
 });
 
-test('deal and ledger schemas preserve immutable accounting identifiers', async () => {
+test('deal requires positive executed volume and price', async () => {
+  const invalidDeal = new Deal({
+    accountId,
+    orderId: orderObjectId,
+    symbol: 'EURUSD',
+    side: 'BUY',
+    type: 'OPEN',
+    volume: '0',
+    price: '1.15',
+  });
+  await assert.rejects(invalidDeal.validate(), error => Boolean(error.errors?.volume));
+});
+
+test('ledger requires exact balance equation and preserves immutable accounting identifiers', async () => {
   const deal = new Deal({
     accountId,
     orderId: orderObjectId,
@@ -94,6 +119,18 @@ test('deal and ledger schemas preserve immutable accounting identifiers', async 
     referenceId: deal.dealId,
   });
   await ledger.validate();
+
+  const invalidLedger = new AccountLedger({
+    accountId,
+    type: 'COMMISSION',
+    amount: '-7',
+    balanceBefore: '10025.50',
+    balanceAfter: '10020',
+    currency: 'USD',
+    referenceType: 'DEAL',
+    referenceId: deal.dealId,
+  });
+  await assert.rejects(invalidLedger.validate(), error => Boolean(error.errors?.balanceAfter));
 
   assert.ok(deal.dealId);
   assert.ok(ledger.entryId);
