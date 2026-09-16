@@ -1,0 +1,81 @@
+'use strict';
+
+const express = require('express');
+const { z } = require('zod');
+const { AppError } = require('../../shared/errors/app-error');
+
+const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
+const decimalInput = z.union([z.string().min(1), z.number().finite()]).transform(value => String(value));
+const optionalDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value == null ? null : String(value));
+
+const openSchema = z.object({
+  accountId: objectId,
+  clientOrderId: z.string().trim().min(1).max(128),
+  symbol: z.string().trim().min(1).max(32),
+  side: z.enum(['BUY', 'SELL']),
+  volume: decimalInput,
+  stopLoss: optionalDecimal,
+  takeProfit: optionalDecimal,
+  requestedPrice: optionalDecimal,
+  source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
+}).strict();
+
+const closeSchema = z.object({
+  accountId: objectId,
+  clientOrderId: z.string().trim().min(1).max(128),
+  volume: optionalDecimal,
+  requestedPrice: optionalDecimal,
+  source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
+}).strict();
+
+function createTradingRouter(runtime) {
+  const router = express.Router();
+
+  router.get('/status', (_req, res) => {
+    res.json(runtime.health());
+  });
+
+  router.post('/orders/market', requireEnabled(runtime), async (req, res) => {
+    const command = parse(openSchema, req.body);
+    const result = await runtime.marketOrderService.openMarketOrder(command);
+    res.status(result.idempotentReplay ? 200 : 201).json(result);
+  });
+
+  router.post('/positions/:positionId/close', requireEnabled(runtime), async (req, res) => {
+    const positionId = objectId.safeParse(req.params.positionId);
+    if (!positionId.success) throw validationError(positionId.error);
+    const body = parse(closeSchema, req.body);
+    const result = await runtime.marketOrderService.closeMarketPosition({ ...body, positionId: positionId.data });
+    res.status(result.idempotentReplay ? 200 : 201).json(result);
+  });
+
+  return router;
+}
+
+function requireEnabled(runtime) {
+  return (_req, _res, next) => {
+    if (!runtime.enabled) {
+      return next(new AppError('Trading API is disabled. Enable it only in a local/development environment after configuring execution-enabled instruments.', {
+        statusCode: 503,
+        code: 'TRADING_API_DISABLED',
+      }));
+    }
+    return next();
+  };
+}
+
+function parse(schema, value) {
+  const result = schema.safeParse(value);
+  if (!result.success) throw validationError(result.error);
+  return result.data;
+}
+
+function validationError(error) {
+  return new AppError('Invalid trading command', {
+    statusCode: 400,
+    code: 'INVALID_TRADING_COMMAND',
+    details: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })),
+  });
+}
+
+module.exports = { createTradingRouter, openSchema, closeSchema };

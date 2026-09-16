@@ -1,0 +1,320 @@
+'use strict';
+
+const { AppError } = require('../../shared/errors/app-error');
+const {
+  ROUNDING,
+  normalizeDecimal,
+  addDecimal,
+  subtractDecimal,
+  multiplyDecimal,
+  divideDecimal,
+  compareDecimal,
+  isStepAligned,
+  quantizeToStep,
+  assertPositiveDecimal,
+} = require('../../shared/decimal/decimal');
+const { normalizeSymbol } = require('../market-data/market.utils');
+
+function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now() }) {
+  validateAccount(account, instrument?.symbol);
+  validateInstrument(instrument);
+  validateQuote(quote, instrument, nowMs);
+
+  const normalizedSide = normalizeSide(side);
+  const normalizedVolume = validateVolume(volume, instrument);
+  const fillPrice = executablePrice(quote, normalizedSide, instrument);
+  const normalizedStopLoss = optionalPrice(stopLoss, instrument);
+  const normalizedTakeProfit = optionalPrice(takeProfit, instrument);
+  validateProtection({ side: normalizedSide, fillPrice, stopLoss: normalizedStopLoss, takeProfit: normalizedTakeProfit });
+  validateAccountCurrency(account, instrument.quoteCurrency);
+
+  const commission = calculateCommission(instrument, normalizedVolume);
+  const requiredMargin = calculateRequiredMargin({ account, instrument, volume: normalizedVolume, fillPrice });
+  const totalRequirement = addDecimal(requiredMargin, commission);
+  const freeMargin = normalizeDecimal(account.state?.freeMargin ?? '0');
+
+  if (compareDecimal(freeMargin, totalRequirement) < 0) {
+    throw new AppError('Insufficient free margin for this order', {
+      statusCode: 409,
+      code: 'INSUFFICIENT_MARGIN',
+      details: { freeMargin, requiredMargin, commission },
+    });
+  }
+
+  return Object.freeze({
+    symbol: normalizeSymbol(instrument.symbol),
+    side: normalizedSide,
+    volume: normalizedVolume,
+    fillPrice,
+    stopLoss: normalizedStopLoss,
+    takeProfit: normalizedTakeProfit,
+    commission,
+    requiredMargin,
+    contractSize: normalizeDecimal(instrument.contractSize),
+    volumeStep: normalizeDecimal(instrument.volumeStep),
+    quoteCurrency: String(instrument.quoteCurrency || '').toUpperCase(),
+    quoteSequence: quote.sequence ?? null,
+    quoteReceivedAtMs: quote.receivedAtMs,
+  });
+}
+
+function planMarketClose({ account, instrument, quote, position, volume = null, nowMs = Date.now() }) {
+  validateAccount(account, position?.symbol);
+  validateInstrument(instrument);
+  validateQuote(quote, instrument, nowMs);
+  validateOpenPosition(position, account);
+
+  const openVolume = assertPositiveDecimal(position.openVolume, 'position.openVolume');
+  const volumeStep = normalizeDecimal(position.volumeStep || instrument.volumeStep);
+  const requestedVolume = volume == null ? openVolume : assertPositiveDecimal(volume, 'volume');
+
+  if (compareDecimal(requestedVolume, openVolume) > 0) {
+    throw new AppError('Close volume exceeds the open position volume', {
+      statusCode: 400,
+      code: 'INVALID_CLOSE_VOLUME',
+      details: { requestedVolume, openVolume },
+    });
+  }
+  if (!isStepAligned(requestedVolume, volumeStep)) {
+    throw new AppError('Close volume is not aligned to the instrument volume step', {
+      statusCode: 400,
+      code: 'INVALID_CLOSE_VOLUME_STEP',
+      details: { volume: requestedVolume, volumeStep },
+    });
+  }
+
+  const remainingVolume = subtractDecimal(openVolume, requestedVolume);
+  const minVolume = normalizeDecimal(instrument.minVolume);
+  if (compareDecimal(remainingVolume, '0') > 0 && compareDecimal(remainingVolume, minVolume) < 0) {
+    throw new AppError('Partial close would leave a position below the minimum volume', {
+      statusCode: 400,
+      code: 'INVALID_REMAINING_VOLUME',
+      details: { remainingVolume, minVolume },
+    });
+  }
+
+  const closeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
+  const fillPrice = executablePrice(quote, closeSide, instrument);
+  const quoteCurrency = String(position.quoteCurrency || instrument.quoteCurrency || '').toUpperCase();
+  validateAccountCurrency(account, quoteCurrency);
+
+  const contractSize = normalizeDecimal(position.contractSize || instrument.contractSize);
+  const entryPrice = normalizeDecimal(position.entryPrice);
+  const priceDifference = position.side === 'BUY'
+    ? subtractDecimal(fillPrice, entryPrice)
+    : subtractDecimal(entryPrice, fillPrice);
+  const realizedPnl = multiplyDecimal(multiplyDecimal(priceDifference, contractSize), requestedVolume);
+  const commission = calculateCommission(instrument, requestedVolume);
+  const netBalanceChange = subtractDecimal(realizedPnl, commission);
+
+  const currentMargin = normalizeDecimal(position.margin ?? '0');
+  const fullClose = compareDecimal(requestedVolume, openVolume) === 0;
+  let releasedMargin = fullClose
+    ? currentMargin
+    : divideDecimal(multiplyDecimal(currentMargin, requestedVolume), openVolume, { scale: 12, rounding: ROUNDING.HALF_UP });
+  if (compareDecimal(releasedMargin, currentMargin) > 0) releasedMargin = currentMargin;
+
+  return Object.freeze({
+    symbol: normalizeSymbol(position.symbol),
+    closeSide,
+    volume: requestedVolume,
+    remainingVolume,
+    fullClose,
+    fillPrice,
+    entryPrice,
+    contractSize,
+    volumeStep,
+    quoteCurrency,
+    realizedPnl,
+    commission,
+    netBalanceChange,
+    releasedMargin,
+    quoteSequence: quote.sequence ?? null,
+    quoteReceivedAtMs: quote.receivedAtMs,
+    dealType: fullClose ? 'CLOSE' : 'PARTIAL_CLOSE',
+  });
+}
+
+function validateAccount(account, symbol) {
+  if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+  if (account.status !== 'ACTIVE') {
+    throw new AppError('Trading account is not active', { statusCode: 409, code: 'ACCOUNT_NOT_ACTIVE', details: { status: account.status } });
+  }
+  if (account.tradingEnabled !== true) {
+    throw new AppError('Trading is disabled for this account', { statusCode: 409, code: 'ACCOUNT_TRADING_DISABLED' });
+  }
+  const allowed = account.riskPolicy?.allowedSymbols || [];
+  const canonical = normalizeSymbol(symbol);
+  if (allowed.length && !allowed.map(normalizeSymbol).includes(canonical)) {
+    throw new AppError('Symbol is not allowed for this trading account', {
+      statusCode: 403,
+      code: 'SYMBOL_NOT_ALLOWED',
+      details: { symbol: canonical },
+    });
+  }
+}
+
+function validateInstrument(instrument) {
+  if (!instrument) throw new AppError('Instrument was not found', { statusCode: 404, code: 'INSTRUMENT_NOT_FOUND' });
+  if (instrument.status !== 'ACTIVE') {
+    throw new AppError('Instrument is not available for execution', {
+      statusCode: 409,
+      code: 'INSTRUMENT_NOT_ACTIVE',
+      details: { status: instrument.status },
+    });
+  }
+  if (instrument.executionEnabled !== true) {
+    throw new AppError('Execution is disabled for this instrument', {
+      statusCode: 409,
+      code: 'INSTRUMENT_EXECUTION_DISABLED',
+    });
+  }
+}
+
+function validateQuote(quote, instrument, nowMs) {
+  if (!quote) throw new AppError('No live quote is available for this symbol', { statusCode: 503, code: 'QUOTE_UNAVAILABLE' });
+  const receivedAtMs = Number(quote.receivedAtMs);
+  const maxAgeMs = Number(instrument.maxQuoteAgeMs || 5000);
+  const ageMs = Number.isFinite(receivedAtMs) ? Math.max(0, nowMs - receivedAtMs) : Number.POSITIVE_INFINITY;
+  if (quote.isStale || ageMs > maxAgeMs) {
+    throw new AppError('Market quote is stale', {
+      statusCode: 503,
+      code: 'QUOTE_STALE',
+      details: { ageMs: Number.isFinite(ageMs) ? ageMs : null, maxAgeMs },
+    });
+  }
+  if (!Number.isFinite(Number(quote.bid)) || !Number.isFinite(Number(quote.ask))) {
+    throw new AppError('Executable bid/ask is unavailable', { statusCode: 503, code: 'EXECUTABLE_QUOTE_UNAVAILABLE' });
+  }
+}
+
+function validateVolume(volume, instrument) {
+  let normalized;
+  try {
+    normalized = assertPositiveDecimal(volume, 'volume');
+  } catch (error) {
+    throw new AppError(error.message, { statusCode: 400, code: 'INVALID_VOLUME' });
+  }
+  const minVolume = normalizeDecimal(instrument.minVolume);
+  const maxVolume = normalizeDecimal(instrument.maxVolume);
+  const volumeStep = normalizeDecimal(instrument.volumeStep);
+
+  if (compareDecimal(normalized, minVolume) < 0 || compareDecimal(normalized, maxVolume) > 0) {
+    throw new AppError('Volume is outside the instrument limits', {
+      statusCode: 400,
+      code: 'INVALID_VOLUME_RANGE',
+      details: { volume: normalized, minVolume, maxVolume },
+    });
+  }
+  if (!isStepAligned(normalized, volumeStep)) {
+    throw new AppError('Volume is not aligned to the instrument volume step', {
+      statusCode: 400,
+      code: 'INVALID_VOLUME_STEP',
+      details: { volume: normalized, volumeStep },
+    });
+  }
+  return normalized;
+}
+
+function executablePrice(quote, side, instrument) {
+  const raw = side === 'BUY' ? quote.ask : quote.bid;
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new AppError('Executable market price is unavailable', { statusCode: 503, code: 'EXECUTABLE_QUOTE_UNAVAILABLE' });
+  }
+  return quantizeToStep(String(numeric), instrument.tickSize, ROUNDING.HALF_UP);
+}
+
+function optionalPrice(value, instrument) {
+  if (value === null || value === undefined || value === '') return null;
+  let normalized;
+  try {
+    normalized = assertPositiveDecimal(value, 'price');
+  } catch (error) {
+    throw new AppError(error.message, { statusCode: 400, code: 'INVALID_PRICE' });
+  }
+  if (!isStepAligned(normalized, instrument.tickSize)) {
+    throw new AppError('Price is not aligned to the instrument tick size', {
+      statusCode: 400,
+      code: 'INVALID_PRICE_STEP',
+      details: { price: normalized, tickSize: normalizeDecimal(instrument.tickSize) },
+    });
+  }
+  return normalized;
+}
+
+function validateProtection({ side, fillPrice, stopLoss, takeProfit }) {
+  if (side === 'BUY') {
+    if (stopLoss != null && compareDecimal(stopLoss, fillPrice) >= 0) throw invalidProtection('BUY stop loss must be below the fill price');
+    if (takeProfit != null && compareDecimal(takeProfit, fillPrice) <= 0) throw invalidProtection('BUY take profit must be above the fill price');
+  } else {
+    if (stopLoss != null && compareDecimal(stopLoss, fillPrice) <= 0) throw invalidProtection('SELL stop loss must be above the fill price');
+    if (takeProfit != null && compareDecimal(takeProfit, fillPrice) >= 0) throw invalidProtection('SELL take profit must be below the fill price');
+  }
+}
+
+function invalidProtection(message) {
+  return new AppError(message, { statusCode: 400, code: 'INVALID_PROTECTION_PRICE' });
+}
+
+function calculateCommission(instrument, volume) {
+  const perLot = instrument.commissionPerLot == null ? '0' : normalizeDecimal(instrument.commissionPerLot);
+  return multiplyDecimal(perLot, volume);
+}
+
+function calculateRequiredMargin({ account, instrument, volume, fillPrice }) {
+  const notional = multiplyDecimal(multiplyDecimal(fillPrice, instrument.contractSize), volume);
+  if (instrument.marginRate != null && compareDecimal(instrument.marginRate, '0') > 0) {
+    return multiplyDecimal(notional, instrument.marginRate);
+  }
+  const accountLeverage = Number(account.leverage);
+  const instrumentLeverage = Number(instrument.defaultLeverage);
+  const effectiveLeverage = Math.min(accountLeverage, instrumentLeverage);
+  if (!Number.isFinite(effectiveLeverage) || effectiveLeverage <= 0) {
+    throw new AppError('No valid leverage is configured for margin calculation', { statusCode: 409, code: 'INVALID_LEVERAGE' });
+  }
+  return divideDecimal(notional, String(effectiveLeverage), { scale: 12, rounding: ROUNDING.HALF_UP });
+}
+
+function validateAccountCurrency(account, quoteCurrency) {
+  const accountCurrency = String(account.currency || '').toUpperCase();
+  const normalizedQuote = String(quoteCurrency || '').toUpperCase();
+  if (!accountCurrency || !normalizedQuote || accountCurrency !== normalizedQuote) {
+    throw new AppError('Currency conversion for this instrument is not implemented yet', {
+      statusCode: 409,
+      code: 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
+      details: { accountCurrency, quoteCurrency: normalizedQuote },
+    });
+  }
+}
+
+function validateOpenPosition(position, account) {
+  if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
+  if (String(position.accountId) !== String(account._id)) {
+    throw new AppError('Position does not belong to this trading account', { statusCode: 403, code: 'POSITION_ACCOUNT_MISMATCH' });
+  }
+  if (position.status !== 'OPEN' || compareDecimal(position.openVolume, '0') <= 0) {
+    throw new AppError('Position is not open', { statusCode: 409, code: 'POSITION_NOT_OPEN' });
+  }
+}
+
+function normalizeSide(side) {
+  const value = String(side || '').toUpperCase();
+  if (!['BUY', 'SELL'].includes(value)) throw new AppError('Order side must be BUY or SELL', { statusCode: 400, code: 'INVALID_ORDER_SIDE' });
+  return value;
+}
+
+function calculateAdverseSlippage({ side, fillPrice, requestedPrice }) {
+  if (requestedPrice == null || requestedPrice === '') return '0';
+  const requested = normalizeDecimal(requestedPrice);
+  return side === 'BUY' ? subtractDecimal(fillPrice, requested) : subtractDecimal(requested, fillPrice);
+}
+
+module.exports = {
+  planMarketOpen,
+  planMarketClose,
+  calculateRequiredMargin,
+  calculateCommission,
+  calculateAdverseSlippage,
+  validateVolume,
+};

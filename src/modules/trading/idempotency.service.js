@@ -67,20 +67,24 @@ class IdempotencyService {
     }
   }
 
-  async complete(recordId, { resourceType = null, resourceId = null, response = null } = {}) {
-    return this.model.findOneAndUpdate(
+  async complete(recordId, { resourceType = null, resourceId = null, response = null } = {}, { session = null } = {}) {
+    const query = this.model.findOneAndUpdate(
       { _id: recordId, state: 'IN_PROGRESS' },
       { $set: { state: 'COMPLETED', resourceType, resourceId, response, failureCode: null } },
       { new: true },
     );
+    if (session) query.session(session);
+    return query;
   }
 
-  async fail(recordId, { failureCode, response = null } = {}) {
-    return this.model.findOneAndUpdate(
+  async fail(recordId, { failureCode, response = null } = {}, { session = null } = {}) {
+    const query = this.model.findOneAndUpdate(
       { _id: recordId, state: 'IN_PROGRESS' },
       { $set: { state: 'FAILED', failureCode: failureCode || 'COMMAND_FAILED', response } },
       { new: true },
     );
+    if (session) query.session(session);
+    return query;
   }
 }
 

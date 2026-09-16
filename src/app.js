@@ -12,9 +12,10 @@ const { logger } = require('./infrastructure/logger/logger');
 const { createHealthRouter } = require('./modules/health/health.routes');
 const { createMarketRouter } = require('./modules/market-data/market.routes');
 const { createInstrumentRouter } = require('./modules/instruments/instrument.routes');
+const { createTradingRouter } = require('./modules/trading/trading.routes');
 const { notFoundHandler, errorHandler } = require('./shared/http/error-middleware');
 
-function createApp({ marketRuntime }) {
+function createApp({ marketRuntime, tradingRuntime }) {
   const app = express();
 
   if (env.trustProxy) app.set('trust proxy', 1);
@@ -53,13 +54,15 @@ function createApp({ marketRuntime }) {
     res.json({
       service: 'acg-trader-backend',
       apiVersion: 'v1',
-      status: 'market_gateway_ready',
+      status: 'market_execution_foundation_ready',
       market: marketRuntime.health(),
+      trading: tradingRuntime.health(),
     });
   });
 
   app.use('/v1/instruments', createInstrumentRouter());
   app.use('/v1/market', createMarketRouter(marketRuntime));
+  app.use('/v1/trading', createTradingRouter(tradingRuntime));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

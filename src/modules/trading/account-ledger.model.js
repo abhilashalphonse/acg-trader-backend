@@ -34,8 +34,6 @@ accountLedgerSchema.index(
 
 accountLedgerSchema.pre('validate', function validateLedgerMath(next) {
   try {
-    if (this.balanceBefore != null && compareDecimal(this.balanceBefore, '0') < 0) this.invalidate('balanceBefore', 'balanceBefore cannot be negative');
-    if (this.balanceAfter != null && compareDecimal(this.balanceAfter, '0') < 0) this.invalidate('balanceAfter', 'balanceAfter cannot be negative');
     if (this.amount != null && this.balanceBefore != null && this.balanceAfter != null) {
       const expected = addDecimal(this.balanceBefore, this.amount);
       if (compareDecimal(expected, this.balanceAfter) !== 0) this.invalidate('balanceAfter', 'balanceAfter must equal balanceBefore + amount');

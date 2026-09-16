@@ -24,6 +24,7 @@ const schema = z.object({
   MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
   MONGODB_SERVER_SELECTION_TIMEOUT_MS: positiveInt(5000),
   INSTRUMENT_CATALOG_AUTO_SEED: booleanFromEnv.default(true),
+  TRADING_API_ENABLED: booleanFromEnv.default(false),
 
   MARKET_GATEWAY_ENABLED: booleanFromEnv.default(true),
   MARKET_PROVIDER: z.enum(['twelve-data']).default('twelve-data'),
@@ -70,6 +71,9 @@ if (raw.MARKET_GATEWAY_ENABLED && raw.MARKET_PROVIDER === 'twelve-data' && (!raw
 }
 if (!raw.MARKET_WS_PATH.startsWith('/')) throw new Error('MARKET_WS_PATH must start with /');
 if (raw.TWELVE_DATA_RECONNECT_MAX_MS < raw.TWELVE_DATA_RECONNECT_MIN_MS) throw new Error('TWELVE_DATA_RECONNECT_MAX_MS must be >= TWELVE_DATA_RECONNECT_MIN_MS');
+if (raw.NODE_ENV === 'production' && raw.TRADING_API_ENABLED) {
+  throw new Error('TRADING_API_ENABLED cannot be enabled in production until authenticated account ownership is implemented');
+}
 
 const env = Object.freeze({
   nodeEnv: raw.NODE_ENV,
@@ -82,6 +86,7 @@ const env = Object.freeze({
   mongoUri: raw.MONGODB_URI,
   mongoServerSelectionTimeoutMs: raw.MONGODB_SERVER_SELECTION_TIMEOUT_MS,
   instrumentCatalogAutoSeed: raw.INSTRUMENT_CATALOG_AUTO_SEED,
+  tradingApiEnabled: raw.TRADING_API_ENABLED,
 
   market: Object.freeze({
     enabled: raw.MARKET_GATEWAY_ENABLED,

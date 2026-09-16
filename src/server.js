@@ -6,6 +6,7 @@ const { connectDatabase, disconnectDatabase } = require('./config/database');
 const { logger } = require('./infrastructure/logger/logger');
 const { createApp } = require('./app');
 const { createMarketRuntime } = require('./modules/market-data/market.runtime');
+const { createTradingRuntime } = require('./modules/trading/trading.runtime');
 const { ensureInstrumentCatalog } = require('./modules/instruments/instrument-catalog.service');
 
 async function start() {
@@ -18,7 +19,8 @@ async function start() {
   const marketRuntime = createMarketRuntime();
   await marketRuntime.start();
 
-  const app = createApp({ marketRuntime });
+  const tradingRuntime = createTradingRuntime({ marketRuntime });
+  const app = createApp({ marketRuntime, tradingRuntime });
   const server = http.createServer(app);
   marketRuntime.attachWebSocket(server);
 
@@ -26,7 +28,11 @@ async function start() {
   server.headersTimeout = 66_000;
 
   server.listen(env.port, () => {
-    logger.info({ port: env.port, market: marketRuntime.health() }, 'ACG Trader backend listening');
+    logger.info({
+      port: env.port,
+      market: marketRuntime.health(),
+      trading: tradingRuntime.health(),
+    }, 'ACG Trader backend listening');
   });
 
   let shuttingDown = false;
@@ -43,6 +49,7 @@ async function start() {
 
     let exitCode = 0;
     try {
+      await tradingRuntime.stop();
       await marketRuntime.stop();
       await closeHttpServer(server);
       await disconnectDatabase();

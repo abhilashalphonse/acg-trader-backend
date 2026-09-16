@@ -2,109 +2,121 @@
 
 Independent Node.js/Express/MongoDB backend for ACG Trader.
 
-ACG Trader owns its own market-data, trading-account, execution, position, P&L and risk state. It does not depend on the ACG Funded runtime or database.
+ACG Trader owns its own market data, trading accounts, execution, positions, P&L and risk state. It does not depend on the ACG Funded runtime or database.
 
 ## Implemented
 
 - Express API bootstrap and graceful shutdown
-- Strict environment validation with Zod
+- strict environment validation with Zod
 - MongoDB/Mongoose connection lifecycle
-- Pino structured logging with secret redaction
-- Helmet, CORS, request IDs and API rate limiting
-- Liveness/readiness endpoints
-- Precision-safe `Instrument` model using MongoDB Decimal128
-- Independent `TradingAccount` model with account state and snapshotted risk policy
-- ACG instrument catalog with safe insert-on-start behavior
-- Explicit EURUSD/XAUUSD contract, volume, provider and synthetic-spread specifications
-- Twelve Data WebSocket diagnostic under `diagnostics/`
-- ACG Market Gateway with one upstream Twelve Data connection
-- Canonical tick normalization and per-symbol sequencing
-- In-memory latest-quote store
-- Deterministic bid/ask construction from Instrument spread policy
-- Stale quote detection and immediate stale propagation on provider disconnect
-- Candle engine for `1s`, `5s`, `15s`, `30s`, `1m`, `5m`, `15m`, `1h`, `4h`, `1d`
-- Realtime carry-forward candles for short zero-tick intervals while feed continuity is healthy
-- No synthetic candle backfill across known provider outages/stale periods
-- Closed-candle persistence in MongoDB
-- Twelve Data `1m+` historical backfill without overwriting ACG-generated live candles
-- ACG market WebSocket at `/v1/ws`
-- Market and instrument REST endpoints
-- Exact decimal arithmetic/rounding/step primitives for trading-critical calculations
-- Trading Core models: `Order`, immutable `Deal`, `Position`, immutable `AccountLedger`
-- Durable command idempotency with request hashing and TTL retention
-- Per-account command serialization queue
-- Market-data, instrument and Trading Core unit tests
+- Pino structured logging, Helmet, CORS, request IDs and rate limiting
+- independent `TradingAccount` and precision-safe `Instrument` models
+- ACG EURUSD/XAUUSD instrument catalog with explicit simulated CFD specifications
+- Twelve Data market adapter, reconnect/heartbeat handling and canonical Market Gateway
+- deterministic synthetic bid/ask from Instrument spread policy
+- stale quote protection
+- TICK stream and candle engine for `1s`, `5s`, `15s`, `30s`, `1m`, `5m`, `15m`, `1h`, `4h`, `1d`
+- realtime carry-forward candles only while feed continuity is healthy
+- candle persistence and Twelve Data `1m+` backfill
+- public market WebSocket at `/v1/ws`
+- market/instrument REST endpoints
+- exact decimal arithmetic helpers
+- Order, Deal, Position, AccountLedger and Idempotency models
+- immutable Deals and AccountLedger rows
+- per-account command serialization
+- account-scoped idempotency
+- transactional MARKET BUY/SELL execution foundation
+- transactional manual full/partial position close
+- exact margin, commission and realized-P&L calculations for supported account/quote currencies
+- internal post-commit trading events
 
 ## Local setup
 
-Keep real credentials only in your local `.env` (the repository intentionally does not contain an `.env.example`). At minimum configure the existing application/Mongo/market variables used by `src/config/env.js`, including `MONGODB_URI` and `TWELVE_DATA_API_KEY` when the live Market Gateway is enabled.
+Create a local `.env` file (never commit it) containing at least:
+
+```text
+NODE_ENV=development
+PORT=4000
+MONGODB_URI=<your MongoDB Atlas/replica-set URI>
+TWELVE_DATA_API_KEY=<your Twelve Data key>
+INSTRUMENT_CATALOG_AUTO_SEED=true
+MARKET_GATEWAY_ENABLED=true
+MARKET_SYMBOLS=EURUSD,XAUUSD
+TRADING_API_ENABLED=false
+```
+
+Then:
 
 ```bash
 npm install
+npm test
 npm run dev
 ```
 
-Default API: `http://localhost:4000`
+MongoDB transactions are required for trading execution, so use Atlas or another replica-set deployment.
+
+## Main endpoints
 
 ```text
 GET /health/live
 GET /health/ready
 GET /v1
+
 GET /v1/instruments
 GET /v1/instruments/EURUSD
+
 GET /v1/market/status
 GET /v1/market/quotes?symbols=EURUSD,XAUUSD
 GET /v1/market/candles?symbol=EURUSD&timeframe=5s&limit=160
 WS  /v1/ws
+
+GET  /v1/trading/status
+POST /v1/trading/orders/market
+POST /v1/trading/positions/:positionId/close
 ```
 
-Run tests:
+The trading POST routes are disabled by default. They are an unauthenticated development surface only at this stage. `TRADING_API_ENABLED=true` is rejected when `NODE_ENV=production` until authenticated account ownership exists.
 
-```bash
-npm test
-```
-
-Synchronize the managed instrument catalog deliberately:
-
-```bash
-npm run seed:instruments
-```
-
-See `docs/MARKET_GATEWAY.md`, `docs/INSTRUMENT_CATALOG.md` and `docs/TRADING_CORE.md`.
+Instrument execution is independently gated by `Instrument.executionEnabled`; managed catalog seeding keeps it `false` unless deliberately enabled in the database.
 
 ## Architecture rules
 
 1. MongoDB is durable state, not the realtime tick bus.
-2. Trading-critical calculations use exact decimal primitives; persisted financial values use Decimal128.
-3. Instrument specifications own tick size, pip size, contract size, volume limits, leverage and spread configuration. Trading logic must not infer them from price magnitude.
-4. Instrument catalog values are ACG simulation policy; they are not universal broker specifications.
-5. A trading account owns a snapshot of its rules so trading does not require ACG Funded to be online.
-6. `executionEnabled` defaults to `false`. Catalog seeding never silently enables trading.
+2. Financial values persisted by the trading domain use Decimal128.
+3. Trading calculations use exact decimal helpers rather than native floating-point arithmetic.
+4. Instrument specifications own tick size, pip size, contract size, volume limits, leverage and spread policy.
+5. Instrument catalog values are ACG simulation policy, not universal broker specifications.
+6. Existing positions snapshot contract size, volume step, quote currency and reserved margin so later catalog edits cannot change open-trade math.
 7. ACG Trader V1 uses hedging position semantics.
-8. `Order` is intent, `Deal` is immutable execution fact, `Position` is lifecycle state, and `AccountLedger` is immutable accounting history.
-9. State-changing commands for one account must be serialized through `AccountCommandQueue`.
-10. Retried commands must use durable idempotency; the same key cannot represent different trading intent.
-11. Browsers never connect directly to the market-data provider or receive provider credentials.
-12. Charts, future execution, P&L and risk consume one canonical market stream.
-13. Provider timestamps are retained for diagnostics; live sub-minute candle sequencing uses gateway arrival time.
-14. Known stale/disconnected intervals are not retroactively represented as genuine market continuity.
-15. Twelve Data historical backfill may insert missing bars but never overwrite ACG-generated live candles.
+8. Browsers never connect directly to the external market provider or receive provider credentials.
+9. Charts, execution, future P&L and future risk consume the same canonical market stream.
+10. BUY executes at ASK; SELL executes at BID. Long closes at BID; short closes at ASK.
+11. Stale/missing executable quotes reject execution.
+12. Account commands are serialized per account in the authoritative process.
+13. MARKET execution and idempotency completion commit atomically in one Mongo transaction.
+14. Deals and ledger rows are immutable audit records.
+15. Cross-currency account conversion is rejected until a canonical conversion service exists.
+16. Private trading events are not broadcast on the public market WebSocket before authentication exists.
+
+## Documentation
+
+- `docs/MARKET_GATEWAY.md`
+- `docs/INSTRUMENT_CATALOG.md`
+- `docs/TRADING_CORE.md`
+- `docs/MARKET_ORDER_EXECUTION.md`
 
 ## Next implementation layer
 
-The next backend layer is the market-order Execution Foundation:
+The next trading layer should be tick-driven account state and protection:
 
 ```text
-Order command
-    -> account command queue
-    -> idempotency reserve
-    -> account/instrument/quote validation
-    -> Order accepted
-    -> authoritative bid/ask fill
-    -> Deal + Position
-    -> AccountLedger / balance state
-    -> idempotency complete
-    -> realtime trading event
+Canonical market tick
+        |
+        +--> floating P&L / equity / margin
+        +--> SL / TP trigger engine
+        +--> pending LIMIT / STOP / STOP_LIMIT engine
+        +--> trailing-stop engine
+        +--> Risk Engine
 ```
 
-Market BUY/SELL, close and partial-close should be made correct end-to-end before LIMIT/STOP/STOP_LIMIT, SL/TP, trailing, P&L/margin and risk enforcement are added.
+Authentication and private account WebSocket channels must be implemented before production trading routes are enabled.
