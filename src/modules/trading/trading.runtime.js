@@ -7,6 +7,8 @@ const { IdempotencyService } = require('./idempotency.service');
 const { MarketOrderService } = require('./market-order.service');
 const { ValuationEngine } = require('./valuation-engine');
 const { ProtectionTriggerEngine } = require('./protection-trigger-engine');
+const { PendingOrderService } = require('./pending-order.service');
+const { PendingOrderEngine } = require('./pending-order-engine');
 
 function createTradingRuntime({ marketRuntime }) {
   const commandQueue = new AccountCommandQueue();
@@ -29,14 +31,29 @@ function createTradingRuntime({ marketRuntime }) {
     marketOrderService,
     logger,
   });
+  const pendingOrderService = new PendingOrderService({
+    quoteStore: marketRuntime.quoteStore,
+    eventBus: marketRuntime.eventBus,
+    commandQueue,
+    idempotencyService,
+    valuationEngine,
+    logger,
+  });
+  const pendingOrderEngine = new PendingOrderEngine({
+    eventBus: marketRuntime.eventBus,
+    pendingOrderService,
+    logger,
+  });
 
   let started = false;
 
   return {
     enabled: env.tradingApiEnabled,
     marketOrderService,
+    pendingOrderService,
     valuationEngine,
     protectionTriggerEngine,
+    pendingOrderEngine,
     commandQueue,
 
     async start() {
@@ -44,7 +61,13 @@ function createTradingRuntime({ marketRuntime }) {
       await valuationEngine.start();
       try {
         await protectionTriggerEngine.start();
-        started = true;
+        try {
+          await pendingOrderEngine.start();
+          started = true;
+        } catch (error) {
+          await protectionTriggerEngine.stop();
+          throw error;
+        }
       } catch (error) {
         await valuationEngine.stop();
         throw error;
@@ -59,13 +82,19 @@ function createTradingRuntime({ marketRuntime }) {
         pendingAccounts: commandQueue.pendingAccounts,
         valuation: valuationEngine.health(),
         protection: protectionTriggerEngine.health(),
+        pendingOrders: pendingOrderEngine.health(),
         capabilities: {
           marketOpen: true,
           marketClose: true,
           partialClose: true,
           realtimeValuation: true,
           accountEquity: true,
-          pendingOrders: false,
+          pendingOrders: true,
+          limitOrders: true,
+          stopOrders: true,
+          stopLimitOrders: true,
+          pendingOrderExpiry: true,
+          pendingOrderCancel: true,
           protectiveTriggers: true,
           stopLoss: true,
           takeProfit: true,
@@ -76,6 +105,7 @@ function createTradingRuntime({ marketRuntime }) {
     },
 
     async stop() {
+      await pendingOrderEngine.stop();
       await protectionTriggerEngine.stop();
       await commandQueue.drainAll();
       await valuationEngine.stop();
