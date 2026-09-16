@@ -1,0 +1,16 @@
+{
+  "name": "acg-trader-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ACG Trader backend and market-data diagnostics",
+  "scripts": {
+    "diagnostic:twelve": "node diagnostics/twelve-data-ws.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
