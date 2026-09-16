@@ -20,12 +20,33 @@ const openSchema = z.object({
   source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
 }).strict();
 
+const pendingSchema = z.object({
+  accountId: objectId,
+  clientOrderId: z.string().trim().min(1).max(128),
+  symbol: z.string().trim().min(1).max(32),
+  side: z.enum(['BUY', 'SELL']),
+  type: z.enum(['LIMIT', 'STOP', 'STOP_LIMIT']),
+  volume: decimalInput,
+  limitPrice: optionalDecimal,
+  stopPrice: optionalDecimal,
+  stopLoss: optionalDecimal,
+  takeProfit: optionalDecimal,
+  timeInForce: z.enum(['GTC', 'TODAY', 'SPECIFIED']).optional().default('GTC'),
+  expiresAt: z.union([z.string().datetime({ offset: true }), z.null()]).optional().default(null),
+  source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
+}).strict();
+
 const closeSchema = z.object({
   accountId: objectId,
   clientOrderId: z.string().trim().min(1).max(128),
   volume: optionalDecimal,
   requestedPrice: optionalDecimal,
   source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
+}).strict();
+
+const cancelPendingSchema = z.object({
+  accountId: objectId,
+  clientRequestId: z.string().trim().min(1).max(128),
 }).strict();
 
 function createTradingRouter(runtime) {
@@ -53,9 +74,28 @@ function createTradingRouter(runtime) {
     res.json(valuation);
   });
 
+  router.get('/accounts/:accountId/orders/pending', requireEnabled(runtime), async (req, res) => {
+    const accountId = parseObjectId(req.params.accountId);
+    const orders = await runtime.pendingOrderService.listPendingOrders(accountId);
+    res.json({ orders });
+  });
+
   router.post('/orders/market', requireEnabled(runtime), async (req, res) => {
     const command = parse(openSchema, req.body);
     const result = await runtime.marketOrderService.openMarketOrder(command);
+    res.status(result.idempotentReplay ? 200 : 201).json(result);
+  });
+
+  router.post('/orders/pending', requireEnabled(runtime), async (req, res) => {
+    const command = parse(pendingSchema, req.body);
+    const result = await runtime.pendingOrderService.placePendingOrder(command);
+    res.status(result.idempotentReplay ? 200 : 201).json(result);
+  });
+
+  router.post('/orders/:orderId/cancel', requireEnabled(runtime), async (req, res) => {
+    const orderId = parseObjectId(req.params.orderId);
+    const body = parse(cancelPendingSchema, req.body);
+    const result = await runtime.pendingOrderService.cancelPendingOrder({ ...body, orderId });
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
 
@@ -101,4 +141,10 @@ function validationError(error) {
   });
 }
 
-module.exports = { createTradingRouter, openSchema, closeSchema };
+module.exports = {
+  createTradingRouter,
+  openSchema,
+  pendingSchema,
+  closeSchema,
+  cancelPendingSchema,
+};
