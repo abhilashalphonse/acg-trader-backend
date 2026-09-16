@@ -26,22 +26,23 @@ ACG Trader owns its own market-data, trading-account, execution, position, P&L a
 - Realtime carry-forward candles for short zero-tick intervals while feed continuity is healthy
 - No synthetic candle backfill across known provider outages/stale periods
 - Closed-candle persistence in MongoDB
-- Twelve Data `1m+` historical backfill without overwriting ACG-generated candles
+- Twelve Data `1m+` historical backfill without overwriting ACG-generated live candles
 - ACG market WebSocket at `/v1/ws`
 - Market and instrument REST endpoints
-- Market-data/instrument unit tests
+- Exact decimal arithmetic/rounding/step primitives for trading-critical calculations
+- Trading Core models: `Order`, immutable `Deal`, `Position`, immutable `AccountLedger`
+- Durable command idempotency with request hashing and TTL retention
+- Per-account command serialization queue
+- Market-data, instrument and Trading Core unit tests
 
 ## Local setup
 
+Keep real credentials only in your local `.env` (the repository intentionally does not contain an `.env.example`). At minimum configure the existing application/Mongo/market variables used by `src/config/env.js`, including `MONGODB_URI` and `TWELVE_DATA_API_KEY` when the live Market Gateway is enabled.
+
 ```bash
 npm install
-copy .env.example .env
 npm run dev
 ```
-
-On macOS/Linux use `cp .env.example .env` instead of `copy`.
-
-Set `MONGODB_URI` and `TWELVE_DATA_API_KEY` in `.env` before starting the default live Market Gateway.
 
 Default API: `http://localhost:4000`
 
@@ -69,34 +70,41 @@ Synchronize the managed instrument catalog deliberately:
 npm run seed:instruments
 ```
 
-See `docs/MARKET_GATEWAY.md` and `docs/INSTRUMENT_CATALOG.md`.
+See `docs/MARKET_GATEWAY.md`, `docs/INSTRUMENT_CATALOG.md` and `docs/TRADING_CORE.md`.
 
 ## Architecture rules
 
 1. MongoDB is durable state, not the realtime tick bus.
-2. Financial values persisted by the trading domain use Decimal128.
+2. Trading-critical calculations use exact decimal primitives; persisted financial values use Decimal128.
 3. Instrument specifications own tick size, pip size, contract size, volume limits, leverage and spread configuration. Trading logic must not infer them from price magnitude.
 4. Instrument catalog values are ACG simulation policy; they are not universal broker specifications.
 5. A trading account owns a snapshot of its rules so trading does not require ACG Funded to be online.
 6. `executionEnabled` defaults to `false`. Catalog seeding never silently enables trading.
 7. ACG Trader V1 uses hedging position semantics.
-8. Browsers never connect directly to the market-data provider or receive provider credentials.
-9. Charts, future execution, P&L and risk consume one canonical market stream.
-10. Provider timestamps are retained for diagnostics; live sub-minute candle sequencing uses gateway arrival time.
-11. Known stale/disconnected intervals are not retroactively represented as genuine market continuity.
-12. Twelve Data historical backfill may insert missing bars but never overwrite ACG-generated live candles.
+8. `Order` is intent, `Deal` is immutable execution fact, `Position` is lifecycle state, and `AccountLedger` is immutable accounting history.
+9. State-changing commands for one account must be serialized through `AccountCommandQueue`.
+10. Retried commands must use durable idempotency; the same key cannot represent different trading intent.
+11. Browsers never connect directly to the market-data provider or receive provider credentials.
+12. Charts, future execution, P&L and risk consume one canonical market stream.
+13. Provider timestamps are retained for diagnostics; live sub-minute candle sequencing uses gateway arrival time.
+14. Known stale/disconnected intervals are not retroactively represented as genuine market continuity.
+15. Twelve Data historical backfill may insert missing bars but never overwrite ACG-generated live candles.
 
 ## Next implementation layer
 
-The next backend layer is the trading core:
+The next backend layer is the market-order Execution Foundation:
 
 ```text
-Canonical market tick
-        |
-        +--> Order validation / pending triggers
-        +--> Execution Engine
-        +--> Positions
-        +--> P&L / margin
-        +--> SL / TP / trailing
-        +--> Risk Engine
+Order command
+    -> account command queue
+    -> idempotency reserve
+    -> account/instrument/quote validation
+    -> Order accepted
+    -> authoritative bid/ask fill
+    -> Deal + Position
+    -> AccountLedger / balance state
+    -> idempotency complete
+    -> realtime trading event
 ```
+
+Market BUY/SELL, close and partial-close should be made correct end-to-end before LIMIT/STOP/STOP_LIMIT, SL/TP, trailing, P&L/margin and risk enforcement are added.
