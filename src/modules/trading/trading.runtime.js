@@ -9,6 +9,7 @@ const { ValuationEngine } = require('./valuation-engine');
 const { ProtectionTriggerEngine } = require('./protection-trigger-engine');
 const { PendingOrderService } = require('./pending-order.service');
 const { PendingOrderEngine } = require('./pending-order-engine');
+const { PositionProtectionService } = require('./position-protection.service');
 
 function createTradingRuntime({ marketRuntime }) {
   const commandQueue = new AccountCommandQueue();
@@ -44,6 +45,13 @@ function createTradingRuntime({ marketRuntime }) {
     pendingOrderService,
     logger,
   });
+  const positionProtectionService = new PositionProtectionService({
+    quoteStore: marketRuntime.quoteStore,
+    eventBus: marketRuntime.eventBus,
+    commandQueue,
+    idempotencyService,
+    logger,
+  });
 
   let started = false;
 
@@ -51,6 +59,7 @@ function createTradingRuntime({ marketRuntime }) {
     enabled: env.tradingApiEnabled,
     marketOrderService,
     pendingOrderService,
+    positionProtectionService,
     valuationEngine,
     protectionTriggerEngine,
     pendingOrderEngine,
@@ -98,6 +107,8 @@ function createTradingRuntime({ marketRuntime }) {
           protectiveTriggers: true,
           stopLoss: true,
           takeProfit: true,
+          protectionManagement: true,
+          breakEven: true,
           trailing: false,
           riskEngine: false,
         },

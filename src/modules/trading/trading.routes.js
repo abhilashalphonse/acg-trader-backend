@@ -7,6 +7,8 @@ const { AppError } = require('../../shared/errors/app-error');
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const decimalInput = z.union([z.string().min(1), z.number().finite()]).transform(value => String(value));
 const optionalDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value == null ? null : String(value));
+const patchDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional()
+  .transform(value => value === undefined ? undefined : value === null ? null : String(value));
 
 const openSchema = z.object({
   accountId: objectId,
@@ -47,6 +49,28 @@ const closeSchema = z.object({
 const cancelPendingSchema = z.object({
   accountId: objectId,
   clientRequestId: z.string().trim().min(1).max(128),
+}).strict();
+
+const protectionSchema = z.object({
+  accountId: objectId,
+  clientRequestId: z.string().trim().min(1).max(128),
+  stopLoss: patchDecimal,
+  takeProfit: patchDecimal,
+  source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
+}).strict().superRefine((value, ctx) => {
+  if (value.stopLoss === undefined && value.takeProfit === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['stopLoss'],
+      message: 'At least one of stopLoss or takeProfit must be supplied',
+    });
+  }
+});
+
+const breakEvenSchema = z.object({
+  accountId: objectId,
+  clientRequestId: z.string().trim().min(1).max(128),
+  source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
 }).strict();
 
 function createTradingRouter(runtime) {
@@ -99,6 +123,20 @@ function createTradingRouter(runtime) {
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
 
+  router.patch('/positions/:positionId/protection', requireEnabled(runtime), async (req, res) => {
+    const positionId = parseObjectId(req.params.positionId);
+    const body = parse(protectionSchema, req.body);
+    const result = await runtime.positionProtectionService.updateProtection({ ...body, positionId });
+    res.status(200).json(result);
+  });
+
+  router.post('/positions/:positionId/break-even', requireEnabled(runtime), async (req, res) => {
+    const positionId = parseObjectId(req.params.positionId);
+    const body = parse(breakEvenSchema, req.body);
+    const result = await runtime.positionProtectionService.moveStopToBreakEven({ ...body, positionId });
+    res.status(200).json(result);
+  });
+
   router.post('/positions/:positionId/close', requireEnabled(runtime), async (req, res) => {
     const positionId = parseObjectId(req.params.positionId);
     const body = parse(closeSchema, req.body);
@@ -147,4 +185,6 @@ module.exports = {
   pendingSchema,
   closeSchema,
   cancelPendingSchema,
+  protectionSchema,
+  breakEvenSchema,
 };
