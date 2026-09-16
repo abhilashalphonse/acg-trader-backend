@@ -60,6 +60,7 @@ const orderSchema = new Schema({
 orderSchema.index({ accountId: 1, clientOrderId: 1 }, { unique: true });
 orderSchema.index({ accountId: 1, status: 1, createdAt: -1 });
 orderSchema.index({ accountId: 1, symbol: 1, status: 1 });
+orderSchema.index({ status: 1, expiresAt: 1 });
 
 orderSchema.pre('validate', function validateOrderShape(next) {
   try {
@@ -69,7 +70,9 @@ orderSchema.pre('validate', function validateOrderShape(next) {
       if (this.stopPrice == null) this.invalidate('stopPrice', 'STOP_LIMIT orders require stopPrice');
       if (this.limitPrice == null) this.invalidate('limitPrice', 'STOP_LIMIT orders require limitPrice');
     }
-    if (this.timeInForce === 'SPECIFIED' && !this.expiresAt) this.invalidate('expiresAt', 'SPECIFIED orders require expiresAt');
+    if (['SPECIFIED', 'TODAY'].includes(this.timeInForce) && !this.expiresAt) {
+      this.invalidate('expiresAt', `${this.timeInForce} orders require expiresAt`);
+    }
 
     if (this.requestedVolume != null && compareDecimal(this.requestedVolume, '0') <= 0) {
       this.invalidate('requestedVolume', 'requestedVolume must be greater than zero');
@@ -80,11 +83,29 @@ orderSchema.pre('validate', function validateOrderShape(next) {
     if (this.requestedVolume != null && this.filledVolume != null && compareDecimal(this.filledVolume, this.requestedVolume) > 0) {
       this.invalidate('filledVolume', 'filledVolume cannot exceed requestedVolume');
     }
+    for (const field of ['limitPrice', 'stopPrice', 'stopLoss', 'takeProfit', 'acceptedPrice']) {
+      if (this[field] != null && compareDecimal(this[field], '0') <= 0) this.invalidate(field, `${field} must be greater than zero`);
+    }
+
+    if (['PENDING', 'TRIGGERED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(this.status)
+      && this.filledVolume != null && compareDecimal(this.filledVolume, '0') !== 0) {
+      this.invalidate('filledVolume', `${this.status} orders require zero filledVolume`);
+    }
+    if (this.status === 'TRIGGERED') {
+      if (this.type !== 'STOP_LIMIT') this.invalidate('status', 'Only STOP_LIMIT orders can remain TRIGGERED');
+      if (!this.triggeredAt) this.invalidate('triggeredAt', 'TRIGGERED orders require triggeredAt');
+    }
     if (this.status === 'FILLED') {
       if (this.requestedVolume != null && this.filledVolume != null && compareDecimal(this.filledVolume, this.requestedVolume) !== 0) {
         this.invalidate('filledVolume', 'FILLED orders require filledVolume to equal requestedVolume');
       }
       if (!this.filledAt) this.invalidate('filledAt', 'FILLED orders require filledAt');
+    }
+    if (this.status === 'CANCELLED' && !this.cancelledAt) this.invalidate('cancelledAt', 'CANCELLED orders require cancelledAt');
+    if (this.status === 'EXPIRED' && !this.expiredAt) this.invalidate('expiredAt', 'EXPIRED orders require expiredAt');
+    if (this.status === 'REJECTED') {
+      if (!this.rejectedAt) this.invalidate('rejectedAt', 'REJECTED orders require rejectedAt');
+      if (!this.rejectCode) this.invalidate('rejectCode', 'REJECTED orders require rejectCode');
     }
   } catch (error) {
     this.invalidate('requestedVolume', error.message);
