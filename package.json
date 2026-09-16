@@ -1,14 +1,24 @@
 {
   "name": "acg-trader-backend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "ACG Trader backend and market-data diagnostics",
+  "description": "Independent ACG Trader trading backend",
   "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
     "diagnostic:twelve": "node diagnostics/twelve-data-ws.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "ws": "^8.18.0"
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.1",
+    "helmet": "^8.1.0",
+    "mongoose": "^8.18.0",
+    "pino": "^9.9.0",
+    "pino-http": "^10.5.0",
+    "ws": "^8.18.0",
+    "zod": "^3.25.76"
   },
   "engines": {
     "node": ">=20"
