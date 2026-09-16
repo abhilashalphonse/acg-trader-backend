@@ -35,6 +35,24 @@ function createTradingRouter(runtime) {
     res.json(runtime.health());
   });
 
+  router.get('/accounts/:accountId/valuation', requireEnabled(runtime), async (req, res) => {
+    const accountId = parseObjectId(req.params.accountId);
+    const valuation = await runtime.valuationEngine.getOrLoadAccountSnapshot(accountId);
+    if (!valuation) {
+      throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+    }
+    res.json(valuation);
+  });
+
+  router.get('/positions/:positionId/valuation', requireEnabled(runtime), (req, res) => {
+    const positionId = parseObjectId(req.params.positionId);
+    const valuation = runtime.valuationEngine.getPositionSnapshot(positionId);
+    if (!valuation) {
+      throw new AppError('Open position valuation was not found', { statusCode: 404, code: 'POSITION_VALUATION_NOT_FOUND' });
+    }
+    res.json(valuation);
+  });
+
   router.post('/orders/market', requireEnabled(runtime), async (req, res) => {
     const command = parse(openSchema, req.body);
     const result = await runtime.marketOrderService.openMarketOrder(command);
@@ -42,10 +60,9 @@ function createTradingRouter(runtime) {
   });
 
   router.post('/positions/:positionId/close', requireEnabled(runtime), async (req, res) => {
-    const positionId = objectId.safeParse(req.params.positionId);
-    if (!positionId.success) throw validationError(positionId.error);
+    const positionId = parseObjectId(req.params.positionId);
     const body = parse(closeSchema, req.body);
-    const result = await runtime.marketOrderService.closeMarketPosition({ ...body, positionId: positionId.data });
+    const result = await runtime.marketOrderService.closeMarketPosition({ ...body, positionId });
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
 
@@ -62,6 +79,12 @@ function requireEnabled(runtime) {
     }
     return next();
   };
+}
+
+function parseObjectId(value) {
+  const result = objectId.safeParse(value);
+  if (!result.success) throw validationError(result.error);
+  return result.data;
 }
 
 function parse(schema, value) {

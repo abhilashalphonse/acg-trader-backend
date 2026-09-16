@@ -1,0 +1,128 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const EventEmitter = require('events');
+const { ValuationEngine } = require('../../src/modules/trading/valuation-engine');
+
+function query(value) {
+  return { lean: async () => value };
+}
+
+function fixture() {
+  const account = {
+    _id: 'a1',
+    accountCode: 'A1',
+    currency: 'USD',
+    state: { balance: '10000', realizedPnlToday: '0', dailyStartEquity: '10000' },
+  };
+  const position = {
+    _id: 'p1',
+    positionId: 'pos-1',
+    accountId: 'a1',
+    symbol: 'EURUSD',
+    side: 'BUY',
+    status: 'OPEN',
+    openVolume: '1',
+    entryPrice: '1.1000',
+    contractSize: '100000',
+    volumeStep: '0.01',
+    quoteCurrency: 'USD',
+    margin: '1100',
+  };
+  const quotes = new Map([['EURUSD', {
+    symbol: 'EURUSD', bid: 1.101, ask: 1.1012, sequence: 1, receivedAtMs: 1000, source: 'test', isStale: false,
+  }]]);
+  const eventBus = new EventEmitter();
+  const engine = new ValuationEngine({
+    eventBus,
+    quoteStore: { get: symbol => quotes.get(symbol) || null },
+    logger: { info() {}, error() {} },
+    positionModel: { find: () => query([position]) },
+    accountModel: {
+      find: () => query([account]),
+      findById: () => query(account),
+    },
+  });
+  return { account, position, quotes, eventBus, engine };
+}
+
+test('recovers open positions and builds account valuation from current QuoteStore state', async () => {
+  const { engine } = fixture();
+  await engine.start();
+  const snapshot = engine.getAccountSnapshot('a1');
+  assert.equal(snapshot.valuationStatus, 'LIVE');
+  assert.equal(snapshot.floatingPnl, '100');
+  assert.equal(snapshot.equity, '10100');
+  assert.equal(snapshot.usedMargin, '1100');
+  assert.equal(snapshot.freeMargin, '9000');
+  await engine.stop();
+});
+
+test('canonical market ticks revalue positions and accounts without Mongo writes', async () => {
+  const { engine, eventBus } = fixture();
+  await engine.start();
+  let accountEvent = null;
+  eventBus.on('valuation.account.updated', value => { accountEvent = value; });
+  eventBus.emit('market.tick', {
+    symbol: 'EURUSD', bid: 1.102, ask: 1.1022, sequence: 2, receivedAtMs: 2000, source: 'test', isStale: false,
+  });
+  assert.equal(engine.getPositionSnapshot('p1').floatingPnl, '200');
+  assert.equal(engine.getAccountSnapshot('a1').equity, '10200');
+  assert.equal(accountEvent.equity, '10200');
+  await engine.stop();
+});
+
+test('stale quote transitions pause new-exposure readiness while preserving last numeric PnL', async () => {
+  const { engine, eventBus } = fixture();
+  await engine.start();
+  eventBus.emit('market.quote', {
+    symbol: 'EURUSD', bid: 1.101, ask: 1.1012, sequence: 1, receivedAtMs: 1000, source: 'test', isStale: true,
+  });
+  const snapshot = engine.getAccountSnapshot('a1');
+  assert.equal(snapshot.valuationStatus, 'STALE');
+  assert.equal(snapshot.equity, '10100');
+
+  const accountDoc = {
+    _id: 'a1',
+    currency: 'USD',
+    state: { balance: '10000', floatingPnl: '0', equity: '10000', usedMargin: '1100', freeMargin: '8900' },
+  };
+  assert.throws(
+    () => engine.overlayAccountDocument(accountDoc, { requireLive: true }),
+    error => error.code === 'ACCOUNT_VALUATION_NOT_LIVE',
+  );
+  await engine.stop();
+});
+
+test('execution overlay replaces stale persisted account metrics with current live valuation', async () => {
+  const { engine } = fixture();
+  await engine.start();
+  const accountDoc = {
+    _id: 'a1',
+    currency: 'USD',
+    state: { balance: '10000', floatingPnl: '-999', equity: '9001', usedMargin: '9999', freeMargin: '-998' },
+  };
+  const projection = engine.overlayAccountDocument(accountDoc, { requireLive: true });
+  assert.equal(projection.valuationStatus, 'LIVE');
+  assert.equal(String(accountDoc.state.floatingPnl), '100');
+  assert.equal(String(accountDoc.state.equity), '10100');
+  assert.equal(String(accountDoc.state.usedMargin), '1100');
+  assert.equal(String(accountDoc.state.freeMargin), '9000');
+  await engine.stop();
+});
+
+test('post-commit position/account events update the in-memory indexes before the next account command', async () => {
+  const { engine, eventBus } = fixture();
+  await engine.start();
+  eventBus.emit('trading.position.closed', { id: 'p1', accountId: 'a1', symbol: 'EURUSD', status: 'CLOSED' });
+  eventBus.emit('trading.account.updated', {
+    id: 'a1', accountCode: 'A1', currency: 'USD', state: { balance: '10100', realizedPnlToday: '100', dailyStartEquity: '10000' },
+  });
+  const snapshot = engine.getAccountSnapshot('a1');
+  assert.equal(snapshot.positionCount, 0);
+  assert.equal(snapshot.floatingPnl, '0');
+  assert.equal(snapshot.equity, '10100');
+  assert.equal(snapshot.usedMargin, '0');
+  await engine.stop();
+});

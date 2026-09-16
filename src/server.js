@@ -17,9 +17,13 @@ async function start() {
   }
 
   const marketRuntime = createMarketRuntime();
+  const tradingRuntime = createTradingRuntime({ marketRuntime });
+
+  // Recover positions/accounts and subscribe to the shared event bus before the
+  // provider starts producing ticks, so the first live tick can be valued.
+  await tradingRuntime.start();
   await marketRuntime.start();
 
-  const tradingRuntime = createTradingRuntime({ marketRuntime });
   const app = createApp({ marketRuntime, tradingRuntime });
   const server = http.createServer(app);
   marketRuntime.attachWebSocket(server);
