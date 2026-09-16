@@ -16,8 +16,8 @@ const {
 const { normalizeSymbol } = require('../market-data/market.utils');
 
 function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now() }) {
-  validateAccount(account, instrument?.symbol);
-  validateInstrument(instrument);
+  validateAccountForOpen(account, instrument?.symbol);
+  validateInstrumentForOpen(instrument);
   validateQuote(quote, instrument, nowMs);
 
   const normalizedSide = normalizeSide(side);
@@ -59,8 +59,8 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
 }
 
 function planMarketClose({ account, instrument, quote, position, volume = null, nowMs = Date.now() }) {
-  validateAccount(account, position?.symbol);
-  validateInstrument(instrument);
+  validateAccountForClose(account);
+  validateInstrumentForClose(instrument);
   validateQuote(quote, instrument, nowMs);
   validateOpenPosition(position, account);
 
@@ -135,7 +135,7 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   });
 }
 
-function validateAccount(account, symbol) {
+function validateAccountForOpen(account, symbol) {
   if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
   if (account.status !== 'ACTIVE') {
     throw new AppError('Trading account is not active', { statusCode: 409, code: 'ACCOUNT_NOT_ACTIVE', details: { status: account.status } });
@@ -154,7 +154,11 @@ function validateAccount(account, symbol) {
   }
 }
 
-function validateInstrument(instrument) {
+function validateAccountForClose(account) {
+  if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+}
+
+function validateInstrumentForOpen(instrument) {
   if (!instrument) throw new AppError('Instrument was not found', { statusCode: 404, code: 'INSTRUMENT_NOT_FOUND' });
   if (instrument.status !== 'ACTIVE') {
     throw new AppError('Instrument is not available for execution', {
@@ -169,6 +173,10 @@ function validateInstrument(instrument) {
       code: 'INSTRUMENT_EXECUTION_DISABLED',
     });
   }
+}
+
+function validateInstrumentForClose(instrument) {
+  if (!instrument) throw new AppError('Instrument was not found', { statusCode: 404, code: 'INSTRUMENT_NOT_FOUND' });
 }
 
 function validateQuote(quote, instrument, nowMs) {
@@ -317,4 +325,8 @@ module.exports = {
   calculateCommission,
   calculateAdverseSlippage,
   validateVolume,
+  validateAccountForOpen,
+  validateAccountForClose,
+  validateInstrumentForOpen,
+  validateInstrumentForClose,
 };

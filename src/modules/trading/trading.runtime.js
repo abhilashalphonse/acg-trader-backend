@@ -6,6 +6,7 @@ const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
 const { MarketOrderService } = require('./market-order.service');
 const { ValuationEngine } = require('./valuation-engine');
+const { ProtectionTriggerEngine } = require('./protection-trigger-engine');
 
 function createTradingRuntime({ marketRuntime }) {
   const commandQueue = new AccountCommandQueue();
@@ -23,6 +24,11 @@ function createTradingRuntime({ marketRuntime }) {
     valuationEngine,
     logger,
   });
+  const protectionTriggerEngine = new ProtectionTriggerEngine({
+    eventBus: marketRuntime.eventBus,
+    marketOrderService,
+    logger,
+  });
 
   let started = false;
 
@@ -30,12 +36,19 @@ function createTradingRuntime({ marketRuntime }) {
     enabled: env.tradingApiEnabled,
     marketOrderService,
     valuationEngine,
+    protectionTriggerEngine,
     commandQueue,
 
     async start() {
       if (started) return;
       await valuationEngine.start();
-      started = true;
+      try {
+        await protectionTriggerEngine.start();
+        started = true;
+      } catch (error) {
+        await valuationEngine.stop();
+        throw error;
+      }
     },
 
     health() {
@@ -45,6 +58,7 @@ function createTradingRuntime({ marketRuntime }) {
         started,
         pendingAccounts: commandQueue.pendingAccounts,
         valuation: valuationEngine.health(),
+        protection: protectionTriggerEngine.health(),
         capabilities: {
           marketOpen: true,
           marketClose: true,
@@ -52,7 +66,9 @@ function createTradingRuntime({ marketRuntime }) {
           realtimeValuation: true,
           accountEquity: true,
           pendingOrders: false,
-          protectiveTriggers: false,
+          protectiveTriggers: true,
+          stopLoss: true,
+          takeProfit: true,
           trailing: false,
           riskEngine: false,
         },
@@ -60,6 +76,7 @@ function createTradingRuntime({ marketRuntime }) {
     },
 
     async stop() {
+      await protectionTriggerEngine.stop();
       await commandQueue.drainAll();
       await valuationEngine.stop();
       started = false;

@@ -92,7 +92,8 @@ class MarketOrderService {
 
   async closeMarketPosition(command) {
     const normalized = normalizeCloseCommand(command);
-    const reservation = await this.#reserve(normalized.accountId, 'MARKET_CLOSE', normalized.clientOrderId, normalized);
+    const scope = normalized.reason ? 'PROTECTIVE_CLOSE' : 'MARKET_CLOSE';
+    const reservation = await this.#reserve(normalized.accountId, scope, normalized.clientOrderId, normalized);
     const replay = this.#resolveReservation(reservation, normalized.accountId);
     if (replay) return replay;
 
@@ -121,7 +122,14 @@ class MarketOrderService {
             nowMs,
           });
           return this.#persistClose({
-            normalized, reservation, account, position, plan, quoteSnapshot, session, nowMs,
+            normalized,
+            reservation,
+            account,
+            position,
+            plan,
+            quoteSnapshot,
+            session,
+            nowMs,
             valuationComplete: valuationProjection ? valuationProjection.complete : true,
           });
         });
@@ -246,7 +254,7 @@ class MarketOrderService {
       positionId: position._id,
       symbol: plan.symbol,
       side: plan.closeSide,
-      type: plan.dealType,
+      type: normalized.reason || plan.dealType,
       volume: plan.volume,
       price: plan.fillPrice,
       requestedPrice: normalized.requestedPrice,
@@ -260,6 +268,7 @@ class MarketOrderService {
       executedAt: now,
     });
 
+    const closeReason = normalized.reason || 'MANUAL';
     const ledgers = applyCloseAccountAndPositionMutation({
       account,
       position,
@@ -269,6 +278,7 @@ class MarketOrderService {
       ledgerModel: this.ledgerModel,
       now,
       valuationComplete,
+      closeReason,
     });
 
     await order.save({ session });
@@ -277,7 +287,8 @@ class MarketOrderService {
     for (const ledger of ledgers) await ledger.save({ session });
     await account.save({ session });
 
-    const response = executionResponse(plan.fullClose ? 'CLOSE' : 'PARTIAL_CLOSE', order, deal, position, account);
+    const operation = normalized.reason || (plan.fullClose ? 'CLOSE' : 'PARTIAL_CLOSE');
+    const response = executionResponse(operation, order, deal, position, account);
     await this.#completeReservation(reservation.record._id, order.orderId, response, session);
     return { response, events: closeEvents(response, plan.fullClose) };
   }
@@ -362,7 +373,7 @@ function applyOpenAccountMutation(account, plan) {
   account.state.freeMargin = subtractDecimal(equity, usedMargin);
 }
 
-function applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel, now, valuationComplete = true }) {
+function applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel, now, valuationComplete = true, closeReason = 'MANUAL' }) {
   const ledgers = [];
   let runningBalance = normalizeDecimal(account.state.balance);
 
@@ -378,7 +389,7 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
       referenceType: 'DEAL',
       referenceId: deal.dealId,
       idempotencyKey: `${clientOrderId}:close:pnl`,
-      reason: plan.fullClose ? 'Position closed' : 'Position partially closed',
+      reason: closeReason === 'MANUAL' ? (plan.fullClose ? 'Position closed' : 'Position partially closed') : closeReason,
     }));
     runningBalance = next;
   }
@@ -422,7 +433,7 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
     position.openVolume = '0';
     position.margin = '0';
     position.closedAt = now;
-    position.closeReason = 'MANUAL';
+    position.closeReason = closeReason;
   }
   return ledgers;
 }
@@ -494,6 +505,7 @@ function normalizeCloseCommand(command) {
     volume: nullableString(command?.volume),
     requestedPrice: nullableString(command?.requestedPrice),
     source: normalizeSource(command?.source),
+    reason: normalizeCloseReason(command?.reason),
   };
 }
 
@@ -504,6 +516,15 @@ function nullableString(value) {
 function normalizeSource(source) {
   const value = String(source || 'API').toUpperCase();
   return ['WEB', 'MOBILE', 'API', 'SYSTEM'].includes(value) ? value : 'API';
+}
+
+function normalizeCloseReason(reason) {
+  if (reason === null || reason === undefined || reason === '') return null;
+  const value = String(reason).toUpperCase();
+  if (!['STOP_LOSS', 'TAKE_PROFIT'].includes(value)) {
+    throw new AppError('Invalid system close reason', { statusCode: 400, code: 'INVALID_CLOSE_REASON' });
+  }
+  return value;
 }
 
 async function runMongoTransaction(work) {
@@ -542,4 +563,5 @@ module.exports = {
   runMongoTransaction,
   applyOpenAccountMutation,
   applyCloseAccountAndPositionMutation,
+  normalizeCloseReason,
 };
