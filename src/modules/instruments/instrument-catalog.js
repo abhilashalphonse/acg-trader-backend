@@ -1,0 +1,77 @@
+'use strict';
+
+// ACG-owned simulated CFD specifications. These are product policy defaults,
+// not claims about universal broker contract terms. Runtime trading remains
+// disabled until explicitly enabled per Instrument document.
+const ACG_INSTRUMENT_CATALOG = Object.freeze([
+  Object.freeze({
+    symbol: 'EURUSD',
+    displaySymbol: 'EUR/USD',
+    name: 'Euro / US Dollar',
+    assetClass: 'FOREX',
+    baseCurrency: 'EUR',
+    quoteCurrency: 'USD',
+    digits: 5,
+    tickSize: '0.00001',
+    pipSize: '0.0001',
+    contractSize: '100000',
+    minVolume: '0.01',
+    maxVolume: '100',
+    volumeStep: '0.01',
+    defaultLeverage: 100,
+    marginRate: null,
+    commissionPerLot: '0',
+    swapLong: '0',
+    swapShort: '0',
+    spread: {
+      mode: 'SYNTHETIC',
+      fixedPoints: '10',
+      markupPoints: '0',
+    },
+    tradingSessions: [],
+    timezone: 'UTC',
+    providerMappings: {
+      twelveData: 'EUR/USD',
+    },
+    maxQuoteAgeMs: 10000,
+    chartEnabled: true,
+    executionEnabled: false,
+    status: 'ACTIVE',
+  }),
+  Object.freeze({
+    symbol: 'XAUUSD',
+    displaySymbol: 'XAU/USD',
+    name: 'Gold / US Dollar',
+    assetClass: 'METAL',
+    baseCurrency: 'XAU',
+    quoteCurrency: 'USD',
+    digits: 2,
+    tickSize: '0.01',
+    pipSize: '0.01',
+    contractSize: '100',
+    minVolume: '0.01',
+    maxVolume: '100',
+    volumeStep: '0.01',
+    defaultLeverage: 100,
+    marginRate: null,
+    commissionPerLot: '0',
+    swapLong: '0',
+    swapShort: '0',
+    spread: {
+      mode: 'SYNTHETIC',
+      fixedPoints: '30',
+      markupPoints: '0',
+    },
+    tradingSessions: [],
+    timezone: 'UTC',
+    providerMappings: {
+      twelveData: 'XAU/USD',
+    },
+    maxQuoteAgeMs: 10000,
+    chartEnabled: true,
+    executionEnabled: false,
+    status: 'ACTIVE',
+  }),
+]);
+
+module.exports = { ACG_INSTRUMENT_CATALOG };

@@ -51,6 +51,7 @@ class MarketGateway {
     this.adapter.off('subscription-status', this.onSubscriptionStatus);
 
     await this.adapter.stop();
+    for (const symbol of this.symbols) this.candleEngine.setSymbolLive(symbol, false);
     await this.candleEngine.stop();
     this.connectionState = MARKET_CONNECTION_STATES.STOPPED;
     this.#emitGatewayStatus();
@@ -80,7 +81,12 @@ class MarketGateway {
   #onConnection(event) {
     this.connectionState = event.state;
     if (event.state === MARKET_CONNECTION_STATES.DISCONNECTED) {
-      for (const symbol of this.symbols) this.#setSymbolState(symbol, 'DISCONNECTED');
+      for (const symbol of this.symbols) {
+        this.candleEngine.setSymbolLive(symbol, false);
+        const staleQuote = this.quoteStore.markStale(symbol, true);
+        if (staleQuote) this.eventBus.emit('market.quote', staleQuote);
+        this.#setSymbolState(symbol, 'DISCONNECTED');
+      }
     }
     this.#emitGatewayStatus({ code: event.code, reason: event.reason });
   }
@@ -137,6 +143,7 @@ class MarketGateway {
     });
 
     const previousState = this.symbolStates.get(symbol);
+    this.candleEngine.setSymbolLive(symbol, true);
     const quote = this.quoteStore.set(tick);
     this.#setSymbolState(symbol, 'LIVE');
 
@@ -187,7 +194,9 @@ class MarketGateway {
 
       const stale = !quote || now - quote.receivedAtMs > instrument.maxQuoteAgeMs;
       if (stale) {
-        this.quoteStore.markStale(symbol, true);
+        this.candleEngine.setSymbolLive(symbol, false);
+        const staleQuote = this.quoteStore.markStale(symbol, true);
+        if (staleQuote && quote?.isStale !== true) this.eventBus.emit('market.quote', staleQuote);
         if (quote && this.symbolStates.get(symbol) !== 'STALE') {
           this.#setSymbolState(symbol, 'STALE');
           this.logger.warn({ symbol, ageMs: now - quote.receivedAtMs }, 'Market quote became stale');

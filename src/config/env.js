@@ -23,6 +23,7 @@ const schema = z.object({
   SHUTDOWN_TIMEOUT_MS: positiveInt(10000),
   MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
   MONGODB_SERVER_SELECTION_TIMEOUT_MS: positiveInt(5000),
+  INSTRUMENT_CATALOG_AUTO_SEED: booleanFromEnv.default(true),
 
   MARKET_GATEWAY_ENABLED: booleanFromEnv.default(true),
   MARKET_PROVIDER: z.enum(['twelve-data']).default('twelve-data'),
@@ -80,6 +81,7 @@ const env = Object.freeze({
   shutdownTimeoutMs: raw.SHUTDOWN_TIMEOUT_MS,
   mongoUri: raw.MONGODB_URI,
   mongoServerSelectionTimeoutMs: raw.MONGODB_SERVER_SELECTION_TIMEOUT_MS,
+  instrumentCatalogAutoSeed: raw.INSTRUMENT_CATALOG_AUTO_SEED,
 
   market: Object.freeze({
     enabled: raw.MARKET_GATEWAY_ENABLED,

@@ -48,6 +48,8 @@ class CandleEngine {
     this.states = new Map();
     this.pendingWrites = new Set();
     this.flushTimer = null;
+    this.symbolFeedLive = new Map();
+    this.continuityBroken = new Set();
   }
 
   start() {
@@ -63,9 +65,18 @@ class CandleEngine {
     await Promise.allSettled([...this.pendingWrites]);
   }
 
+  setSymbolLive(symbol, live) {
+    const canonical = normalizeSymbol(symbol);
+    const previous = this.symbolFeedLive.get(canonical) === true;
+    this.symbolFeedLive.set(canonical, live === true);
+    if (previous && live !== true) this.continuityBroken.add(canonical);
+  }
+
   processTick(tick) {
     if (!tick || !Number.isFinite(tick.price) || !Number.isFinite(tick.timeMs)) return;
     const symbol = normalizeSymbol(tick.symbol);
+    const continuityBroken = this.continuityBroken.has(symbol);
+    this.symbolFeedLive.set(symbol, true);
 
     for (const timeframe of this.timeframes) {
       const stepMs = TIMEFRAME_MS[timeframe];
@@ -77,11 +88,22 @@ class CandleEngine {
 
       if (state.current && bucket === state.current.openTimeMs) {
         const candle = state.current;
-        candle.high = Math.max(candle.high, tick.price);
-        candle.low = Math.min(candle.low, tick.price);
-        candle.close = tick.price;
-        candle.tickCount += 1;
-        candle.provider = tick.source || candle.provider;
+        if (candle.synthetic && candle.tickCount === 0) {
+          candle.open = tick.price;
+          candle.high = tick.price;
+          candle.low = tick.price;
+          candle.close = tick.price;
+          candle.tickCount = 1;
+          candle.synthetic = false;
+          candle.source = 'LIVE';
+          candle.provider = tick.source || null;
+        } else {
+          candle.high = Math.max(candle.high, tick.price);
+          candle.low = Math.min(candle.low, tick.price);
+          candle.close = tick.price;
+          candle.tickCount += 1;
+          candle.provider = tick.source || candle.provider;
+        }
         this.#emitUpdate(candle);
         continue;
       }
@@ -90,15 +112,31 @@ class CandleEngine {
         this.#closeCurrent(state);
       }
 
-      this.#fillShortGap(state, symbol, timeframe, stepMs, bucket);
+      if (!continuityBroken) this.#fillShortGap(state, symbol, timeframe, stepMs, bucket);
       state.current = this.#fromTick(symbol, timeframe, stepMs, bucket, tick);
       this.#emitUpdate(state.current);
     }
+
+    this.continuityBroken.delete(symbol);
   }
 
   flushExpired(nowMs) {
     for (const state of this.states.values()) {
-      if (state.current && nowMs >= state.current.closeTimeMs) this.#closeCurrent(state);
+      const stepMs = TIMEFRAME_MS[state.timeframe];
+      if (!stepMs) continue;
+
+      let safety = 0;
+      while (state.current && nowMs >= state.current.closeTimeMs && safety <= this.maxSyntheticGapBars + 1) {
+        this.#closeCurrent(state);
+        safety += 1;
+
+        if (!this.#canCreateLiveSynthetic(state.symbol, state)) break;
+        const nextOpenTimeMs = state.lastClosedOpenTimeMs + stepMs;
+        if (nextOpenTimeMs > nowMs) break;
+
+        state.current = this.#syntheticCurrent(state.symbol, state.timeframe, stepMs, nextOpenTimeMs, state.lastClose);
+        this.#emitUpdate(state.current);
+      }
     }
   }
 
@@ -116,6 +154,7 @@ class CandleEngine {
         current: null,
         lastClose: null,
         lastClosedOpenTimeMs: null,
+        consecutiveSyntheticClosed: 0,
       });
     }
     return this.states.get(key);
@@ -144,6 +183,25 @@ class CandleEngine {
     };
   }
 
+  #syntheticCurrent(symbol, timeframe, stepMs, openTimeMs, price) {
+    return {
+      symbol,
+      timeframe,
+      openTimeMs,
+      closeTimeMs: openTimeMs + stepMs,
+      open: price,
+      high: price,
+      low: price,
+      close: price,
+      tickCount: 0,
+      providerVolume: null,
+      complete: false,
+      synthetic: true,
+      source: 'SYNTHETIC',
+      provider: null,
+    };
+  }
+
   #fillShortGap(state, symbol, timeframe, stepMs, targetBucket) {
     if (state.lastClosedOpenTimeMs == null || state.lastClose == null) return;
     const firstMissing = state.lastClosedOpenTimeMs + stepMs;
@@ -154,23 +212,19 @@ class CandleEngine {
     for (let index = 0; index < missingBars; index += 1) {
       const openTimeMs = firstMissing + index * stepMs;
       const synthetic = {
-        symbol,
-        timeframe,
-        openTimeMs,
-        closeTimeMs: openTimeMs + stepMs,
-        open: state.lastClose,
-        high: state.lastClose,
-        low: state.lastClose,
-        close: state.lastClose,
-        tickCount: 0,
-        providerVolume: null,
+        ...this.#syntheticCurrent(symbol, timeframe, stepMs, openTimeMs, state.lastClose),
         complete: true,
-        synthetic: true,
-        source: 'SYNTHETIC',
-        provider: null,
       };
       this.#finalizeClosed(state, synthetic);
     }
+  }
+
+  #canCreateLiveSynthetic(symbol, state) {
+    return this.symbolFeedLive.get(symbol) === true
+      && !this.continuityBroken.has(symbol)
+      && state.lastClose != null
+      && state.lastClosedOpenTimeMs != null
+      && state.consecutiveSyntheticClosed < this.maxSyntheticGapBars;
   }
 
   #closeCurrent(state) {
@@ -183,6 +237,7 @@ class CandleEngine {
   #finalizeClosed(state, candle) {
     state.lastClose = candle.close;
     state.lastClosedOpenTimeMs = candle.openTimeMs;
+    state.consecutiveSyntheticClosed = candle.synthetic ? state.consecutiveSyntheticClosed + 1 : 0;
     const publicCandle = serializeCandle(candle);
     this.eventBus.emit('market.candle.closed', publicCandle);
 

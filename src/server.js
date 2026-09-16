@@ -6,9 +6,14 @@ const { connectDatabase, disconnectDatabase } = require('./config/database');
 const { logger } = require('./infrastructure/logger/logger');
 const { createApp } = require('./app');
 const { createMarketRuntime } = require('./modules/market-data/market.runtime');
+const { ensureInstrumentCatalog } = require('./modules/instruments/instrument-catalog.service');
 
 async function start() {
   await connectDatabase();
+
+  if (env.instrumentCatalogAutoSeed) {
+    await ensureInstrumentCatalog({ logger });
+  }
 
   const marketRuntime = createMarketRuntime();
   await marketRuntime.start();
