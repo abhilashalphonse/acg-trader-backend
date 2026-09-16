@@ -33,8 +33,6 @@ function databaseHealth() {
   return {
     readyState: mongoose.connection.readyState,
     connected: mongoose.connection.readyState === 1,
-    name: mongoose.connection.name || null,
-    host: mongoose.connection.host || null,
   };
 }
 

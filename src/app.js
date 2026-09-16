@@ -43,7 +43,7 @@ function createApp() {
   app.use('/v1', rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 600,
-    standardHeaders: 'draft-8',
+    standardHeaders: true,
     legacyHeaders: false,
   }));
 
