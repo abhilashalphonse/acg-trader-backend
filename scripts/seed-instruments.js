@@ -1,5 +1,8 @@
 'use strict';
 
+// Seeding the catalog should not require a live market-data credential.
+process.env.MARKET_GATEWAY_ENABLED = 'false';
+
 const { connectDatabase, disconnectDatabase } = require('../src/config/database');
 const { logger } = require('../src/infrastructure/logger/logger');
 const { syncInstrumentCatalog } = require('../src/modules/instruments/instrument-catalog.service');
