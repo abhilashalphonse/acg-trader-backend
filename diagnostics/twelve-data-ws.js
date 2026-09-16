@@ -7,19 +7,16 @@ const path = require('path');
 const WebSocket = require('ws');
 
 const API_KEY = process.env.TWELVE_DATA_API_KEY;
-const SYMBOLS = (process.env.TWELVE_DATA_SYMBOLS || 'EUR/USD,XAU/USD')
-  .split(',')
-  .map((symbol) => symbol.trim())
-  .filter(Boolean);
+const SYMBOLS = (process.env.TWELVE_DATA_SYMBOLS || 'EUR/USD,XAU/USD').split(',').map((s) => s.trim()).filter(Boolean);
 const TEST_MINUTES = Number(process.env.TWELVE_DATA_TEST_MINUTES || 15);
 const TEST_DURATION_MS = TEST_MINUTES * 60 * 1000;
 const HEARTBEAT_MS = 10_000;
+const RECONNECT_MS = 1_000;
 
 if (!API_KEY || API_KEY === 'your_api_key_here') {
   console.error('Missing TWELVE_DATA_API_KEY. Copy .env.example to .env and add your real key.');
   process.exit(1);
 }
-
 if (!Number.isFinite(TEST_MINUTES) || TEST_MINUTES <= 0) {
   console.error('TWELVE_DATA_TEST_MINUTES must be a positive number.');
   process.exit(1);
@@ -31,230 +28,217 @@ fs.mkdirSync(logDirectory, { recursive: true });
 const logPath = path.join(logDirectory, `twelve-data-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`);
 const logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
-const stats = new Map(
-  SYMBOLS.map((symbol) => [
-    symbol,
-    {
-      events: 0,
-      priceChanges: 0,
-      duplicates: 0,
-      intervals: [],
-      lastArrivalNs: null,
-      lastPrice: null,
-      firstArrivalNs: null,
-      finalArrivalNs: null,
-      firstProviderTimestamp: null,
-      finalProviderTimestamp: null,
-    },
-  ])
-);
+const stats = new Map(SYMBOLS.map((symbol) => [symbol, {
+  events: 0, priceChanges: 0, duplicates: 0, intervals: [],
+  lastArrivalNs: null, lastPrice: null, firstArrivalNs: null, finalArrivalNs: null,
+  firstProviderTimestamp: null, finalProviderTimestamp: null,
+}]));
 
+const startedNs = process.hrtime.bigint();
+let ws = null;
 let heartbeatTimer = null;
-let stopTimer = null;
+let reconnectTimer = null;
 let finishing = false;
-let connectedAtNs = null;
+let connectionStartedNs = null;
+let connectedNs = 0n;
+let disconnectedStartedNs = null;
+let disconnectedNs = 0n;
+let connections = 0;
+let unexpectedDisconnects = 0;
+let reconnects = 0;
 
 console.log('============================================================');
-console.log(' ACG Trader - Twelve Data WebSocket Diagnostic');
+console.log(' ACG Trader - Twelve Data WebSocket Diagnostic v2');
 console.log('============================================================');
 console.log(`Symbols : ${SYMBOLS.join(', ')}`);
 console.log(`Duration: ${TEST_MINUTES} minute(s)`);
 console.log(`Raw log : ${logPath}`);
 console.log('============================================================\n');
 
-const ws = new WebSocket(wsUrl);
+const stopTimer = setTimeout(() => finish('Test duration reached.'), TEST_DURATION_MS);
+connect(false);
 
-ws.on('open', () => {
-  connectedAtNs = process.hrtime.bigint();
-  console.log('Connected to Twelve Data WebSocket.');
+function connect(isReconnect) {
+  if (finishing) return;
+  ws = new WebSocket(wsUrl);
 
-  const subscription = {
-    action: 'subscribe',
-    params: { symbols: SYMBOLS.join(',') },
-  };
-
-  ws.send(JSON.stringify(subscription));
-  console.log(`Subscription sent for ${SYMBOLS.join(', ')}.\n`);
-
-  heartbeatTimer = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ action: 'heartbeat' }));
+  ws.on('open', () => {
+    const now = process.hrtime.bigint();
+    connections += 1;
+    if (isReconnect) reconnects += 1;
+    if (disconnectedStartedNs !== null) {
+      disconnectedNs += now - disconnectedStartedNs;
+      disconnectedStartedNs = null;
     }
-  }, HEARTBEAT_MS);
+    connectionStartedNs = now;
+    console.log(`${isReconnect ? 'Reconnected' : 'Connected'} to Twelve Data WebSocket.`);
 
-  stopTimer = setTimeout(() => finish('Test duration reached.'), TEST_DURATION_MS);
-});
+    ws.send(JSON.stringify({ action: 'subscribe', params: { symbols: SYMBOLS.join(',') } }));
+    console.log(`Subscription sent for ${SYMBOLS.join(', ')}.`);
 
-ws.on('message', (buffer) => {
-  // Capture the local arrival time before parsing/printing so diagnostic work does
-  // not distort the interval measurement. hrtime is monotonic; Date is wall clock.
+    // Send an application heartbeat immediately, then every 10 seconds.
+    sendHeartbeat();
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
+  });
+
+  ws.on('message', handleMessage);
+
+  ws.on('error', (error) => {
+    console.error(`\nWebSocket error: ${error.message}`);
+    logMeta('socket-error', { message: error.message });
+  });
+
+  ws.on('close', (code, reason) => {
+    const now = process.hrtime.bigint();
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+
+    if (connectionStartedNs !== null) {
+      connectedNs += now - connectionStartedNs;
+      connectionStartedNs = null;
+    }
+
+    console.log(`\nWebSocket closed: ${code}${reason?.length ? ` ${reason.toString()}` : ''}`);
+    logMeta('socket-close', { code, reason: reason?.toString() || '' });
+
+    if (finishing) return;
+    unexpectedDisconnects += 1;
+    disconnectedStartedNs = now;
+    console.log(`Reconnecting in ${RECONNECT_MS}ms...\n`);
+    reconnectTimer = setTimeout(() => connect(true), RECONNECT_MS);
+  });
+}
+
+function sendHeartbeat() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ action: 'heartbeat' }));
+  }
+}
+
+function handleMessage(buffer) {
   const arrivalNs = process.hrtime.bigint();
   const arrivalWallMs = Date.now();
   const raw = buffer.toString();
 
   logStream.write(`${JSON.stringify({
-    localArrivalIso: new Date(arrivalWallMs).toISOString(),
-    localArrivalUnixMs: arrivalWallMs,
-    localArrivalMonotonicNs: arrivalNs.toString(),
-    raw,
+    type: 'message', localArrivalIso: new Date(arrivalWallMs).toISOString(),
+    localArrivalUnixMs: arrivalWallMs, localArrivalMonotonicNs: arrivalNs.toString(), raw,
   })}\n`);
 
   let data;
-  try {
-    data = JSON.parse(raw);
-  } catch {
+  try { data = JSON.parse(raw); } catch {
     console.log(`${formatWallTime(arrivalWallMs)} NON-JSON ${raw}`);
     return;
   }
-
   if (data.event !== 'price') {
     console.log(`${formatWallTime(arrivalWallMs)} WS EVENT ${raw}`);
     return;
   }
 
-  const symbol = data.symbol;
-  const symbolStats = stats.get(symbol);
-  if (!symbolStats) return;
-
+  const s = stats.get(data.symbol);
   const price = Number(data.price);
-  if (!Number.isFinite(price)) return;
+  if (!s || !Number.isFinite(price)) return;
 
-  if (symbolStats.firstArrivalNs === null) symbolStats.firstArrivalNs = arrivalNs;
-
+  if (s.firstArrivalNs === null) s.firstArrivalNs = arrivalNs;
   let intervalMs = null;
-  if (symbolStats.lastArrivalNs !== null) {
-    intervalMs = Number(arrivalNs - symbolStats.lastArrivalNs) / 1e6;
-    symbolStats.intervals.push(intervalMs);
+  if (s.lastArrivalNs !== null) {
+    intervalMs = Number(arrivalNs - s.lastArrivalNs) / 1e6;
+    s.intervals.push(intervalMs);
   }
 
-  symbolStats.events += 1;
-  if (symbolStats.lastPrice === null || price !== symbolStats.lastPrice) {
-    symbolStats.priceChanges += 1;
-  } else {
-    symbolStats.duplicates += 1;
+  s.events += 1;
+  if (s.lastPrice === null || price !== s.lastPrice) s.priceChanges += 1;
+  else s.duplicates += 1;
+
+  if (data.timestamp != null && Number.isFinite(Number(data.timestamp))) {
+    const timestamp = Number(data.timestamp);
+    if (s.firstProviderTimestamp === null) s.firstProviderTimestamp = timestamp;
+    s.finalProviderTimestamp = timestamp;
   }
 
-  if (data.timestamp != null) {
-    const providerTimestamp = Number(data.timestamp);
-    if (Number.isFinite(providerTimestamp)) {
-      if (symbolStats.firstProviderTimestamp === null) symbolStats.firstProviderTimestamp = providerTimestamp;
-      symbolStats.finalProviderTimestamp = providerTimestamp;
-    }
-  }
+  s.lastArrivalNs = arrivalNs;
+  s.finalArrivalNs = arrivalNs;
+  s.lastPrice = price;
 
-  symbolStats.lastArrivalNs = arrivalNs;
-  symbolStats.finalArrivalNs = arrivalNs;
-  symbolStats.lastPrice = price;
-
-  const intervalText = intervalMs === null ? '' : ` +${intervalMs.toFixed(1)}ms`;
-  console.log(`${formatWallTime(arrivalWallMs)} ${symbol.padEnd(8)} ${String(data.price).padEnd(14)}${intervalText}`);
-});
-
-ws.on('error', (error) => {
-  console.error(`\nWebSocket error: ${error.message}`);
-});
-
-ws.on('close', (code, reason) => {
-  console.log(`\nWebSocket closed: ${code}${reason?.length ? ` ${reason.toString()}` : ''}`);
-  if (!finishing) finish('Connection closed before the requested duration.', false);
-});
-
-function formatWallTime(timestampMs) {
-  const date = new Date(timestampMs);
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  const ss = String(date.getSeconds()).padStart(2, '0');
-  const ms = String(date.getMilliseconds()).padStart(3, '0');
-  return `${hh}:${mm}:${ss}.${ms}`;
+  console.log(`${formatWallTime(arrivalWallMs)} ${data.symbol.padEnd(8)} ${String(data.price).padEnd(14)}${intervalMs === null ? '' : ` +${intervalMs.toFixed(1)}ms`}`);
 }
 
-function average(values) {
-  if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+function logMeta(event, extra = {}) {
+  logStream.write(`${JSON.stringify({ type: 'diagnostic', event, localArrivalIso: new Date().toISOString(), ...extra })}\n`);
 }
 
-function percentile(values, percentileValue) {
-  if (!values.length) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const rank = (percentileValue / 100) * (sorted.length - 1);
-  const lower = Math.floor(rank);
-  const upper = Math.ceil(rank);
-  if (lower === upper) return sorted[lower];
-  const weight = rank - lower;
-  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+function formatWallTime(ms) {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`;
 }
-
-function median(values) {
-  return percentile(values, 50);
+function average(v) { return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0; }
+function percentile(v, p) {
+  if (!v.length) return 0;
+  const a = [...v].sort((x, y) => x - y);
+  const rank = (p / 100) * (a.length - 1), lo = Math.floor(rank), hi = Math.ceil(rank);
+  return lo === hi ? a[lo] : a[lo] * (1 - (rank - lo)) + a[hi] * (rank - lo);
 }
+function seconds(ns) { return Number(ns) / 1e9; }
 
-function secondsBetween(startNs, endNs) {
-  if (startNs === null || endNs === null || endNs <= startNs) return 0;
-  return Number(endNs - startNs) / 1e9;
-}
+function printReport(endNs) {
+  let totalConnected = connectedNs;
+  if (connectionStartedNs !== null) totalConnected += endNs - connectionStartedNs;
+  let totalDisconnected = disconnectedNs;
+  if (disconnectedStartedNs !== null) totalDisconnected += endNs - disconnectedStartedNs;
+  const wallSeconds = seconds(endNs - startedNs);
+  const connectedSeconds = seconds(totalConnected);
+  const disconnectedSeconds = seconds(totalDisconnected);
+  const uptime = wallSeconds > 0 ? (connectedSeconds / wallSeconds) * 100 : 0;
 
-function printReport() {
   console.log('\n============================================================');
   console.log(' FINAL REPORT');
-  console.log('============================================================');
+  console.log('============================================================\n');
+  console.log(`Connections             ${connections}`);
+  console.log(`Unexpected disconnects  ${unexpectedDisconnects}`);
+  console.log(`Reconnects              ${reconnects}`);
+  console.log(`Total test duration     ${wallSeconds.toFixed(1)} sec`);
+  console.log(`Connected duration      ${connectedSeconds.toFixed(1)} sec`);
+  console.log(`Disconnected duration   ${disconnectedSeconds.toFixed(1)} sec`);
+  console.log(`Connection uptime       ${uptime.toFixed(2)}%`);
 
   for (const symbol of SYMBOLS) {
     const s = stats.get(symbol);
     console.log(`\n${symbol}\n`);
-
-    if (!s || s.events === 0) {
-      console.log('No price events received.');
-      continue;
-    }
-
-    // Use the actual observation window. For a single tick, fall back to elapsed
-    // connection time so Events/sec does not divide by zero.
-    let observedSeconds = secondsBetween(s.firstArrivalNs, s.finalArrivalNs);
-    if (observedSeconds === 0 && connectedAtNs !== null) {
-      observedSeconds = secondsBetween(connectedAtNs, process.hrtime.bigint());
-    }
-
-    const eventsPerSecond = observedSeconds > 0 ? s.events / observedSeconds : 0;
-    const comparableEvents = Math.max(0, s.events - 1);
-    const duplicatePercentage = comparableEvents > 0 ? (s.duplicates / comparableEvents) * 100 : 0;
-    const longestGap = s.intervals.length ? Math.max(...s.intervals) : 0;
-
-    console.log(`Events received       ${s.events.toLocaleString()}`);
-    console.log(`Price changes         ${s.priceChanges.toLocaleString()}`);
-    console.log(`Events/sec            ${eventsPerSecond.toFixed(2)}`);
-    console.log(`Median interval       ${median(s.intervals).toFixed(1)} ms`);
-    console.log(`Average interval      ${average(s.intervals).toFixed(1)} ms`);
-    console.log(`P95 interval          ${percentile(s.intervals, 95).toFixed(1)} ms`);
-    console.log(`P99 interval          ${percentile(s.intervals, 99).toFixed(1)} ms`);
-    console.log(`Longest gap           ${(longestGap / 1000).toFixed(3)} sec`);
-    console.log(`Duplicates            ${duplicatePercentage.toFixed(2)}%`);
-
-    if (s.firstProviderTimestamp !== null) {
-      console.log(`Provider timestamp    ${s.firstProviderTimestamp} -> ${s.finalProviderTimestamp}`);
-    }
+    if (!s || s.events === 0) { console.log('No price events received.'); continue; }
+    const comparable = Math.max(0, s.events - 1);
+    const longest = s.intervals.length ? Math.max(...s.intervals) : 0;
+    console.log(`Events received         ${s.events.toLocaleString()}`);
+    console.log(`Price changes           ${s.priceChanges.toLocaleString()}`);
+    console.log(`Events/sec connected    ${(connectedSeconds > 0 ? s.events / connectedSeconds : 0).toFixed(2)}`);
+    console.log(`Events/sec wall-clock   ${(wallSeconds > 0 ? s.events / wallSeconds : 0).toFixed(2)}`);
+    console.log(`Median interval         ${percentile(s.intervals, 50).toFixed(1)} ms`);
+    console.log(`Average interval        ${average(s.intervals).toFixed(1)} ms`);
+    console.log(`P95 interval            ${percentile(s.intervals, 95).toFixed(1)} ms`);
+    console.log(`P99 interval            ${percentile(s.intervals, 99).toFixed(1)} ms`);
+    console.log(`Longest gap             ${(longest / 1000).toFixed(3)} sec`);
+    console.log(`Duplicates              ${(comparable ? (s.duplicates / comparable) * 100 : 0).toFixed(2)}%`);
+    if (s.firstProviderTimestamp !== null) console.log(`Provider timestamp      ${s.firstProviderTimestamp} -> ${s.finalProviderTimestamp}`);
   }
-
   console.log('\n============================================================');
   console.log(`Raw JSONL log: ${logPath}`);
   console.log('============================================================\n');
 }
 
-function finish(message, closeSocket = true) {
+function finish(message) {
   if (finishing) return;
   finishing = true;
+  clearTimeout(stopTimer);
+  clearInterval(heartbeatTimer);
+  clearTimeout(reconnectTimer);
+  const endNs = process.hrtime.bigint();
   console.log(`\n${message}`);
-
-  if (heartbeatTimer) clearInterval(heartbeatTimer);
-  if (stopTimer) clearTimeout(stopTimer);
-
-  printReport();
+  printReport(endNs);
+  logMeta('diagnostic-finished', { message });
   logStream.end();
-
-  if (closeSocket && ws.readyState === WebSocket.OPEN) {
-    ws.close(1000, 'diagnostic complete');
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    try { ws.close(1000, 'diagnostic complete'); } catch { /* ignore */ }
   }
-
-  // Give stdout/log stream a moment to flush on normal/manual termination.
   setTimeout(() => process.exit(0), 300);
 }
 
