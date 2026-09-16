@@ -5,22 +5,27 @@ const { env } = require('./config/env');
 const { connectDatabase, disconnectDatabase } = require('./config/database');
 const { logger } = require('./infrastructure/logger/logger');
 const { createApp } = require('./app');
+const { createMarketRuntime } = require('./modules/market-data/market.runtime');
 
 async function start() {
   await connectDatabase();
 
-  const app = createApp();
+  const marketRuntime = createMarketRuntime();
+  await marketRuntime.start();
+
+  const app = createApp({ marketRuntime });
   const server = http.createServer(app);
+  marketRuntime.attachWebSocket(server);
 
   server.keepAliveTimeout = 65_000;
   server.headersTimeout = 66_000;
 
   server.listen(env.port, () => {
-    logger.info({ port: env.port }, 'ACG Trader backend listening');
+    logger.info({ port: env.port, market: marketRuntime.health() }, 'ACG Trader backend listening');
   });
 
   let shuttingDown = false;
-  const shutdown = signal => {
+  const shutdown = async signal => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Graceful shutdown started');
@@ -31,21 +36,29 @@ async function start() {
     }, env.shutdownTimeoutMs);
     forceTimer.unref();
 
-    server.close(async error => {
-      if (error) logger.error({ err: error }, 'HTTP server close failed');
-      try {
-        await disconnectDatabase();
-        logger.info('Graceful shutdown complete');
-        process.exit(error ? 1 : 0);
-      } catch (disconnectError) {
-        logger.error({ err: disconnectError }, 'MongoDB disconnect failed');
-        process.exit(1);
-      }
-    });
+    let exitCode = 0;
+    try {
+      await marketRuntime.stop();
+      await closeHttpServer(server);
+      await disconnectDatabase();
+      logger.info('Graceful shutdown complete');
+    } catch (error) {
+      exitCode = 1;
+      logger.error({ err: error }, 'Graceful shutdown failed');
+    } finally {
+      clearTimeout(forceTimer);
+      process.exit(exitCode);
+    }
   };
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.on('SIGINT', () => { void shutdown('SIGINT'); });
+}
+
+function closeHttpServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+  });
 }
 
 start().catch(error => {

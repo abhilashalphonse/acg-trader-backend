@@ -9,10 +9,11 @@ const pinoHttp = require('pino-http');
 
 const { env } = require('./config/env');
 const { logger } = require('./infrastructure/logger/logger');
-const { healthRouter } = require('./modules/health/health.routes');
+const { createHealthRouter } = require('./modules/health/health.routes');
+const { createMarketRouter } = require('./modules/market-data/market.routes');
 const { notFoundHandler, errorHandler } = require('./shared/http/error-middleware');
 
-function createApp() {
+function createApp({ marketRuntime }) {
   const app = express();
 
   if (env.trustProxy) app.set('trust proxy', 1);
@@ -38,7 +39,7 @@ function createApp() {
   }));
   app.use(express.json({ limit: '64kb' }));
 
-  app.use('/health', healthRouter);
+  app.use('/health', createHealthRouter({ marketRuntime }));
 
   app.use('/v1', rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -51,9 +52,12 @@ function createApp() {
     res.json({
       service: 'acg-trader-backend',
       apiVersion: 'v1',
-      status: 'foundation_ready',
+      status: 'market_gateway_ready',
+      market: marketRuntime.health(),
     });
   });
+
+  app.use('/v1/market', createMarketRouter(marketRuntime));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

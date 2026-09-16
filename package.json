@@ -1,11 +1,12 @@
 {
   "name": "acg-trader-backend",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Independent ACG Trader trading backend",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "test": "node --test",
     "diagnostic:twelve": "node diagnostics/twelve-data-ws.js"
   },
   "dependencies": {
