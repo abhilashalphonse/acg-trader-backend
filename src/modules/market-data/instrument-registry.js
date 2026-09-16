@@ -12,9 +12,10 @@ class InstrumentRegistry {
   }
 
   async load() {
-    const documents = await Instrument.find({ symbol: { $in: this.symbols } })
-      .setOptions({ sanitizeFilter: false })
-      .lean();
+    const documents = await Promise.all(
+      this.symbols.map(symbol => Instrument.findOne({ symbol }).lean())
+    ).then(items => items.filter(Boolean));
+
     this.items.clear();
 
     for (const symbol of this.symbols) {
