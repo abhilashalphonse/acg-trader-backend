@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const { compareDecimal } = require('../../shared/decimal/decimal');
 const { ORDER_SIDES, DEAL_TYPES } = require('./trading.constants');
 
 const { Schema } = mongoose;
@@ -12,21 +13,17 @@ const dealSchema = new Schema({
   accountId: { type: Schema.Types.ObjectId, ref: 'TradingAccount', required: true, immutable: true, index: true },
   orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true, immutable: true, index: true },
   positionId: { type: Schema.Types.ObjectId, ref: 'Position', default: null, immutable: true, index: true },
-
   symbol: { type: String, required: true, uppercase: true, trim: true, immutable: true, index: true },
   side: { type: String, required: true, enum: ORDER_SIDES, immutable: true },
   type: { type: String, required: true, enum: DEAL_TYPES, immutable: true, index: true },
-
   volume: { type: Decimal128, required: true, immutable: true },
   price: { type: Decimal128, required: true, immutable: true },
   requestedPrice: { type: Decimal128, default: null, immutable: true },
   slippage: { type: Decimal128, default: '0', immutable: true },
-
   commission: { type: Decimal128, required: true, default: '0', immutable: true },
   swap: { type: Decimal128, required: true, default: '0', immutable: true },
   realizedPnl: { type: Decimal128, required: true, default: '0', immutable: true },
-
-  quoteSequence: { type: Number, default: null, immutable: true },
+  quoteSequence: { type: Number, default: null, min: 0, immutable: true },
   executedAt: { type: Date, required: true, default: Date.now, immutable: true, index: true },
   metadata: { type: Map, of: String, default: {}, immutable: true },
 }, {
@@ -37,11 +34,21 @@ const dealSchema = new Schema({
 dealSchema.index({ accountId: 1, executedAt: -1 });
 dealSchema.index({ accountId: 1, positionId: 1, executedAt: 1 });
 
+dealSchema.pre('validate', function validateDeal(next) {
+  try {
+    if (this.volume != null && compareDecimal(this.volume, '0') <= 0) this.invalidate('volume', 'Deal volume must be greater than zero');
+    if (this.price != null && compareDecimal(this.price, '0') <= 0) this.invalidate('price', 'Deal price must be greater than zero');
+    if (this.requestedPrice != null && compareDecimal(this.requestedPrice, '0') <= 0) this.invalidate('requestedPrice', 'requestedPrice must be greater than zero');
+  } catch (error) {
+    this.invalidate('volume', error.message);
+  }
+  next();
+});
+
 dealSchema.pre('save', function preventDealMutation(next) {
   if (!this.isNew) return next(new Error('Deal records are immutable'));
   next();
 });
-
 for (const operation of ['updateOne', 'updateMany', 'findOneAndUpdate', 'replaceOne', 'deleteOne', 'deleteMany', 'findOneAndDelete']) {
   dealSchema.pre(operation, function preventDealMutationQuery(next) {
     next(new Error('Deal records are immutable'));
@@ -49,5 +56,4 @@ for (const operation of ['updateOne', 'updateMany', 'findOneAndUpdate', 'replace
 }
 
 const Deal = mongoose.models.Deal || mongoose.model('Deal', dealSchema);
-
 module.exports = { Deal, dealSchema };
