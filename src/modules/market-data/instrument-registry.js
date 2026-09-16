@@ -12,7 +12,9 @@ class InstrumentRegistry {
   }
 
   async load() {
-    const documents = await Instrument.find({ symbol: { $in: this.symbols } }).lean();
+    const documents = await Instrument.find({ symbol: { $in: this.symbols } })
+      .setOptions({ sanitizeFilter: false })
+      .lean();
     this.items.clear();
 
     for (const symbol of this.symbols) {
