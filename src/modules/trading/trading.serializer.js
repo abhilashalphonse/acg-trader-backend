@@ -34,11 +34,19 @@ function serializeOrder(doc) {
     requestedPrice: decimalString(order.requestedPrice),
     acceptedPrice: decimalString(order.acceptedPrice),
     timeInForce: order.timeInForce,
+    expiresAt: iso(order.expiresAt),
+    rejectCode: order.rejectCode || null,
+    rejectMessage: order.rejectMessage || null,
     source: order.source,
     receivedAt: iso(order.receivedAt),
     acceptedAt: iso(order.acceptedAt),
+    triggeredAt: iso(order.triggeredAt),
     filledAt: iso(order.filledAt),
+    cancelledAt: iso(order.cancelledAt),
+    expiredAt: iso(order.expiredAt),
+    rejectedAt: iso(order.rejectedAt),
     createdAt: iso(order.createdAt),
+    updatedAt: iso(order.updatedAt),
   };
 }
 
