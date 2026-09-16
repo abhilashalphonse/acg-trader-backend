@@ -2,6 +2,7 @@
 
 const { AppError } = require('../../shared/errors/app-error');
 const {
+  addDecimal,
   compareDecimal,
   subtractDecimal,
 } = require('../../shared/decimal/decimal');
@@ -211,17 +212,18 @@ class PendingOrderService {
 
   async activateStopLimit({ accountId, orderId, tick }) {
     return this.commandQueue.run(String(accountId), async () => {
+      const decisionNowMs = Date.now();
       const result = await this.runTransaction(async session => {
         const order = await this.orderModel.findById(orderId).session(session);
         if (!order || String(order.accountId) !== String(accountId)) return { skipped: true, order: order ? serializeOrder(order) : null };
         if (order.type !== 'STOP_LIMIT' || order.status !== 'PENDING') return { skipped: true, order: serializeOrder(order) };
 
-        const action = detectPendingOrderAction({ order, tick, nowMs: Date.now() });
-        if (action?.action === 'EXPIRE') return this.#expireWithinTransaction(order, session);
+        const action = detectPendingOrderAction({ order, tick, nowMs: decisionNowMs });
+        if (action?.action === 'EXPIRE') return this.#expireWithinTransaction(order, session, decisionNowMs);
         if (action?.action !== 'ACTIVATE') return { skipped: true, order: serializeOrder(order) };
 
         order.status = 'TRIGGERED';
-        order.triggeredAt = new Date();
+        order.triggeredAt = new Date(decisionNowMs);
         await order.save({ session });
         return { operation: 'STOP_LIMIT_TRIGGERED', order: serializeOrder(order), skipped: false };
       });
@@ -233,13 +235,15 @@ class PendingOrderService {
 
   async executePendingOrder({ accountId, orderId, tick }) {
     return this.commandQueue.run(String(accountId), async () => {
+      const executionNowMs = Date.now();
+      const quoteSnapshot = Object.freeze({ ...tick });
       const result = await this.runTransaction(async session => {
         const order = await this.orderModel.findById(orderId).session(session);
         if (!order || String(order.accountId) !== String(accountId)) return { skipped: true, order: order ? serializeOrder(order) : null };
         if (!ACTIVE_PENDING_STATUSES.includes(order.status)) return { skipped: true, order: serializeOrder(order) };
 
-        const action = detectPendingOrderAction({ order, tick, nowMs: Date.now() });
-        if (action?.action === 'EXPIRE') return this.#expireWithinTransaction(order, session);
+        const action = detectPendingOrderAction({ order, tick: quoteSnapshot, nowMs: executionNowMs });
+        if (action?.action === 'EXPIRE') return this.#expireWithinTransaction(order, session, executionNowMs);
         if (action?.action !== 'FILL') return { skipped: true, order: serializeOrder(order) };
 
         const account = await this.accountModel.findById(accountId).session(session);
@@ -251,24 +255,24 @@ class PendingOrderService {
           plan = planMarketOpen({
             account,
             instrument,
-            quote: tick,
+            quote: quoteSnapshot,
             side: order.side,
             volume: order.requestedVolume,
             stopLoss: order.stopLoss,
             takeProfit: order.takeProfit,
-            nowMs: Date.now(),
+            nowMs: executionNowMs,
           });
         } catch (error) {
           if (!PERMANENT_TRIGGER_REJECTIONS.has(error?.code)) throw error;
           order.status = 'REJECTED';
           order.rejectCode = error.code || 'PENDING_EXECUTION_REJECTED';
           order.rejectMessage = error.message || 'Pending order execution rejected';
-          order.rejectedAt = new Date();
+          order.rejectedAt = new Date(executionNowMs);
           await order.save({ session });
           return { operation: 'PENDING_REJECT', order: serializeOrder(order), skipped: false };
         }
 
-        const now = new Date();
+        const now = new Date(executionNowMs);
         if ((order.type === 'STOP' || order.type === 'STOP_LIMIT') && !order.triggeredAt) order.triggeredAt = now;
         order.status = 'FILLED';
         order.filledVolume = plan.volume;
@@ -313,7 +317,7 @@ class PendingOrderService {
           realizedPnl: '0',
           quoteSequence: plan.quoteSequence,
           quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null,
-          quoteSource: tick?.source || null,
+          quoteSource: quoteSnapshot.source || null,
           executedAt: now,
         });
 
@@ -324,7 +328,7 @@ class PendingOrderService {
             accountId: account._id,
             type: 'COMMISSION',
             amount: subtractDecimal('0', plan.commission),
-            balanceBefore: String(Number.NaN),
+            balanceBefore: addDecimal(account.state.balance, plan.commission),
             balanceAfter: account.state.balance,
             currency: account.currency,
             referenceType: 'DEAL',
@@ -332,7 +336,6 @@ class PendingOrderService {
             idempotencyKey: `pending:${order.orderId}:commission`,
             reason: 'Execution commission',
           }));
-          ledgers[0].balanceBefore = require('../../shared/decimal/decimal').addDecimal(account.state.balance, plan.commission);
         }
 
         await order.save({ session });
@@ -363,16 +366,16 @@ class PendingOrderService {
         if (!order || String(order.accountId) !== String(accountId)) return { skipped: true, order: order ? serializeOrder(order) : null };
         if (!ACTIVE_PENDING_STATUSES.includes(order.status)) return { skipped: true, order: serializeOrder(order) };
         if (!order.expiresAt || new Date(order.expiresAt).getTime() > nowMs) return { skipped: true, order: serializeOrder(order) };
-        return this.#expireWithinTransaction(order, session);
+        return this.#expireWithinTransaction(order, session, nowMs);
       });
       if (!result.skipped && result.operation === 'PENDING_EXPIRE') this.#emit('trading.order.expired', result.order);
       return result;
     });
   }
 
-  async #expireWithinTransaction(order, session) {
+  async #expireWithinTransaction(order, session, nowMs = Date.now()) {
     order.status = 'EXPIRED';
-    order.expiredAt = new Date();
+    order.expiredAt = new Date(nowMs);
     await order.save({ session });
     return { operation: 'PENDING_EXPIRE', order: serializeOrder(order), skipped: false };
   }
@@ -407,7 +410,13 @@ class PendingOrderService {
     try {
       await this.idempotencyService.fail(recordId, {
         failureCode: error?.code || 'COMMAND_FAILED',
-        response: { error: { statusCode: error?.statusCode || 500, code: error?.code || 'INTERNAL_ERROR', message: error?.message || 'Internal server error' } },
+        response: {
+          error: {
+            statusCode: error?.statusCode || 500,
+            code: error?.code || 'INTERNAL_ERROR',
+            message: error?.message || 'Internal server error',
+          },
+        },
       });
     } catch (failureError) {
       this.logger?.error({ err: failureError, originalError: error }, 'Failed to record pending-order idempotency failure');
