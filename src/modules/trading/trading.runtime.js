@@ -54,7 +54,14 @@ function createTradingRuntime({ marketRuntime }) {
   const positionProtectionService = new PositionProtectionService({ quoteStore: marketRuntime.quoteStore, eventBus: marketRuntime.eventBus, commandQueue, idempotencyService, logger });
   const trailingStopService = new TrailingStopService({ quoteStore: marketRuntime.quoteStore, eventBus: marketRuntime.eventBus, commandQueue, idempotencyService, logger });
   const trailingStopEngine = new TrailingStopEngine({ eventBus: marketRuntime.eventBus, trailingStopService, logger });
-  const reconciliationService = new ReconciliationService({ commandQueue, valuationEngine, pendingOrderEngine, logger });
+  const reconciliationService = new ReconciliationService({
+    commandQueue,
+    valuationEngine,
+    pendingOrderEngine,
+    protectionTriggerEngine,
+    trailingStopEngine,
+    logger,
+  });
   let started = false;
 
   return {
