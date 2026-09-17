@@ -39,16 +39,42 @@ class ReconciliationService {
     this.lastReport = null;
     this.lastRecovery = null;
     this.lastError = null;
+    this.periodicTimer = null;
+    this.periodicIntervalMs = null;
   }
 
   health() {
     return {
       running: this.running,
       state: this.lastError ? 'DEGRADED' : (this.lastReport?.issueCount ? 'ISSUES' : 'HEALTHY'),
+      periodic: {
+        enabled: Boolean(this.periodicTimer),
+        intervalMs: this.periodicIntervalMs,
+      },
       lastReport: this.lastReport ? summarizeReport(this.lastReport) : null,
       recovery: this.lastRecovery ? { ...this.lastRecovery } : null,
       lastError: this.lastError ? { message: this.lastError.message, code: this.lastError.code || null } : null,
     };
+  }
+
+  startPeriodic(intervalMs) {
+    const resolved = Number(intervalMs);
+    if (!Number.isFinite(resolved) || resolved < 1000) throw new Error('Reconciliation interval must be at least 1000ms');
+    this.stopPeriodic();
+    this.periodicIntervalMs = resolved;
+    this.periodicTimer = setInterval(() => {
+      if (this.running) return;
+      this.run({ scope: 'PERIODIC', requestedBy: 'SYSTEM' }).catch(error => {
+        if (error?.code !== 'RECONCILIATION_IN_PROGRESS') this.logger?.error({ err: error }, 'Periodic reconciliation failed');
+      });
+    }, resolved);
+    this.periodicTimer.unref?.();
+  }
+
+  stopPeriodic() {
+    if (this.periodicTimer) clearInterval(this.periodicTimer);
+    this.periodicTimer = null;
+    this.periodicIntervalMs = null;
   }
 
   async verifyRecovery({ persist = true } = {}) {
@@ -79,13 +105,8 @@ class ReconciliationService {
         if (databaseOpenPositions !== recoveredOpenPositions) issues.push(issue('RECOVERY_POSITION_COUNT_MISMATCH', 'CRITICAL', null, 'Recovered open-position count does not match MongoDB', { databaseOpenPositions, recoveredOpenPositions }));
         if (databasePendingOrders !== recoveredPendingOrders) issues.push(issue('RECOVERY_PENDING_ORDER_COUNT_MISMATCH', 'CRITICAL', null, 'Recovered pending-order count does not match MongoDB', { databasePendingOrders, recoveredPendingOrders }));
         const report = await this.#persistReport({
-          scope: 'STARTUP_RECOVERY',
-          tenantId: null,
-          requestedBy: 'SYSTEM',
-          checkedAccounts: 0,
-          issues,
-          recovery,
-          startedAt,
+          scope: 'STARTUP_RECOVERY', tenantId: null, requestedBy: 'SYSTEM', checkedAccounts: 0,
+          issues, recovery, startedAt,
         });
         this.lastReport = report;
       }
@@ -120,6 +141,7 @@ class ReconciliationService {
       }
       const report = await this.#persistReport({ scope, tenantId, requestedBy, checkedAccounts: accounts.length, issues, recovery: null, startedAt });
       this.lastReport = report;
+      this.lastError = null;
       return report;
     } catch (error) {
       this.lastError = error;
