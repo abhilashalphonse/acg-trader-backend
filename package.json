@@ -9,7 +9,6 @@
     "test": "node --test",
     "seed:instruments": "node scripts/seed-instruments.js",
     "tenant:create": "node scripts/create-tenant.js",
-    "tenant:migrate": "node scripts/migrate-multitenancy.js",
     "diagnostic:twelve": "node diagnostics/twelve-data-ws.js"
   },
   "dependencies": {
