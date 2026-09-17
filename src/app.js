@@ -14,10 +14,13 @@ const { createMarketRouter } = require('./modules/market-data/market.routes');
 const { createInstrumentRouter } = require('./modules/instruments/instrument.routes');
 const { createTradingRouter } = require('./modules/trading/trading.routes');
 const { createAccountControlRouter } = require('./modules/trading/account-control.routes');
+const { createAuthRouter } = require('./modules/auth/auth.routes');
+const { createInternalAuthRouter } = require('./modules/auth/internal-auth.routes');
 const { notFoundHandler, errorHandler } = require('./shared/http/error-middleware');
 
-function createApp({ marketRuntime, tradingRuntime }) {
+function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   const app = express();
+  const { authService } = authRuntime;
 
   if (env.trustProxy) app.set('trust proxy', 1);
   app.disable('x-powered-by');
@@ -43,32 +46,21 @@ function createApp({ marketRuntime, tradingRuntime }) {
   app.use(express.json({ limit: '64kb' }));
 
   app.use('/health', createHealthRouter({ marketRuntime }));
-
-  app.use('/v1', rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: 600,
-    standardHeaders: true,
-    legacyHeaders: false,
-  }));
+  app.use('/v1', rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: true, legacyHeaders: false }));
 
   app.get('/v1', (_req, res) => {
-    res.json({
-      service: 'acg-trader-backend',
-      apiVersion: 'v1',
-      status: 'market_execution_foundation_ready',
-      market: marketRuntime.health(),
-      trading: tradingRuntime.health(),
-    });
+    res.json({ service: 'acg-trader-backend', apiVersion: 'v1', status: 'multi_tenant_execution_platform', market: marketRuntime.health(), trading: tradingRuntime.health() });
   });
 
+  app.use('/v1/auth', createAuthRouter(authService));
+  app.use('/v1/internal/auth', createInternalAuthRouter(authService));
   app.use('/v1/instruments', createInstrumentRouter());
   app.use('/v1/market', createMarketRouter(marketRuntime));
-  app.use('/v1/trading/accounts', createAccountControlRouter(tradingRuntime));
-  app.use('/v1/trading', createTradingRouter(tradingRuntime));
+  app.use('/v1/internal/trading/accounts', createAccountControlRouter(tradingRuntime, authService));
+  app.use('/v1/trading', createTradingRouter(tradingRuntime, authService));
 
   app.use(notFoundHandler);
   app.use(errorHandler);
-
   return app;
 }
 
