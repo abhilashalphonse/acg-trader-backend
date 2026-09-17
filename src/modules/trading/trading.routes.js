@@ -59,11 +59,7 @@ const protectionSchema = z.object({
   source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
 }).strict().superRefine((value, ctx) => {
   if (value.stopLoss === undefined && value.takeProfit === undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['stopLoss'],
-      message: 'At least one of stopLoss or takeProfit must be supplied',
-    });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['stopLoss'], message: 'At least one of stopLoss or takeProfit must be supplied' });
   }
 });
 
@@ -73,28 +69,35 @@ const breakEvenSchema = z.object({
   source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
 }).strict();
 
+const trailingSchema = z.object({
+  accountId: objectId,
+  clientRequestId: z.string().trim().min(1).max(128),
+  enabled: z.boolean(),
+  distancePoints: z.union([z.string().min(1), z.number().finite(), z.null()]).optional().default(null)
+    .transform(value => value == null ? null : String(value)),
+  source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API'),
+}).strict().superRefine((value, ctx) => {
+  if (value.enabled && value.distancePoints == null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['distancePoints'], message: 'distancePoints is required when trailing is enabled' });
+  }
+});
+
 function createTradingRouter(runtime) {
   const router = express.Router();
 
-  router.get('/status', (_req, res) => {
-    res.json(runtime.health());
-  });
+  router.get('/status', (_req, res) => res.json(runtime.health()));
 
   router.get('/accounts/:accountId/valuation', requireEnabled(runtime), async (req, res) => {
     const accountId = parseObjectId(req.params.accountId);
     const valuation = await runtime.valuationEngine.getOrLoadAccountSnapshot(accountId);
-    if (!valuation) {
-      throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
-    }
+    if (!valuation) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
     res.json(valuation);
   });
 
   router.get('/positions/:positionId/valuation', requireEnabled(runtime), (req, res) => {
     const positionId = parseObjectId(req.params.positionId);
     const valuation = runtime.valuationEngine.getPositionSnapshot(positionId);
-    if (!valuation) {
-      throw new AppError('Open position valuation was not found', { statusCode: 404, code: 'POSITION_VALUATION_NOT_FOUND' });
-    }
+    if (!valuation) throw new AppError('Open position valuation was not found', { statusCode: 404, code: 'POSITION_VALUATION_NOT_FOUND' });
     res.json(valuation);
   });
 
@@ -105,42 +108,42 @@ function createTradingRouter(runtime) {
   });
 
   router.post('/orders/market', requireEnabled(runtime), async (req, res) => {
-    const command = parse(openSchema, req.body);
-    const result = await runtime.marketOrderService.openMarketOrder(command);
+    const result = await runtime.marketOrderService.openMarketOrder(parse(openSchema, req.body));
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
 
   router.post('/orders/pending', requireEnabled(runtime), async (req, res) => {
-    const command = parse(pendingSchema, req.body);
-    const result = await runtime.pendingOrderService.placePendingOrder(command);
+    const result = await runtime.pendingOrderService.placePendingOrder(parse(pendingSchema, req.body));
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
 
   router.post('/orders/:orderId/cancel', requireEnabled(runtime), async (req, res) => {
     const orderId = parseObjectId(req.params.orderId);
-    const body = parse(cancelPendingSchema, req.body);
-    const result = await runtime.pendingOrderService.cancelPendingOrder({ ...body, orderId });
+    const result = await runtime.pendingOrderService.cancelPendingOrder({ ...parse(cancelPendingSchema, req.body), orderId });
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
 
   router.patch('/positions/:positionId/protection', requireEnabled(runtime), async (req, res) => {
     const positionId = parseObjectId(req.params.positionId);
-    const body = parse(protectionSchema, req.body);
-    const result = await runtime.positionProtectionService.updateProtection({ ...body, positionId });
+    const result = await runtime.positionProtectionService.updateProtection({ ...parse(protectionSchema, req.body), positionId });
     res.status(200).json(result);
   });
 
   router.post('/positions/:positionId/break-even', requireEnabled(runtime), async (req, res) => {
     const positionId = parseObjectId(req.params.positionId);
-    const body = parse(breakEvenSchema, req.body);
-    const result = await runtime.positionProtectionService.moveStopToBreakEven({ ...body, positionId });
+    const result = await runtime.positionProtectionService.moveStopToBreakEven({ ...parse(breakEvenSchema, req.body), positionId });
+    res.status(200).json(result);
+  });
+
+  router.patch('/positions/:positionId/trailing', requireEnabled(runtime), async (req, res) => {
+    const positionId = parseObjectId(req.params.positionId);
+    const result = await runtime.trailingStopService.configure({ ...parse(trailingSchema, req.body), positionId });
     res.status(200).json(result);
   });
 
   router.post('/positions/:positionId/close', requireEnabled(runtime), async (req, res) => {
     const positionId = parseObjectId(req.params.positionId);
-    const body = parse(closeSchema, req.body);
-    const result = await runtime.marketOrderService.closeMarketPosition({ ...body, positionId });
+    const result = await runtime.marketOrderService.closeMarketPosition({ ...parse(closeSchema, req.body), positionId });
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
 
@@ -187,4 +190,5 @@ module.exports = {
   cancelPendingSchema,
   protectionSchema,
   breakEvenSchema,
+  trailingSchema,
 };

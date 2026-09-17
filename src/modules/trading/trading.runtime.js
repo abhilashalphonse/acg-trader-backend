@@ -10,15 +10,13 @@ const { ProtectionTriggerEngine } = require('./protection-trigger-engine');
 const { PendingOrderService } = require('./pending-order.service');
 const { PendingOrderEngine } = require('./pending-order-engine');
 const { PositionProtectionService } = require('./position-protection.service');
+const { TrailingStopService } = require('./trailing-stop.service');
+const { TrailingStopEngine } = require('./trailing-stop-engine');
 
 function createTradingRuntime({ marketRuntime }) {
   const commandQueue = new AccountCommandQueue();
   const idempotencyService = new IdempotencyService();
-  const valuationEngine = new ValuationEngine({
-    quoteStore: marketRuntime.quoteStore,
-    eventBus: marketRuntime.eventBus,
-    logger,
-  });
+  const valuationEngine = new ValuationEngine({ quoteStore: marketRuntime.quoteStore, eventBus: marketRuntime.eventBus, logger });
   const marketOrderService = new MarketOrderService({
     quoteStore: marketRuntime.quoteStore,
     eventBus: marketRuntime.eventBus,
@@ -27,11 +25,7 @@ function createTradingRuntime({ marketRuntime }) {
     valuationEngine,
     logger,
   });
-  const protectionTriggerEngine = new ProtectionTriggerEngine({
-    eventBus: marketRuntime.eventBus,
-    marketOrderService,
-    logger,
-  });
+  const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus: marketRuntime.eventBus, marketOrderService, logger });
   const pendingOrderService = new PendingOrderService({
     quoteStore: marketRuntime.quoteStore,
     eventBus: marketRuntime.eventBus,
@@ -40,11 +34,7 @@ function createTradingRuntime({ marketRuntime }) {
     valuationEngine,
     logger,
   });
-  const pendingOrderEngine = new PendingOrderEngine({
-    eventBus: marketRuntime.eventBus,
-    pendingOrderService,
-    logger,
-  });
+  const pendingOrderEngine = new PendingOrderEngine({ eventBus: marketRuntime.eventBus, pendingOrderService, logger });
   const positionProtectionService = new PositionProtectionService({
     quoteStore: marketRuntime.quoteStore,
     eventBus: marketRuntime.eventBus,
@@ -52,6 +42,14 @@ function createTradingRuntime({ marketRuntime }) {
     idempotencyService,
     logger,
   });
+  const trailingStopService = new TrailingStopService({
+    quoteStore: marketRuntime.quoteStore,
+    eventBus: marketRuntime.eventBus,
+    commandQueue,
+    idempotencyService,
+    logger,
+  });
+  const trailingStopEngine = new TrailingStopEngine({ eventBus: marketRuntime.eventBus, trailingStopService, logger });
 
   let started = false;
 
@@ -60,9 +58,11 @@ function createTradingRuntime({ marketRuntime }) {
     marketOrderService,
     pendingOrderService,
     positionProtectionService,
+    trailingStopService,
     valuationEngine,
     protectionTriggerEngine,
     pendingOrderEngine,
+    trailingStopEngine,
     commandQueue,
 
     async start() {
@@ -72,7 +72,13 @@ function createTradingRuntime({ marketRuntime }) {
         await protectionTriggerEngine.start();
         try {
           await pendingOrderEngine.start();
-          started = true;
+          try {
+            await trailingStopEngine.start();
+            started = true;
+          } catch (error) {
+            await pendingOrderEngine.stop();
+            throw error;
+          }
         } catch (error) {
           await protectionTriggerEngine.stop();
           throw error;
@@ -92,6 +98,7 @@ function createTradingRuntime({ marketRuntime }) {
         valuation: valuationEngine.health(),
         protection: protectionTriggerEngine.health(),
         pendingOrders: pendingOrderEngine.health(),
+        trailing: trailingStopEngine.health(),
         capabilities: {
           marketOpen: true,
           marketClose: true,
@@ -109,13 +116,14 @@ function createTradingRuntime({ marketRuntime }) {
           takeProfit: true,
           protectionManagement: true,
           breakEven: true,
-          trailing: false,
+          trailing: true,
           riskEngine: false,
         },
       };
     },
 
     async stop() {
+      await trailingStopEngine.stop();
       await pendingOrderEngine.stop();
       await protectionTriggerEngine.stop();
       await commandQueue.drainAll();
