@@ -34,11 +34,14 @@ class PendingOrderEngine {
     this.started = true;
     this.#attach();
     try {
-      const orders = await this.orderModel.find({
-        type: { $in: ['LIMIT', 'STOP', 'STOP_LIMIT'] },
-        status: { $in: ['PENDING', 'TRIGGERED'] },
-      }).lean();
-      for (const order of orders) this.#store(order);
+      // Avoid $in operator casts during startup recovery. Some supported Mongoose
+      // versions incorrectly cast the operator object as the scalar schema type.
+      // Two equality queries preserve the same recovery semantics safely.
+      const [pendingOrders, triggeredOrders] = await Promise.all([
+        this.orderModel.find({ status: 'PENDING' }).lean(),
+        this.orderModel.find({ status: 'TRIGGERED' }).lean(),
+      ]);
+      for (const order of [...pendingOrders, ...triggeredOrders]) this.#store(order);
       this.#startExpiryTimer();
       this.logger?.info({ pendingOrders: this.orders.size }, 'Pending order engine recovered');
     } catch (error) {
