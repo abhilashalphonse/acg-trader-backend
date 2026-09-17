@@ -27,10 +27,7 @@ async function syncInstrumentCatalog({ logger } = {}) {
         filter: { symbol: spec.symbol },
         update: {
           $set: managedSpec,
-          $setOnInsert: {
-            executionEnabled,
-            status,
-          },
+          $setOnInsert: { executionEnabled, status },
         },
         upsert: true,
       },
@@ -64,6 +61,8 @@ function serializeInstrument(document) {
     assetClass: doc.assetClass,
     baseCurrency: doc.baseCurrency,
     quoteCurrency: doc.quoteCurrency,
+    pnlCurrency: doc.pnlCurrency || doc.quoteCurrency,
+    marginCurrency: doc.marginCurrency || doc.quoteCurrency,
     digits: doc.digits,
     tickSize: decimal(doc.tickSize),
     pipSize: decimal(doc.pipSize),
@@ -82,6 +81,7 @@ function serializeInstrument(document) {
       markupPoints: decimal(doc.spread?.markupPoints),
     },
     tradingSessions: doc.tradingSessions || [],
+    tradingHolidays: doc.tradingHolidays || [],
     timezone: doc.timezone,
     providerMappings,
     maxQuoteAgeMs: doc.maxQuoteAgeMs,
@@ -91,8 +91,4 @@ function serializeInstrument(document) {
   };
 }
 
-module.exports = {
-  ensureInstrumentCatalog,
-  syncInstrumentCatalog,
-  serializeInstrument,
-};
+module.exports = { ensureInstrumentCatalog, syncInstrumentCatalog, serializeInstrument };
