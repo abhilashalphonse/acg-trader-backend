@@ -3,6 +3,7 @@
 const express = require('express');
 const { z } = require('zod');
 const { AppError } = require('../../shared/errors/app-error');
+const { requireServicePrincipal } = require('../auth/auth.middleware');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const decimalInput = z.union([z.string().min(1), z.number().finite()]).transform(value => String(value));
@@ -29,34 +30,44 @@ const disableSchema = restrictSchema.extend({ liquidate: z.boolean().optional() 
 const breachSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), action: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).nullable().optional() }).strict();
 const closeSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), liquidate: z.boolean().optional() }).strict();
 
-function createAccountControlRouter(runtime) {
+function createAccountControlRouter(runtime, authService) {
   const router = express.Router();
   router.use(requireEnabled(runtime));
+  router.use(requireServicePrincipal(authService, 'accounts:write'));
 
   router.post('/provision', async (req, res) => {
-    const result = await runtime.accountControlService.provision(parse(provisionSchema, req.body));
+    const result = await runtime.accountControlService.provision({ ...parse(provisionSchema, req.body), tenantId: req.servicePrincipal.tenantId });
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
   router.get('/:accountId', async (req, res) => {
-    const account = await runtime.accountControlService.getById(parseId(req.params.accountId));
-    res.json({ account });
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    res.json({ account: await runtime.accountControlService.getById(accountId) });
   });
-  router.post('/:accountId/pause', async (req, res) => res.json(await runtime.accountControlService.pause(parseId(req.params.accountId), parse(restrictSchema, req.body || {}))));
-  router.post('/:accountId/resume', async (req, res) => res.json(await runtime.accountControlService.resume(parseId(req.params.accountId), parse(z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict(), req.body || {}))));
-  router.post('/:accountId/disable', async (req, res) => res.json(await runtime.accountControlService.disable(parseId(req.params.accountId), parse(disableSchema, req.body || {}))));
-  router.post('/:accountId/breach', async (req, res) => res.json(await runtime.accountControlService.breach(parseId(req.params.accountId), parse(breachSchema, req.body || {}))));
+  router.post('/:accountId/pause', tenantCommand(runtime, 'pause', restrictSchema));
+  router.post('/:accountId/resume', tenantCommand(runtime, 'resume', z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict()));
+  router.post('/:accountId/disable', tenantCommand(runtime, 'disable', disableSchema));
+  router.post('/:accountId/breach', tenantCommand(runtime, 'breach', breachSchema));
   router.post('/:accountId/close', async (req, res) => {
     const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const options = parse(closeSchema, req.body || {});
-    if (options.liquidate === false) {
-      const openPositions = await runtime.accountControlService.positionModel.countDocuments({ accountId, status: 'OPEN' });
-      if (openPositions > 0) throw new AppError('Account has open positions and cannot be closed without liquidation', { statusCode: 409, code: 'ACCOUNT_HAS_OPEN_POSITIONS', details: { openPositions } });
-    }
     res.json(await runtime.accountControlService.close(accountId, options));
   });
   return router;
 }
 
+function tenantCommand(runtime, method, schema) {
+  return async (req, res) => {
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    res.json(await runtime.accountControlService[method](accountId, parse(schema, req.body || {})));
+  };
+}
+async function assertTenantAccount(runtime, tenantId, accountId) {
+  const account = await runtime.accountControlService.accountModel.findOne({ _id: accountId, tenantId }).select('_id').lean();
+  if (!account) throw new AppError('Trading account was not found for this tenant', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+}
 function requireEnabled(runtime) { return (_req, _res, next) => runtime.enabled ? next() : next(new AppError('Trading API is disabled', { statusCode: 503, code: 'TRADING_API_DISABLED' })); }
 function parseId(value) { const result = objectId.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
 function parse(schema, value) { const result = schema.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
