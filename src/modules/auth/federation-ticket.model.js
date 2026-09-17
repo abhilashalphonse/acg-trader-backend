@@ -9,7 +9,7 @@ const federationTicketSchema = new Schema({
   tokenHash: { type: String, required: true, unique: true, immutable: true, index: true },
   ownerExternalRef: { type: String, required: true, immutable: true, index: true },
   accountIds: [{ type: Schema.Types.ObjectId, ref: 'TradingAccount', required: true }],
-  expiresAt: { type: Date, required: true, index: true },
+  expiresAt: { type: Date, required: true },
   consumedAt: { type: Date, default: null },
   metadata: { type: Schema.Types.Mixed, default: {} },
 }, {
