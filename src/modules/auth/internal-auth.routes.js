@@ -9,7 +9,7 @@ const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB Objec
 const credentialSchema = z.object({
   login: z.string().trim().min(1).max(64).optional(),
   password: z.string().min(12).max(256).optional(),
-  mustChangePassword: z.boolean().optional().default(true),
+  mustChangePassword: z.boolean().optional().default(false),
   rotate: z.boolean().optional().default(false),
 }).strict();
 const ticketSchema = z.object({
