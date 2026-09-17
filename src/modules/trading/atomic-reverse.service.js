@@ -58,8 +58,9 @@ class AtomicReverseService {
       });
       return { ...result, valuation: this.valuationEngine?.getAccountSnapshot(normalized.accountId) || null, idempotentReplay: false };
     } catch (error) {
-      await this.#recordFailure(reservation.record._id, error);
-      throw error;
+      const translated = translateAtomicError(error);
+      await this.#recordFailure(reservation.record._id, translated);
+      throw translated;
     }
   }
 
@@ -93,7 +94,10 @@ class AtomicReverseService {
   }
 
   async #recordFailure(recordId, error) {
-    try { await this.idempotencyService.fail(recordId, { failureCode: error?.code || 'REVERSE_FAILED', response: { error: { statusCode: error?.statusCode || 500, code: error?.code || 'REVERSE_FAILED', message: error?.message || 'Atomic reverse failed', details: error?.details } } }); } catch (failureError) { this.logger?.error({ err: failureError }, 'Failed to record atomic reverse failure'); }
+    try {
+      const publicMessage = error?.statusCode >= 500 && error?.expose !== true ? 'Internal server error' : (error?.message || 'Atomic reverse failed');
+      await this.idempotencyService.fail(recordId, { failureCode: error?.code || 'REVERSE_FAILED', response: { error: { statusCode: error?.statusCode || 500, code: error?.code || 'REVERSE_FAILED', message: publicMessage, details: error?.details } } });
+    } catch (failureError) { this.logger?.error({ err: failureError }, 'Failed to record atomic reverse failure'); }
   }
 }
 
@@ -107,5 +111,11 @@ function childCommandId(parent, leg) {
 function normalizeCommand(command) { return { accountId: String(command?.accountId || '').trim(), positionId: String(command?.positionId || '').trim(), clientRequestId: String(command?.clientRequestId || '').trim(), requestedPrice: nullable(command?.requestedPrice), stopLoss: nullable(command?.stopLoss), takeProfit: nullable(command?.takeProfit), source: ['WEB', 'MOBILE', 'API'].includes(String(command?.source || '').toUpperCase()) ? String(command.source).toUpperCase() : 'API' }; }
 function nullable(value) { return value === null || value === undefined || value === '' ? null : String(value); }
 function resolveReservation(reservation, accountId, valuationEngine) { if (reservation.created) return null; if (reservation.inProgress) throw new AppError('An identical reverse command is already in progress', { statusCode: 409, code: 'COMMAND_IN_PROGRESS' }); if (reservation.record.state === 'COMPLETED') return { ...(reservation.record.response || {}), valuation: valuationEngine?.getAccountSnapshot(accountId) || null, idempotentReplay: true }; const stored = reservation.record.response?.error || {}; throw new AppError(stored.message || 'Previous reverse attempt failed', { statusCode: Number(stored.statusCode) || 409, code: stored.code || reservation.record.failureCode || 'REVERSE_FAILED', details: stored.details }); }
+function translateAtomicError(error) {
+  if (error instanceof AppError) return error;
+  if (error?.code === 20 || /Transaction numbers are only allowed|replica set/i.test(error?.message || '')) return new AppError('MongoDB transactions are unavailable; ACG Trader requires a replica-set/Atlas deployment for execution', { statusCode: 503, code: 'TRANSACTION_UNAVAILABLE' });
+  if (error?.code === 11000) return new AppError('A trading record with the same idempotency identity already exists', { statusCode: 409, code: 'TRADING_DUPLICATE' });
+  return error;
+}
 
-module.exports = { AtomicReverseService, childCommandId };
+module.exports = { AtomicReverseService, childCommandId, translateAtomicError };
