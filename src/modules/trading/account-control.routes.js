@@ -13,7 +13,7 @@ const riskPolicy = z.object({ dailyLoss: limitRule.optional(), maxLoss: limitRul
 const metadataValue = z.union([z.string(), z.number(), z.boolean()]);
 const provisionSchema = z.object({
   externalRef: z.string().trim().min(1).max(256),
-  ownerExternalRef: z.string().trim().min(1).max(256),
+  ownerExternalRef: z.string().trim().min(1).max(256).nullable().optional(),
   userId: objectId.nullable().optional(),
   accountCode: z.string().trim().min(1).max(64).optional(),
   accountType: z.enum(['DEMO', 'CHALLENGE', 'FUNDED']).optional().default('CHALLENGE'),
@@ -24,11 +24,16 @@ const provisionSchema = z.object({
   riskDayKey: z.string().trim().min(1).max(32).optional(),
   riskTimezone: z.string().trim().min(1).max(64).optional().default('UTC'),
   metadata: z.record(metadataValue).optional(),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (!value.ownerExternalRef && !value.userId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ownerExternalRef'], message: 'Either ownerExternalRef or userId is required' });
+  }
+});
 const restrictSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), cancelPending: z.boolean().optional() }).strict();
 const disableSchema = restrictSchema.extend({ liquidate: z.boolean().optional() }).strict();
 const breachSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), action: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).nullable().optional() }).strict();
 const closeSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), liquidate: z.boolean().optional() }).strict();
+const lifecycleQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(500).optional().default(100) }).strict();
 
 function createAccountControlRouter(runtime, authService) {
   const router = express.Router();
@@ -43,6 +48,31 @@ function createAccountControlRouter(runtime, authService) {
     const accountId = parseId(req.params.accountId);
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     res.json({ account: await runtime.accountControlService.getById(accountId) });
+  });
+  router.get('/:accountId/lifecycle', async (req, res) => {
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    const { limit } = parse(lifecycleQuerySchema, req.query || {});
+    const events = await runtime.accountControlService.lifecycleModel.find({
+      tenantId: req.servicePrincipal.tenantId,
+      accountId,
+    }).sort({ createdAt: -1, _id: -1 }).limit(limit).lean();
+    res.json({
+      events: events.map(event => ({
+        id: String(event._id),
+        eventId: event.eventId,
+        type: event.type,
+        fromStatus: event.fromStatus,
+        toStatus: event.toStatus,
+        tradingEnabledBefore: event.tradingEnabledBefore,
+        tradingEnabledAfter: event.tradingEnabledAfter,
+        reason: event.reason,
+        actorType: event.actorType,
+        actorRef: event.actorRef || null,
+        metadata: event.metadata instanceof Map ? Object.fromEntries(event.metadata) : (event.metadata || {}),
+        createdAt: event.createdAt ? new Date(event.createdAt).toISOString() : null,
+      })),
+    });
   });
   router.post('/:accountId/pause', tenantCommand(runtime, 'pause', restrictSchema));
   router.post('/:accountId/resume', tenantCommand(runtime, 'resume', z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict()));
@@ -73,4 +103,4 @@ function parseId(value) { const result = objectId.safeParse(value); if (!result.
 function parse(schema, value) { const result = schema.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
 function validationError(error) { return new AppError('Invalid account control command', { statusCode: 400, code: 'INVALID_ACCOUNT_CONTROL_COMMAND', details: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) }); }
 
-module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema };
+module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema, lifecycleQuerySchema };
