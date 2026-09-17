@@ -14,6 +14,7 @@ const { createMarketRouter } = require('./modules/market-data/market.routes');
 const { createInstrumentRouter } = require('./modules/instruments/instrument.routes');
 const { createTradingRouter } = require('./modules/trading/trading.routes');
 const { createAccountControlRouter } = require('./modules/trading/account-control.routes');
+const { createAccountLedgerRouter } = require('./modules/accounts/account-ledger.routes');
 const { createAuthRouter } = require('./modules/auth/auth.routes');
 const { createInternalAuthRouter } = require('./modules/auth/internal-auth.routes');
 const { notFoundHandler, errorHandler } = require('./shared/http/error-middleware');
@@ -56,6 +57,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
   app.use('/v1/instruments', createInstrumentRouter());
   app.use('/v1/market', createMarketRouter(marketRuntime));
+  app.use('/v1/internal/trading/accounts/:accountId/ledger', createAccountLedgerRouter(tradingRuntime, authService));
   app.use('/v1/internal/trading/accounts', createAccountControlRouter(tradingRuntime, authService));
   app.use('/v1/trading', createTradingRouter(tradingRuntime, authService));
 
