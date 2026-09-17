@@ -80,13 +80,13 @@ class AuthService {
     });
   }
 
-  async createNativeCredential({ tenantId, accountId, login = null, password = null, mustChangePassword = true, rotate = false }) {
+  async createNativeCredential({ tenantId, accountId, login = null, password = null, mustChangePassword = false, rotate = false }) {
     const account = await this.accountModel.findOne({ _id: String(accountId), tenantId: String(tenantId) });
     if (!account) throw new AppError('Trading account was not found for this tenant', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
 
     const rawPassword = password || generatePassword();
     validatePassword(rawPassword);
-    const resolvedLogin = String(login || account.accountCode || generateLogin()).trim();
+    const resolvedLogin = String(login || generateLogin()).trim();
     const { salt, hash } = await hashPassword(rawPassword);
     const existing = await this.credentialModel.findOne({ tenantId: account.tenantId, accountId: account._id });
 
