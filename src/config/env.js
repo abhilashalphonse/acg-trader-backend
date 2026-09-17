@@ -23,6 +23,8 @@ const schema = z.object({
   MONGODB_SERVER_SELECTION_TIMEOUT_MS: positiveInt(5000),
   INSTRUMENT_CATALOG_AUTO_SEED: booleanFromEnv.default(true),
   TRADING_API_ENABLED: booleanFromEnv.default(false),
+  RECONCILIATION_ENABLED: booleanFromEnv.default(true),
+  RECONCILIATION_INTERVAL_MS: positiveInt(300000),
   AUTH_SESSION_TTL_SECONDS: positiveInt(3600),
   AUTH_FEDERATION_TICKET_TTL_SECONDS: positiveInt(60),
   AUTH_MAX_FAILED_LOGINS: positiveInt(5),
@@ -84,6 +86,7 @@ const env = Object.freeze({
   mongoServerSelectionTimeoutMs: raw.MONGODB_SERVER_SELECTION_TIMEOUT_MS,
   instrumentCatalogAutoSeed: raw.INSTRUMENT_CATALOG_AUTO_SEED,
   tradingApiEnabled: raw.TRADING_API_ENABLED,
+  reconciliation: Object.freeze({ enabled: raw.RECONCILIATION_ENABLED, intervalMs: raw.RECONCILIATION_INTERVAL_MS }),
   auth: Object.freeze({
     sessionTtlSeconds: raw.AUTH_SESSION_TTL_SECONDS,
     federationTicketTtlSeconds: raw.AUTH_FEDERATION_TICKET_TTL_SECONDS,
