@@ -15,7 +15,7 @@ $headers = @{
   "x-acg-client-id" = $ClientId
 }
 
-Write-Host "TEST 1 — Provision demo account" -ForegroundColor Cyan
+Write-Host "TEST 1 - Provision demo account" -ForegroundColor Cyan
 
 $externalRef = "smoke-demo-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
 $ownerExternalRef = "smoke-user-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
@@ -54,9 +54,9 @@ $accountId = $provision.account.id
 if (-not $accountId) {
   throw "TEST 1 FAILED: no account id returned"
 }
-Write-Host "TEST 1 PASSED — Account ID: $accountId" -ForegroundColor Green
+Write-Host "TEST 1 PASSED - Account ID: $accountId" -ForegroundColor Green
 
-Write-Host "TEST 2 — Native credential and login" -ForegroundColor Cyan
+Write-Host "TEST 2 - Native credential and login" -ForegroundColor Cyan
 
 $credential = Invoke-RestMethod `
   -Method POST `
@@ -90,9 +90,9 @@ if (
 ) {
   throw "TEST 2 FAILED: native session is invalid"
 }
-Write-Host "TEST 2 PASSED — Native Trader login works" -ForegroundColor Green
+Write-Host "TEST 2 PASSED - Native Trader login works" -ForegroundColor Green
 
-Write-Host "TEST 3 — Federated ticket and exchange" -ForegroundColor Cyan
+Write-Host "TEST 3 - Federated ticket and exchange" -ForegroundColor Cyan
 
 $ticketBody = @{
   ownerExternalRef = $ownerExternalRef
@@ -131,7 +131,7 @@ if (
 ) {
   throw "TEST 3 FAILED: federated session is invalid"
 }
-Write-Host "TEST 3 PASSED — ACG Funded federated login works" -ForegroundColor Green
+Write-Host "TEST 3 PASSED - ACG Funded federated login works" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
