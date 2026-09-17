@@ -89,6 +89,7 @@ tradingAccountSchema.pre('validate', function requireOwner(next) {
 
 tradingAccountSchema.index({ status: 1, tradingEnabled: 1 });
 tradingAccountSchema.index({ ownerExternalRef: 1, status: 1 });
+tradingAccountSchema.index({ externalRef: 1 }, { unique: true, sparse: true });
 
 const TradingAccount = mongoose.models.TradingAccount || mongoose.model('TradingAccount', tradingAccountSchema);
 
