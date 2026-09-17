@@ -31,13 +31,11 @@ class ProtectionTriggerEngine {
     this.started = true;
     this.#attach();
     try {
-      const positions = await this.positionModel.find({
-        status: 'OPEN',
-        $or: [
-          { stopLoss: { $ne: null } },
-          { takeProfit: { $ne: null } },
-        ],
-      }).lean();
+      // Avoid querying nullable Decimal128 fields with `$ne: null`. Some
+      // Mongoose versions can attempt to cast the operator object itself as a
+      // Decimal128 value. Recover all open positions and let #store decide
+      // whether SL/TP protection is present.
+      const positions = await this.positionModel.find({ status: 'OPEN' }).lean();
       for (const position of positions) this.#store(position);
       this.logger?.info({ protectedPositions: this.positions.size }, 'SL/TP protection engine recovered');
     } catch (error) {
