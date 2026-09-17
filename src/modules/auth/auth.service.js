@@ -149,12 +149,22 @@ class AuthService {
   async exchangeFederationTicket(ticket) {
     const now = this.now();
     const tokenHash = hashToken(requiredString(ticket, 'ticket'));
-    const record = await this.federationTicketModel.findOne({ tokenHash, consumedAt: null });
-    if (!record || !record.expiresAt || record.expiresAt <= now) {
+
+    // Consume the ticket atomically. Only one concurrent exchange can match
+    // consumedAt:null, which prevents replay from creating multiple sessions.
+    const record = await this.federationTicketModel.findOneAndUpdate(
+      {
+        tokenHash,
+        consumedAt: null,
+        expiresAt: { $gt: now },
+      },
+      { $set: { consumedAt: now } },
+      { new: true },
+    );
+
+    if (!record) {
       throw new AppError('Federated login ticket is invalid or expired', { statusCode: 401, code: 'FEDERATION_TICKET_INVALID' });
     }
-    record.consumedAt = now;
-    await record.save();
 
     const tenant = await this.tenantModel.findOne({ _id: record.tenantId, status: 'ACTIVE' });
     if (!tenant) throw new AppError('Tenant is not active', { statusCode: 403, code: 'TENANT_DISABLED' });
