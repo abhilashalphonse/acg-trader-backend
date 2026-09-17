@@ -47,7 +47,7 @@ const tradingAccountSchema = new Schema({
   accountCode: { type: String, required: true, unique: true, uppercase: true, trim: true },
   userId: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   ownerExternalRef: { type: String, default: null, index: true },
-  externalRef: { type: String, default: null, index: true },
+  externalRef: { type: String, default: null },
 
   accountType: {
     type: String,
