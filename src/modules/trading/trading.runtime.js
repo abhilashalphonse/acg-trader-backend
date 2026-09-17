@@ -6,6 +6,7 @@ const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
 const { MarketOrderService } = require('./market-order.service');
 const { AccountControlService } = require('./account-control.service');
+const { AccountLedgerService } = require('../accounts/account-ledger.service');
 const { ValuationEngine } = require('./valuation-engine');
 const { ProtectionTriggerEngine } = require('./protection-trigger-engine');
 const { PendingOrderService } = require('./pending-order.service');
@@ -32,6 +33,11 @@ function createTradingRuntime({ marketRuntime }) {
     marketOrderService,
     logger,
   });
+  const accountLedgerService = new AccountLedgerService({
+    eventBus: marketRuntime.eventBus,
+    commandQueue,
+    logger,
+  });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus: marketRuntime.eventBus, marketOrderService, logger });
   const pendingOrderService = new PendingOrderService({
     quoteStore: marketRuntime.quoteStore,
@@ -52,6 +58,7 @@ function createTradingRuntime({ marketRuntime }) {
     enabled: env.tradingApiEnabled,
     marketOrderService,
     accountControlService,
+    accountLedgerService,
     pendingOrderService,
     positionProtectionService,
     trailingStopService,
@@ -97,6 +104,9 @@ function createTradingRuntime({ marketRuntime }) {
         trailing: trailingStopEngine.health(),
         capabilities: {
           accountProvisioning: true,
+          accountLifecycleAudit: true,
+          accountLedger: true,
+          accountBalanceAdjustments: true,
           accountPauseResume: true,
           accountDisable: true,
           accountBreach: true,
