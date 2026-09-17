@@ -64,7 +64,6 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
 function planMarketClose({ account, instrument, quote, position, volume = null, nowMs = Date.now(), currencyConverter = null }) {
   validateAccountForClose(account);
   validateInstrumentForClose(instrument);
-  assertInstrumentSessionOpen(instrument, nowMs);
   validateQuote(quote, instrument, nowMs);
   validateOpenPosition(position, account);
 
