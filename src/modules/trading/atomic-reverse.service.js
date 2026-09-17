@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { AppError } = require('../../shared/errors/app-error');
 const { addDecimal, subtractDecimal, compareDecimal } = require('../../shared/decimal/decimal');
 const { normalizeSymbol } = require('../market-data/market.utils');
@@ -45,7 +46,6 @@ class AtomicReverseService {
           const oppositeSide = String(position.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
           const closePlan = planMarketClose({ account, instrument, quote, position, volume: null, nowMs });
           const close = await this.#persistClose({ account, position, plan: closePlan, quote, normalized, session, nowMs, valuationComplete: valuationProjection ? valuationProjection.complete : true });
-
           const openPlan = planMarketOpen({ account, instrument, quote, side: oppositeSide, volume: originalVolume, stopLoss: normalized.stopLoss, takeProfit: normalized.takeProfit, nowMs });
           const open = await this.#persistOpen({ account, plan: openPlan, quote, normalized, session, nowMs });
           const response = { operation: 'REVERSE', atomic: true, originalPositionId: normalized.positionId, close, open, position: open.position, account: open.account };
@@ -65,21 +65,23 @@ class AtomicReverseService {
 
   async #persistClose({ account, position, plan, quote, normalized, session, nowMs, valuationComplete }) {
     const now = new Date(nowMs);
-    const order = new this.orderModel({ accountId: account._id, clientOrderId: `${normalized.clientRequestId}:close`.slice(0, 128), targetPositionId: position._id, symbol: plan.symbol, side: plan.closeSide, type: 'MARKET', status: 'FILLED', requestedVolume: plan.volume, filledVolume: plan.volume, requestedPrice: normalized.requestedPrice, acceptedPrice: plan.fillPrice, source: normalized.source, receivedAt: now, acceptedAt: now, filledAt: now });
+    const clientOrderId = childCommandId(normalized.clientRequestId, 'close');
+    const order = new this.orderModel({ accountId: account._id, clientOrderId, targetPositionId: position._id, symbol: plan.symbol, side: plan.closeSide, type: 'MARKET', status: 'FILLED', requestedVolume: plan.volume, filledVolume: plan.volume, requestedPrice: normalized.requestedPrice, acceptedPrice: plan.fillPrice, source: normalized.source, receivedAt: now, acceptedAt: now, filledAt: now });
     const deal = new this.dealModel({ accountId: account._id, orderId: order._id, positionId: position._id, symbol: plan.symbol, side: plan.closeSide, type: plan.dealType, volume: plan.volume, price: plan.fillPrice, requestedPrice: normalized.requestedPrice, slippage: calculateAdverseSlippage({ side: plan.closeSide, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice }), commission: plan.commission, swap: '0', realizedPnl: plan.realizedPnl, quoteSequence: plan.quoteSequence, quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null, quoteSource: quote?.source || null, executedAt: now });
-    const ledgers = applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId: order.clientOrderId, ledgerModel: this.ledgerModel, now, valuationComplete, closeReason: 'REVERSE' });
+    const ledgers = applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel: this.ledgerModel, now, valuationComplete, closeReason: 'REVERSE' });
     await order.save({ session }); await deal.save({ session }); await position.save({ session }); for (const ledger of ledgers) await ledger.save({ session }); await account.save({ session });
     return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
   }
 
   async #persistOpen({ account, plan, quote, normalized, session, nowMs }) {
     const now = new Date(nowMs);
-    const order = new this.orderModel({ accountId: account._id, clientOrderId: `${normalized.clientRequestId}:open`.slice(0, 128), symbol: plan.symbol, side: plan.side, type: 'MARKET', status: 'FILLED', requestedVolume: plan.volume, filledVolume: plan.volume, stopLoss: plan.stopLoss, takeProfit: plan.takeProfit, requestedPrice: normalized.requestedPrice, acceptedPrice: plan.fillPrice, source: normalized.source, receivedAt: now, acceptedAt: now, filledAt: now });
+    const clientOrderId = childCommandId(normalized.clientRequestId, 'open');
+    const order = new this.orderModel({ accountId: account._id, clientOrderId, symbol: plan.symbol, side: plan.side, type: 'MARKET', status: 'FILLED', requestedVolume: plan.volume, filledVolume: plan.volume, stopLoss: plan.stopLoss, takeProfit: plan.takeProfit, requestedPrice: normalized.requestedPrice, acceptedPrice: plan.fillPrice, source: normalized.source, receivedAt: now, acceptedAt: now, filledAt: now });
     const position = new this.positionModel({ accountId: account._id, sourceOrderId: order._id, symbol: plan.symbol, side: plan.side, status: 'OPEN', initialVolume: plan.volume, openVolume: plan.volume, entryPrice: plan.fillPrice, stopLoss: plan.stopLoss, takeProfit: plan.takeProfit, contractSize: plan.contractSize, volumeStep: plan.volumeStep, quoteCurrency: plan.quoteCurrency, margin: plan.requiredMargin, realizedPnl: '0', commissionPaid: plan.commission, swapPaid: '0', openedAt: now });
     const deal = new this.dealModel({ accountId: account._id, orderId: order._id, positionId: position._id, symbol: plan.symbol, side: plan.side, type: 'OPEN', volume: plan.volume, price: plan.fillPrice, requestedPrice: normalized.requestedPrice, slippage: calculateAdverseSlippage({ side: plan.side, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice }), commission: plan.commission, swap: '0', realizedPnl: '0', quoteSequence: plan.quoteSequence, quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null, quoteSource: quote?.source || null, executedAt: now });
     applyOpenAccountMutation(account, plan);
     const ledgers = [];
-    if (compareDecimal(plan.commission, '0') > 0) ledgers.push(new this.ledgerModel({ accountId: account._id, type: 'COMMISSION', amount: subtractDecimal('0', plan.commission), balanceBefore: addDecimal(account.state.balance, plan.commission), balanceAfter: account.state.balance, currency: account.currency, referenceType: 'DEAL', referenceId: deal.dealId, idempotencyKey: `${order.clientOrderId}:commission`, reason: 'Execution commission' }));
+    if (compareDecimal(plan.commission, '0') > 0) ledgers.push(new this.ledgerModel({ accountId: account._id, type: 'COMMISSION', amount: subtractDecimal('0', plan.commission), balanceBefore: addDecimal(account.state.balance, plan.commission), balanceAfter: account.state.balance, currency: account.currency, referenceType: 'DEAL', referenceId: deal.dealId, idempotencyKey: `${clientOrderId}:commission`, reason: 'Execution commission' }));
     await order.save({ session }); await position.save({ session }); await deal.save({ session }); for (const ledger of ledgers) await ledger.save({ session }); await account.save({ session });
     return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
   }
@@ -95,8 +97,15 @@ class AtomicReverseService {
   }
 }
 
+function childCommandId(parent, leg) {
+  const base = String(parent || '').trim();
+  const suffix = String(leg || '').trim().toLowerCase();
+  const digest = crypto.createHash('sha256').update(`${base}:${suffix}`).digest('hex').slice(0, 20);
+  const readable = base.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 92);
+  return `${readable}:${suffix}:${digest}`.slice(0, 128);
+}
 function normalizeCommand(command) { return { accountId: String(command?.accountId || '').trim(), positionId: String(command?.positionId || '').trim(), clientRequestId: String(command?.clientRequestId || '').trim(), requestedPrice: nullable(command?.requestedPrice), stopLoss: nullable(command?.stopLoss), takeProfit: nullable(command?.takeProfit), source: ['WEB', 'MOBILE', 'API'].includes(String(command?.source || '').toUpperCase()) ? String(command.source).toUpperCase() : 'API' }; }
 function nullable(value) { return value === null || value === undefined || value === '' ? null : String(value); }
 function resolveReservation(reservation, accountId, valuationEngine) { if (reservation.created) return null; if (reservation.inProgress) throw new AppError('An identical reverse command is already in progress', { statusCode: 409, code: 'COMMAND_IN_PROGRESS' }); if (reservation.record.state === 'COMPLETED') return { ...(reservation.record.response || {}), valuation: valuationEngine?.getAccountSnapshot(accountId) || null, idempotentReplay: true }; const stored = reservation.record.response?.error || {}; throw new AppError(stored.message || 'Previous reverse attempt failed', { statusCode: Number(stored.statusCode) || 409, code: stored.code || reservation.record.failureCode || 'REVERSE_FAILED', details: stored.details }); }
 
-module.exports = { AtomicReverseService };
+module.exports = { AtomicReverseService, childCommandId };
