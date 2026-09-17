@@ -5,6 +5,7 @@ const { logger } = require('../../infrastructure/logger/logger');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
 const { MarketOrderService } = require('./market-order.service');
+const { TradingCommandService } = require('./trading-command.service');
 const { AccountControlService } = require('./account-control.service');
 const { AccountLedgerService } = require('../accounts/account-ledger.service');
 const { PlatformEventRelay } = require('../integration/platform-event-relay');
@@ -35,6 +36,7 @@ function createTradingRuntime({ marketRuntime }) {
     logger,
   });
   const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus: marketRuntime.eventBus, commandQueue, idempotencyService, valuationEngine, logger });
+  const tradingCommandService = new TradingCommandService({ marketOrderService, logger });
   const accountControlService = new AccountControlService({ eventBus: marketRuntime.eventBus, commandQueue, marketOrderService, logger });
   const accountLedgerService = new AccountLedgerService({ eventBus: marketRuntime.eventBus, commandQueue, logger });
   const platformEventRelay = new PlatformEventRelay({
@@ -67,6 +69,7 @@ function createTradingRuntime({ marketRuntime }) {
   return {
     enabled: env.tradingApiEnabled,
     marketOrderService,
+    tradingCommandService,
     accountControlService,
     accountLedgerService,
     platformEventRelay,
@@ -120,7 +123,7 @@ function createTradingRuntime({ marketRuntime }) {
           platformEventRelay: true, signedPlatformWebhooks: true,
           instrumentMaster: true, tradingSessions: true, tradingHolidays: true,
           accountCurrencyConversion: true, crossCurrencyMargin: true, crossCurrencyPnl: true,
-          marketOpen: true, marketClose: true, partialClose: true, realtimeValuation: true, accountEquity: true,
+          marketOpen: true, marketClose: true, partialClose: true, serverReverse: true, serverCloseAll: true, realtimeValuation: true, accountEquity: true,
           pendingOrders: true, limitOrders: true, stopOrders: true, stopLimitOrders: true, pendingOrderExpiry: true, pendingOrderCancel: true,
           protectiveTriggers: true, stopLoss: true, takeProfit: true, protectionManagement: true, breakEven: true, trailing: true,
           reconciliation: true, periodicReconciliation: env.reconciliation.enabled, immutableReconciliationReports: true, recoveryVerification: true,
