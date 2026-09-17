@@ -18,6 +18,10 @@ const recoverySchema = new Schema({
   recoveredOpenPositions: { type: Number, default: null, immutable: true },
   databasePendingOrders: { type: Number, default: null, immutable: true },
   recoveredPendingOrders: { type: Number, default: null, immutable: true },
+  databaseProtectedPositions: { type: Number, default: null, immutable: true },
+  recoveredProtectedPositions: { type: Number, default: null, immutable: true },
+  databaseTrailingPositions: { type: Number, default: null, immutable: true },
+  recoveredTrailingPositions: { type: Number, default: null, immutable: true },
   consistent: { type: Boolean, default: null, immutable: true },
 }, { _id: false });
 
