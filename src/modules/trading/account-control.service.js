@@ -18,21 +18,35 @@ class AccountControlService {
 
   async provision(command) {
     const input = normalizeProvisionCommand(command);
-    const existing = await this.accountModel.findOne({ externalRef: input.externalRef });
+    const scope = { tenantId: input.tenantId, externalRef: input.externalRef };
+    const existing = await this.accountModel.findOne(scope);
     if (existing) return provisionResult(assertProvisionReplay(existing, input), true);
+
     const account = new this.accountModel({
-      accountCode: input.accountCode || generateAccountCode(), userId: input.userId, ownerExternalRef: input.ownerExternalRef,
-      externalRef: input.externalRef, accountType: input.accountType, currency: input.currency, leverage: input.leverage,
-      status: 'ACTIVE', tradingEnabled: true, state: buildInitialState(input.initialBalance), riskPolicy: input.riskPolicy,
-      riskDayKey: input.riskDayKey, riskTimezone: input.riskTimezone, metadata: input.metadata,
+      tenantId: input.tenantId,
+      accountCode: input.accountCode || generateAccountCode(),
+      userId: input.userId,
+      ownerExternalRef: input.ownerExternalRef,
+      externalRef: input.externalRef,
+      accountType: input.accountType,
+      currency: input.currency,
+      leverage: input.leverage,
+      status: 'ACTIVE',
+      tradingEnabled: true,
+      state: buildInitialState(input.initialBalance),
+      riskPolicy: input.riskPolicy,
+      riskDayKey: input.riskDayKey,
+      riskTimezone: input.riskTimezone,
+      metadata: input.metadata,
     });
+
     try { await account.save(); } catch (error) {
       if (error?.code !== 11000) throw error;
-      const raced = await this.accountModel.findOne({ externalRef: input.externalRef });
+      const raced = await this.accountModel.findOne(scope);
       if (!raced) throw error;
       return provisionResult(assertProvisionReplay(raced, input), true);
     }
-    this.#emit('trading.account.provisioned', serializeAccount(account));
+    this.#emit('trading.account.provisioned', serializeControlledAccount(account));
     return provisionResult(account, false);
   }
 
@@ -51,11 +65,12 @@ class AccountControlService {
       const account = await this.accountModel.findById(String(accountId));
       if (!account) throw accountNotFound();
       if (account.status === 'ACTIVE' && account.tradingEnabled === true) return controlResult(account, { changed: false });
-      if (RESTRICTED_STATUSES.has(account.status)) {
-        throw new AppError('Restricted trading account cannot be resumed', { statusCode: 409, code: 'ACCOUNT_RESUME_FORBIDDEN', details: { status: account.status } });
-      }
-      account.status = 'ACTIVE'; account.tradingEnabled = true; setControlMetadata(account, reason, this.now()); await account.save();
-      this.#emit('trading.account.resumed', serializeAccount(account));
+      if (RESTRICTED_STATUSES.has(account.status)) throw new AppError('Restricted trading account cannot be resumed', { statusCode: 409, code: 'ACCOUNT_RESUME_FORBIDDEN', details: { status: account.status } });
+      account.status = 'ACTIVE';
+      account.tradingEnabled = true;
+      setControlMetadata(account, reason, this.now());
+      await account.save();
+      this.#emit('trading.account.resumed', serializeControlledAccount(account));
       return controlResult(account, { changed: true });
     });
   }
@@ -80,17 +95,21 @@ class AccountControlService {
     const account = await this.accountModel.findById(String(accountId));
     if (!account) throw accountNotFound();
     if (account.status === 'CLOSED') return { ...controlResult(account, { changed: false }), liquidation: [] };
-    await this.#restrict(accountId, { status: 'DISABLED', reason: `${reason}:PRE_CLOSE`, cancelPending: true, event: 'trading.account.closing' });
-    const liquidation = liquidate ? await this.#liquidate(accountId) : [];
     if (!liquidate) {
       const openCount = await this.positionModel.countDocuments({ accountId: String(accountId), status: 'OPEN' });
       if (openCount > 0) throw new AppError('Account has open positions and cannot be closed without liquidation', { statusCode: 409, code: 'ACCOUNT_HAS_OPEN_POSITIONS', details: { openPositions: openCount } });
     }
+    await this.#restrict(accountId, { status: 'DISABLED', reason: `${reason}:PRE_CLOSE`, cancelPending: true, event: 'trading.account.closing' });
+    const liquidation = liquidate ? await this.#liquidate(accountId) : [];
     return this.commandQueue.run(String(accountId), async () => {
       const current = await this.accountModel.findById(String(accountId));
       if (!current) throw accountNotFound();
-      current.status = 'CLOSED'; current.tradingEnabled = false; current.closedAt = this.now(); setControlMetadata(current, reason, this.now()); await current.save();
-      this.#emit('trading.account.closed', serializeAccount(current));
+      current.status = 'CLOSED';
+      current.tradingEnabled = false;
+      current.closedAt = this.now();
+      setControlMetadata(current, reason, this.now());
+      await current.save();
+      this.#emit('trading.account.closed', serializeControlledAccount(current));
       return { ...controlResult(current, { changed: true }), liquidation };
     });
   }
@@ -102,16 +121,23 @@ class AccountControlService {
       if (account.status === 'CLOSED' && status !== 'CLOSED') throw new AppError('Closed trading account cannot change lifecycle state', { statusCode: 409, code: 'ACCOUNT_CLOSED' });
       const now = this.now();
       const alreadyApplied = account.status === status && account.tradingEnabled === false;
-      account.status = status; account.tradingEnabled = false; if (breach && !account.breachedAt) account.breachedAt = now; setControlMetadata(account, reason, now); await account.save();
+      account.status = status;
+      account.tradingEnabled = false;
+      if (breach && !account.breachedAt) account.breachedAt = now;
+      setControlMetadata(account, reason, now);
+      await account.save();
       let cancelledPending = 0;
       if (cancelPending) cancelledPending = await this.#cancelPending(account._id, reason, now);
-      this.#emit(event, serializeAccount(account));
+      this.#emit(event, serializeControlledAccount(account));
       return controlResult(account, { changed: !alreadyApplied, cancelledPending });
     });
   }
 
   async #cancelPending(accountId, reason, now) {
-    const result = await this.orderModel.updateMany({ accountId, status: { $in: ['PENDING', 'TRIGGERED'] } }, { $set: { status: 'CANCELLED', cancelledAt: now, rejectCode: null, rejectMessage: null, 'metadata.controlCancellationReason': String(reason) } });
+    const result = await this.orderModel.updateMany(
+      { accountId, status: { $in: ['PENDING', 'TRIGGERED'] } },
+      { $set: { status: 'CANCELLED', cancelledAt: now, rejectCode: null, rejectMessage: null, 'metadata.controlCancellationReason': String(reason) } },
+    );
     return result.modifiedCount ?? result.nModified ?? 0;
   }
 
@@ -132,10 +158,13 @@ class AccountControlService {
     return results;
   }
 
-  #emit(name, payload) { try { this.eventBus?.emit(name, payload); } catch (error) { this.logger?.error({ err: error, event: name }, 'Account control event listener failed'); } }
+  #emit(name, payload) {
+    try { this.eventBus?.emit(name, payload); } catch (error) { this.logger?.error({ err: error, event: name }, 'Account control event listener failed'); }
+  }
 }
 
 function normalizeProvisionCommand(command) {
+  const tenantId = requiredString(command?.tenantId, 'tenantId');
   const externalRef = requiredString(command?.externalRef, 'externalRef');
   const ownerExternalRef = command?.ownerExternalRef == null ? null : requiredString(command.ownerExternalRef, 'ownerExternalRef');
   const userId = command?.userId == null ? null : String(command.userId).trim();
@@ -146,18 +175,45 @@ function normalizeProvisionCommand(command) {
   if (!Number.isInteger(leverage) || leverage < 1) throw new AppError('leverage must be a positive integer', { statusCode: 400, code: 'INVALID_LEVERAGE' });
   const accountType = String(command?.accountType || 'CHALLENGE').toUpperCase();
   if (!['DEMO', 'CHALLENGE', 'FUNDED'].includes(accountType)) throw new AppError('Invalid accountType', { statusCode: 400, code: 'INVALID_ACCOUNT_TYPE' });
-  return { externalRef, ownerExternalRef, userId: userId || null, accountCode: command?.accountCode ? requiredString(command.accountCode, 'accountCode').toUpperCase() : null, accountType, currency: String(command?.currency || 'USD').toUpperCase(), leverage, initialBalance, riskPolicy: normalizeRiskPolicy(command?.riskPolicy), riskDayKey: String(command?.riskDayKey || utcDayKey()).trim(), riskTimezone: String(command?.riskTimezone || 'UTC').trim(), metadata: normalizeMetadata(command?.metadata) };
+  return {
+    tenantId,
+    externalRef,
+    ownerExternalRef,
+    userId: userId || null,
+    accountCode: command?.accountCode ? requiredString(command.accountCode, 'accountCode').toUpperCase() : null,
+    accountType,
+    currency: String(command?.currency || 'USD').toUpperCase(),
+    leverage,
+    initialBalance,
+    riskPolicy: normalizeRiskPolicy(command?.riskPolicy),
+    riskDayKey: String(command?.riskDayKey || utcDayKey()).trim(),
+    riskTimezone: String(command?.riskTimezone || 'UTC').trim(),
+    metadata: normalizeMetadata(command?.metadata),
+  };
 }
 
 function normalizeRiskPolicy(policy = {}) {
-  const dailyLimit = normalizeDecimal(policy?.dailyLoss?.limit ?? '0'); const maxLimit = normalizeDecimal(policy?.maxLoss?.limit ?? '0'); const profitTarget = normalizeDecimal(policy?.profitTarget ?? '0');
-  for (const [field, value] of [['dailyLoss.limit', dailyLimit], ['maxLoss.limit', maxLimit], ['profitTarget', profitTarget]]) if (compareDecimal(value, '0') < 0) throw new AppError(`${field} cannot be negative`, { statusCode: 400, code: 'INVALID_RISK_POLICY' });
-  return { dailyLoss: { limit: dailyLimit, reference: String(policy?.dailyLoss?.reference || 'DAILY_START_EQUITY') }, maxLoss: { limit: maxLimit, reference: String(policy?.maxLoss?.reference || 'INITIAL_BALANCE') }, profitTarget, breachAction: String(policy?.breachAction || 'LIQUIDATE_AND_LOCK').toUpperCase(), maxOpenPositions: policy?.maxOpenPositions ?? null, maxTotalVolume: policy?.maxTotalVolume == null ? null : normalizeDecimal(policy.maxTotalVolume), allowedSymbols: Array.isArray(policy?.allowedSymbols) ? policy.allowedSymbols.map(value => String(value).replace('/', '').toUpperCase()) : [] };
+  const dailyLimit = normalizeDecimal(policy?.dailyLoss?.limit ?? '0');
+  const maxLimit = normalizeDecimal(policy?.maxLoss?.limit ?? '0');
+  const profitTarget = normalizeDecimal(policy?.profitTarget ?? '0');
+  for (const [field, value] of [['dailyLoss.limit', dailyLimit], ['maxLoss.limit', maxLimit], ['profitTarget', profitTarget]]) {
+    if (compareDecimal(value, '0') < 0) throw new AppError(`${field} cannot be negative`, { statusCode: 400, code: 'INVALID_RISK_POLICY' });
+  }
+  return {
+    dailyLoss: { limit: dailyLimit, reference: String(policy?.dailyLoss?.reference || 'DAILY_START_EQUITY') },
+    maxLoss: { limit: maxLimit, reference: String(policy?.maxLoss?.reference || 'INITIAL_BALANCE') },
+    profitTarget,
+    breachAction: String(policy?.breachAction || 'LIQUIDATE_AND_LOCK').toUpperCase(),
+    maxOpenPositions: policy?.maxOpenPositions ?? null,
+    maxTotalVolume: policy?.maxTotalVolume == null ? null : normalizeDecimal(policy.maxTotalVolume),
+    allowedSymbols: Array.isArray(policy?.allowedSymbols) ? policy.allowedSymbols.map(value => String(value).replace('/', '').toUpperCase()) : [],
+  };
 }
 
 function buildInitialState(initialBalance) { return { initialBalance, balance: initialBalance, equity: initialBalance, floatingPnl: '0', realizedPnlToday: '0', usedMargin: '0', freeMargin: initialBalance, dailyStartEquity: initialBalance }; }
 function assertProvisionReplay(account, input) {
   const mismatches = [];
+  if (String(account.tenantId || '') !== String(input.tenantId || '')) mismatches.push('tenantId');
   if (String(account.ownerExternalRef || '') !== String(input.ownerExternalRef || '')) mismatches.push('ownerExternalRef');
   if (String(account.accountType || '') !== input.accountType) mismatches.push('accountType');
   if (String(account.currency || '') !== input.currency) mismatches.push('currency');
@@ -167,7 +223,7 @@ function assertProvisionReplay(account, input) {
   return account;
 }
 function setControlMetadata(account, reason, at) { if (!(account.metadata instanceof Map)) account.metadata = new Map(Object.entries(account.metadata || {})); account.metadata.set('lastControlReason', String(reason)); account.metadata.set('lastControlAt', at.toISOString()); }
-function serializeControlledAccount(account) { return { ...serializeAccount(account), ownerExternalRef: account.ownerExternalRef || null, externalRef: account.externalRef || null, riskDayKey: account.riskDayKey || null, riskTimezone: account.riskTimezone || 'UTC', breachedAt: account.breachedAt ? new Date(account.breachedAt).toISOString() : null, closedAt: account.closedAt ? new Date(account.closedAt).toISOString() : null }; }
+function serializeControlledAccount(account) { return { ...serializeAccount(account), tenantId: account.tenantId ? String(account.tenantId) : null, ownerExternalRef: account.ownerExternalRef || null, externalRef: account.externalRef || null, riskDayKey: account.riskDayKey || null, riskTimezone: account.riskTimezone || 'UTC', breachedAt: account.breachedAt ? new Date(account.breachedAt).toISOString() : null, closedAt: account.closedAt ? new Date(account.closedAt).toISOString() : null }; }
 function provisionResult(account, idempotentReplay) { return { account: serializeControlledAccount(account), idempotentReplay }; }
 function controlResult(account, extra = {}) { return { account: serializeControlledAccount(account), ...extra }; }
 function requiredString(value, field) { const text = String(value ?? '').trim(); if (!text) throw new AppError(`${field} is required`, { statusCode: 400, code: 'INVALID_ACCOUNT_CONTROL_COMMAND' }); return text; }

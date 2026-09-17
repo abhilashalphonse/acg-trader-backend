@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { addDecimal, compareDecimal } = require('../../shared/decimal/decimal');
 const { LEDGER_TYPES } = require('./trading.constants');
-
+const { applyTenantScope } = require('./tenant-scope.plugin');
 const { Schema } = mongoose;
 const Decimal128 = Schema.Types.Decimal128;
 
@@ -21,16 +21,11 @@ const accountLedgerSchema = new Schema({
   idempotencyKey: { type: String, default: null, trim: true, maxlength: 128, immutable: true },
   reason: { type: String, default: null, maxlength: 512, immutable: true },
   metadata: { type: Map, of: String, default: {}, immutable: true },
-}, {
-  timestamps: { createdAt: 'createdAt', updatedAt: false },
-  versionKey: false,
-});
+}, { timestamps: { createdAt: 'createdAt', updatedAt: false }, versionKey: false });
 
-accountLedgerSchema.index({ accountId: 1, createdAt: 1, _id: 1 });
-accountLedgerSchema.index(
-  { accountId: 1, idempotencyKey: 1 },
-  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
-);
+applyTenantScope(accountLedgerSchema);
+accountLedgerSchema.index({ tenantId: 1, accountId: 1, createdAt: 1, _id: 1 });
+accountLedgerSchema.index({ tenantId: 1, accountId: 1, idempotencyKey: 1 }, { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } });
 
 accountLedgerSchema.pre('validate', function validateLedgerMath(next) {
   try {
@@ -38,21 +33,11 @@ accountLedgerSchema.pre('validate', function validateLedgerMath(next) {
       const expected = addDecimal(this.balanceBefore, this.amount);
       if (compareDecimal(expected, this.balanceAfter) !== 0) this.invalidate('balanceAfter', 'balanceAfter must equal balanceBefore + amount');
     }
-  } catch (error) {
-    this.invalidate('amount', error.message);
-  }
+  } catch (error) { this.invalidate('amount', error.message); }
   next();
 });
-
-accountLedgerSchema.pre('save', function preventLedgerMutation(next) {
-  if (!this.isNew) return next(new Error('Account ledger records are immutable'));
-  next();
-});
-for (const operation of ['updateOne', 'updateMany', 'findOneAndUpdate', 'replaceOne', 'deleteOne', 'deleteMany', 'findOneAndDelete']) {
-  accountLedgerSchema.pre(operation, function preventLedgerMutationQuery(next) {
-    next(new Error('Account ledger records are immutable'));
-  });
-}
+accountLedgerSchema.pre('save', function preventLedgerMutation(next) { if (!this.isNew) return next(new Error('Account ledger records are immutable')); next(); });
+for (const operation of ['updateOne', 'updateMany', 'findOneAndUpdate', 'replaceOne', 'deleteOne', 'deleteMany', 'findOneAndDelete']) accountLedgerSchema.pre(operation, function preventLedgerMutationQuery(next) { next(new Error('Account ledger records are immutable')); });
 
 const AccountLedger = mongoose.models.AccountLedger || mongoose.model('AccountLedger', accountLedgerSchema);
 module.exports = { AccountLedger, accountLedgerSchema };
