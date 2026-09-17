@@ -2,8 +2,15 @@
 
 const { WebSocketServer, WebSocket } = require('ws');
 const { normalizeSymbol } = require('../modules/market-data/market.utils');
+const { TraderStateService } = require('./trader-state.service');
 
-function createMarketWebSocketServer({ server, runtime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, logger }) {
+const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024;
+const MAX_SYNC_BUFFER_EVENTS = 1000;
+const AUTH_REVALIDATE_MS = 60_000;
+
+function createMarketWebSocketServer({ server, runtime, tradingRuntime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, logger }) {
+  if (!tradingRuntime?.valuationEngine) throw new Error('tradingRuntime with valuationEngine is required');
+  const traderStateService = new TraderStateService({ valuationEngine: tradingRuntime.valuationEngine });
   const wss = new WebSocketServer({
     noServer: true,
     perMessageDeflate: false,
@@ -32,6 +39,7 @@ function createMarketWebSocketServer({ server, runtime, authService, path, corsO
     try {
       const token = websocketAccessToken(request);
       if (!token) { rejectUpgrade(socket, 401, 'Unauthorized'); return; }
+      request.traderAccessToken = token;
       request.traderPrincipal = await authService.authenticateSessionToken(token);
     } catch {
       rejectUpgrade(socket, 401, 'Unauthorized');
@@ -44,33 +52,88 @@ function createMarketWebSocketServer({ server, runtime, authService, path, corsO
   wss.on('connection', (socket, request) => {
     socket.isAlive = true;
     socket.traderPrincipal = request.traderPrincipal;
-    subscriptions.set(socket, { quotes: new Set(), ticks: new Set(), candles: new Set() });
+    socket.traderAccessToken = request.traderAccessToken;
+    socket.lastAuthCheckAt = Date.now();
+    const grantedAccounts = new Set(socket.traderPrincipal.accountIds.map(String));
+    subscriptions.set(socket, {
+      quotes: new Set(),
+      ticks: new Set(),
+      candles: new Set(),
+      accounts: new Set(grantedAccounts),
+      syncingAccounts: new Set(grantedAccounts),
+      pendingAccountEvents: [],
+    });
     socket.on('pong', () => { socket.isAlive = true; });
     send(socket, 'connection.ready', {
       service: 'acg-trader-backend',
       tenantId: socket.traderPrincipal.tenantId,
       accounts: socket.traderPrincipal.accountIds,
+      sessionExpiresAt: socket.traderPrincipal.expiresAt,
       marketGateway: runtime.health(),
-      capabilities: { symbols: runtime.symbols, timeframes: runtime.timeframes, actions: ['subscribe', 'unsubscribe', 'status', 'ping'] },
+      capabilities: {
+        symbols: runtime.symbols,
+        timeframes: runtime.timeframes,
+        marketChannels: ['quote', 'tick', 'candle'],
+        tradingChannels: ['account', 'valuation', 'order', 'fill', 'position', 'control'],
+        actions: ['subscribe', 'unsubscribe', 'snapshot', 'status', 'ping'],
+      },
     });
+
+    void syncAccounts(socket, [...grantedAccounts], 'initial').catch(error => {
+      logger.error({ err: error, sessionId: socket.traderPrincipal?.sessionId }, 'Initial trader WebSocket state sync failed');
+      send(socket, 'error', { code: error?.code || 'STATE_SYNC_FAILED', message: 'Unable to synchronize trading state' });
+      socket.close(1011, 'State synchronization failed');
+    });
+
     socket.on('message', buffer => {
-      if (buffer.length > 16 * 1024) { socket.close(1009, 'Message too large'); return; }
+      if (buffer.length > MAX_CLIENT_MESSAGE_BYTES) { socket.close(1009, 'Message too large'); return; }
       let message;
       try { message = JSON.parse(buffer.toString()); } catch { send(socket, 'error', { code: 'INVALID_JSON', message: 'WebSocket message must be valid JSON' }); return; }
-      handleClientMessage(socket, message);
+      void handleClientMessage(socket, message).catch(error => {
+        logger.debug({ err: error }, 'Trader WebSocket client command failed');
+        send(socket, 'error', { code: error?.code || 'WEBSOCKET_COMMAND_FAILED', message: error?.message || 'WebSocket command failed' });
+      });
     });
-    socket.on('error', error => logger.debug({ err: error }, 'Market WebSocket client error'));
+    socket.on('error', error => logger.debug({ err: error }, 'Trader WebSocket client error'));
   });
 
-  function handleClientMessage(socket, message) {
+  async function handleClientMessage(socket, message) {
     const action = String(message?.action || '').toLowerCase();
     if (action === 'ping') { send(socket, 'pong', { clientTimestamp: message?.timestamp ?? null }); return; }
-    if (action === 'status') { send(socket, 'market.status.snapshot', runtime.health()); return; }
-    if (!['subscribe', 'unsubscribe'].includes(action)) { send(socket, 'error', { code: 'INVALID_ACTION', message: 'Supported actions: subscribe, unsubscribe, status, ping' }); return; }
+    if (action === 'status') {
+      const state = subscriptions.get(socket);
+      send(socket, 'connection.status', {
+        market: runtime.health(),
+        accounts: [...state.accounts],
+        quotes: [...state.quotes],
+        ticks: [...state.ticks],
+        candles: [...state.candles],
+      });
+      return;
+    }
+    if (action === 'snapshot') {
+      const requested = normalizeAccountIds(message?.params?.accounts, socket.traderPrincipal.accountIds);
+      const accepted = validateAccountGrants(socket, requested);
+      await syncAccounts(socket, accepted, 'requested');
+      return;
+    }
+    if (!['subscribe', 'unsubscribe'].includes(action)) {
+      send(socket, 'error', { code: 'INVALID_ACTION', message: 'Supported actions: subscribe, unsubscribe, snapshot, status, ping' });
+      return;
+    }
+
     const state = subscriptions.get(socket);
     const requested = normalizeSubscriptionParams(message.params || {});
-    const accepted = { quotes: [], ticks: [], candles: [] };
+    const accepted = { quotes: [], ticks: [], candles: [], accounts: [] };
     const rejected = [];
+
+    for (const accountId of requested.accounts) {
+      if (!socket.traderPrincipal.accountIds.includes(accountId)) rejected.push({ channel: 'account', accountId, reason: 'ACCOUNT_ACCESS_FORBIDDEN' });
+      else {
+        state.accounts[action === 'subscribe' ? 'add' : 'delete'](accountId);
+        accepted.accounts.push(accountId);
+      }
+    }
     for (const symbol of requested.quotes) {
       if (!runtime.symbols.includes(symbol)) rejected.push({ channel: 'quote', symbol, reason: 'SYMBOL_NOT_CONFIGURED' });
       else { state.quotes[action === 'subscribe' ? 'add' : 'delete'](symbol); accepted.quotes.push(symbol); }
@@ -85,17 +148,93 @@ function createMarketWebSocketServer({ server, runtime, authService, path, corsO
       else { const key = `${item.symbol}:${item.timeframe}`; state.candles[action === 'subscribe' ? 'add' : 'delete'](key); accepted.candles.push(item); }
     }
     send(socket, 'subscription.status', { action, accepted, rejected });
+
     if (action === 'subscribe') {
       for (const symbol of accepted.quotes) { const quote = runtime.quoteStore.get(symbol); if (quote) send(socket, 'market.quote', quote, { lossy: true }); }
       for (const item of accepted.candles) { const candle = runtime.candleEngine.getCurrent(item.symbol, item.timeframe); if (candle) send(socket, 'market.candle.update', candle, { lossy: true }); }
+      if (accepted.accounts.length) await syncAccounts(socket, accepted.accounts, 'subscription');
+    } else {
+      for (const accountId of accepted.accounts) {
+        state.syncingAccounts.delete(accountId);
+        state.pendingAccountEvents = state.pendingAccountEvents.filter(item => item.accountId !== accountId);
+      }
     }
+  }
+
+  async function syncAccounts(socket, accountIds, reason) {
+    const state = subscriptions.get(socket);
+    if (!state) return;
+    const ids = validateAccountGrants(socket, accountIds).filter(id => state.accounts.has(id));
+    if (!ids.length) {
+      send(socket, 'trading.state.snapshot', { reason, accounts: [] });
+      return;
+    }
+    for (const id of ids) state.syncingAccounts.add(id);
+    try {
+      const snapshots = await traderStateService.snapshotAccounts({
+        tenantId: socket.traderPrincipal.tenantId,
+        accountIds: ids,
+      });
+      send(socket, 'trading.state.snapshot', { reason, accounts: snapshots });
+    } finally {
+      for (const id of ids) state.syncingAccounts.delete(id);
+      flushPendingAccountEvents(socket, new Set(ids));
+    }
+  }
+
+  function validateAccountGrants(socket, accountIds) {
+    const grants = new Set(socket.traderPrincipal.accountIds.map(String));
+    const ids = [...new Set((accountIds || []).map(String).filter(Boolean))];
+    const forbidden = ids.find(id => !grants.has(id));
+    if (forbidden) {
+      const error = new Error('Trading session does not grant access to this account');
+      error.code = 'ACCOUNT_ACCESS_FORBIDDEN';
+      throw error;
+    }
+    return ids;
   }
 
   function normalizeSubscriptionParams(params) {
     const quotes = Array.isArray(params.quotes) ? params.quotes.map(normalizeSymbol).filter(Boolean) : [];
     const ticks = Array.isArray(params.ticks) ? params.ticks.map(normalizeSymbol).filter(Boolean) : [];
-    const candles = Array.isArray(params.candles) ? params.candles.flatMap(item => { const symbol = normalizeSymbol(item?.symbol); const timeframe = String(item?.timeframe || '').toLowerCase(); return symbol && timeframe ? [{ symbol, timeframe }] : []; }) : [];
-    return { quotes: [...new Set(quotes)], ticks: [...new Set(ticks)], candles };
+    const accounts = normalizeAccountIds(params.accounts, []);
+    const candles = Array.isArray(params.candles) ? params.candles.flatMap(item => {
+      const symbol = normalizeSymbol(item?.symbol);
+      const timeframe = String(item?.timeframe || '').toLowerCase();
+      return symbol && timeframe ? [{ symbol, timeframe }] : [];
+    }) : [];
+    return { quotes: [...new Set(quotes)], ticks: [...new Set(ticks)], candles, accounts };
+  }
+
+  function normalizeAccountIds(value, fallback) {
+    if (value == null) return [...new Set((fallback || []).map(String).filter(Boolean))];
+    return Array.isArray(value) ? [...new Set(value.map(item => String(item || '').trim()).filter(Boolean))] : [];
+  }
+
+  function routeAccountEvent(type, payload) {
+    const accountId = accountIdFromPayload(payload);
+    if (!accountId) return;
+    for (const socket of wss.clients) {
+      const state = subscriptions.get(socket);
+      if (!state?.accounts.has(accountId)) continue;
+      if (state.syncingAccounts.has(accountId)) {
+        if (state.pendingAccountEvents.length >= MAX_SYNC_BUFFER_EVENTS) { socket.close(1013, 'State synchronization overflow'); continue; }
+        state.pendingAccountEvents.push({ accountId, type, data: payload });
+        continue;
+      }
+      send(socket, type, payload);
+    }
+  }
+
+  function flushPendingAccountEvents(socket, accountIds) {
+    const state = subscriptions.get(socket);
+    if (!state?.pendingAccountEvents.length) return;
+    const remaining = [];
+    for (const item of state.pendingAccountEvents) {
+      if (accountIds.has(item.accountId) && state.accounts.has(item.accountId)) send(socket, item.type, item.data);
+      else remaining.push(item);
+    }
+    state.pendingAccountEvents = remaining;
   }
 
   const broadcastQuote = quote => { for (const socket of wss.clients) if (subscriptions.get(socket)?.quotes.has(quote.symbol)) send(socket, 'market.quote', quote, { lossy: true }); };
@@ -103,6 +242,36 @@ function createMarketWebSocketServer({ server, runtime, authService, path, corsO
   const broadcastCandleUpdate = candle => { const key = `${candle.symbol}:${candle.timeframe}`; for (const socket of wss.clients) if (subscriptions.get(socket)?.candles.has(key)) send(socket, 'market.candle.update', candle, { lossy: true }); };
   const broadcastCandleClosed = candle => { const key = `${candle.symbol}:${candle.timeframe}`; for (const socket of wss.clients) if (subscriptions.get(socket)?.candles.has(key)) send(socket, 'market.candle.closed', candle); };
   const broadcastStatus = status => { for (const socket of wss.clients) send(socket, 'market.status', status); };
+
+  const eventRoutes = new Map([
+    ['trading.order.accepted', ['trading.order', payload => ({ event: 'accepted', order: payload })]],
+    ['trading.order.pending', ['trading.order', payload => ({ event: 'pending', order: payload })]],
+    ['trading.order.triggered', ['trading.order', payload => ({ event: 'triggered', order: payload })]],
+    ['trading.order.filled', ['trading.order', payload => ({ event: 'filled', order: payload })]],
+    ['trading.order.cancelled', ['trading.order', payload => ({ event: 'cancelled', order: payload })]],
+    ['trading.order.expired', ['trading.order', payload => ({ event: 'expired', order: payload })]],
+    ['trading.order.rejected', ['trading.order', payload => ({ event: 'rejected', order: payload })]],
+    ['trading.deal.created', ['trading.fill', payload => ({ event: 'created', fill: payload })]],
+    ['trading.position.opened', ['trading.position', payload => ({ event: 'opened', position: payload })]],
+    ['trading.position.updated', ['trading.position', payload => ({ event: 'updated', position: payload })]],
+    ['trading.position.closed', ['trading.position', payload => ({ event: 'closed', position: payload })]],
+    ['trading.account.updated', ['trading.account', payload => ({ event: 'updated', account: payload })]],
+    ['valuation.account.updated', ['trading.account.valuation', payload => payload]],
+    ['trading.account.balance.updated', ['trading.account.balance', payload => payload]],
+    ['trading.account.paused', ['trading.account.control', payload => ({ event: 'paused', account: payload })]],
+    ['trading.account.resumed', ['trading.account.control', payload => ({ event: 'resumed', account: payload })]],
+    ['trading.account.disabled', ['trading.account.control', payload => ({ event: 'disabled', account: payload })]],
+    ['trading.account.breached', ['trading.account.control', payload => ({ event: 'breached', account: payload })]],
+    ['trading.account.closing', ['trading.account.control', payload => ({ event: 'closing', account: payload })]],
+    ['trading.account.closed', ['trading.account.control', payload => ({ event: 'closed', account: payload })]],
+  ]);
+  const tradingListeners = [];
+  for (const [sourceEvent, [targetType, transform]] of eventRoutes) {
+    const listener = payload => routeAccountEvent(targetType, transform(payload));
+    runtime.eventBus.on(sourceEvent, listener);
+    tradingListeners.push([sourceEvent, listener]);
+  }
+
   runtime.eventBus.on('market.quote', broadcastQuote);
   runtime.eventBus.on('market.tick', broadcastTick);
   runtime.eventBus.on('market.candle.update', broadcastCandleUpdate);
@@ -112,25 +281,51 @@ function createMarketWebSocketServer({ server, runtime, authService, path, corsO
   const heartbeatTimer = setInterval(() => {
     for (const socket of wss.clients) {
       if (socket.isAlive === false) { socket.terminate(); continue; }
+      if (new Date(socket.traderPrincipal.expiresAt).getTime() <= Date.now()) { socket.close(4001, 'Trading session expired'); continue; }
+      if (Date.now() - socket.lastAuthCheckAt >= AUTH_REVALIDATE_MS) {
+        socket.lastAuthCheckAt = Date.now();
+        void authService.authenticateSessionToken(socket.traderAccessToken).then(principal => {
+          socket.traderPrincipal = principal;
+        }).catch(() => socket.close(4001, 'Trading session invalid'));
+      }
       socket.isAlive = false;
       socket.ping();
     }
   }, pingIntervalMs);
   heartbeatTimer.unref?.();
 
-  return { async close() {
-    if (closed) return;
-    closed = true;
-    clearInterval(heartbeatTimer);
-    server.off('upgrade', upgradeHandler);
-    runtime.eventBus.off('market.quote', broadcastQuote);
-    runtime.eventBus.off('market.tick', broadcastTick);
-    runtime.eventBus.off('market.candle.update', broadcastCandleUpdate);
-    runtime.eventBus.off('market.candle.closed', broadcastCandleClosed);
-    runtime.eventBus.off('market.status', broadcastStatus);
-    for (const socket of wss.clients) socket.terminate();
-    await new Promise(resolve => wss.close(() => resolve()));
-  } };
+  return {
+    health() {
+      let accountSubscriptions = 0;
+      for (const socket of wss.clients) accountSubscriptions += subscriptions.get(socket)?.accounts.size || 0;
+      return { clients: wss.clients.size, accountSubscriptions, path };
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeatTimer);
+      server.off('upgrade', upgradeHandler);
+      runtime.eventBus.off('market.quote', broadcastQuote);
+      runtime.eventBus.off('market.tick', broadcastTick);
+      runtime.eventBus.off('market.candle.update', broadcastCandleUpdate);
+      runtime.eventBus.off('market.candle.closed', broadcastCandleClosed);
+      runtime.eventBus.off('market.status', broadcastStatus);
+      for (const [sourceEvent, listener] of tradingListeners) runtime.eventBus.off(sourceEvent, listener);
+      for (const socket of wss.clients) socket.terminate();
+      await new Promise(resolve => wss.close(() => resolve()));
+    },
+  };
+}
+
+function accountIdFromPayload(payload) {
+  const value = payload?.accountId
+    ?? payload?.account?.accountId
+    ?? payload?.account?.id
+    ?? payload?.order?.accountId
+    ?? payload?.fill?.accountId
+    ?? payload?.position?.accountId
+    ?? payload?.id;
+  return value == null ? null : String(value);
 }
 
 function websocketAccessToken(request) {
@@ -145,4 +340,4 @@ function rejectUpgrade(socket, status, message) {
   socket.destroy();
 }
 
-module.exports = { createMarketWebSocketServer };
+module.exports = { createMarketWebSocketServer, accountIdFromPayload, websocketAccessToken };
