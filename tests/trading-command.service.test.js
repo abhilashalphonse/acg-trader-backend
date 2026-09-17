@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { TradingCommandService, childId } = require('../src/modules/trading/trading-command.service');
+const { childCommandId } = require('../src/modules/trading/atomic-reverse.service');
 
 function queryMany(values) { return { sort: () => ({ lean: async () => values }) }; }
 
@@ -34,11 +35,22 @@ const basePosition = {
   openVolume: '1.00',
 };
 
-test('childId is deterministic and fits the order id limit', () => {
+test('close-all childId is deterministic and fits the order id limit', () => {
   const a = childId('x'.repeat(128), 'close-64b000000000000000000001');
   const b = childId('x'.repeat(128), 'close-64b000000000000000000001');
   assert.equal(a, b);
   assert.ok(a.length <= 128);
+});
+
+test('atomic reverse creates distinct collision-safe close and open child ids for maximum parent length', () => {
+  const parent = 'x'.repeat(128);
+  const close = childCommandId(parent, 'close');
+  const open = childCommandId(parent, 'open');
+  assert.notEqual(close, open);
+  assert.ok(close.length <= 128);
+  assert.ok(open.length <= 128);
+  assert.equal(close, childCommandId(parent, 'close'));
+  assert.equal(open, childCommandId(parent, 'open'));
 });
 
 test('reverse delegates the complete command to the atomic reverse service exactly once', async () => {
