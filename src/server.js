@@ -23,7 +23,7 @@ async function start() {
 
   const app = createApp({ marketRuntime, tradingRuntime, authRuntime });
   const server = http.createServer(app);
-  marketRuntime.attachWebSocket(server, authRuntime.authService);
+  marketRuntime.attachWebSocket(server, authRuntime.authService, tradingRuntime);
 
   server.keepAliveTimeout = 65_000;
   server.headersTimeout = 66_000;
