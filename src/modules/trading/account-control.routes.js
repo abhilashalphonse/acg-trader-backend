@@ -64,7 +64,7 @@ function createAccountControlRouter(runtime, authService) {
       return doc;
     });
     const serialized = serializeAccount(account);
-    try { runtime.marketRuntime?.eventBus?.emit?.('trading.account.updated', serialized); } catch (_) { /* realtime snapshot will reconcile */ }
+    try { runtime.eventBus?.emit?.('trading.account.updated', serialized); } catch (_) { /* realtime snapshot will reconcile */ }
     res.json({ operation: 'CHALLENGE_SYNC', account: serialized });
   });
 
