@@ -11,8 +11,6 @@ const { planPendingOrder } = require('./pending-order-planner');
 const { runMongoTransaction } = require('./market-order.service');
 const { serializeOrder } = require('./trading.serializer');
 
-const AMENDABLE = new Set(['PENDING', 'TRIGGERED']);
-
 class PendingOrderAmendService {
   constructor({ quoteStore, eventBus, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), runTransaction = runMongoTransaction }) {
     Object.assign(this, { quoteStore, eventBus, logger, accountModel, instrumentModel, orderModel, commandQueue, idempotencyService, runTransaction });
@@ -29,7 +27,9 @@ class PendingOrderAmendService {
         const order = await this.orderModel.findById(normalized.orderId).session(session);
         if (!order) throw new AppError('Order was not found', { statusCode: 404, code: 'ORDER_NOT_FOUND' });
         if (String(order.accountId) !== normalized.accountId) throw new AppError('Order does not belong to this trading account', { statusCode: 403, code: 'ORDER_ACCOUNT_MISMATCH' });
-        if (!AMENDABLE.has(String(order.status).toUpperCase())) throw new AppError('Order is no longer amendable', { statusCode: 409, code: 'ORDER_NOT_AMENDABLE', details: { status: order.status } });
+        if (String(order.status).toUpperCase() !== 'PENDING') {
+          throw new AppError('Only pending orders can be amended', { statusCode: 409, code: 'ORDER_NOT_AMENDABLE', details: { status: order.status } });
+        }
 
         const account = await this.accountModel.findById(normalized.accountId).session(session);
         const symbol = normalizeSymbol(order.symbol);
@@ -55,10 +55,6 @@ class PendingOrderAmendService {
         order.takeProfit = plan.takeProfit;
         order.timeInForce = plan.timeInForce;
         order.expiresAt = plan.expiresAt;
-        if (order.status === 'TRIGGERED' && order.type === 'STOP_LIMIT' && normalized.stopPrice !== undefined) {
-          order.status = 'PENDING';
-          order.triggeredAt = null;
-        }
         await order.save({ session });
         const response = { operation: 'PENDING_AMEND', order: serializeOrder(order) };
         const completed = await this.idempotencyService.complete(reservation.record._id, { resourceType: 'ORDER', resourceId: order.orderId, response }, { session });
@@ -78,7 +74,7 @@ class PendingOrderAmendService {
 
 function value(input) { return input === null || input === undefined ? null : String(input); }
 function patchValue(input) { return input === undefined ? undefined : input === null || input === '' ? null : String(input); }
-function normalize(command) { return { accountId: String(command?.accountId || '').trim(), orderId: String(command?.orderId || '').trim(), clientRequestId: String(command?.clientRequestId || '').trim(), volume: patchValue(command?.volume), limitPrice: patchValue(command?.limitPrice), stopPrice: patchValue(command?.stopPrice), stopLoss: patchValue(command?.stopLoss), takeProfit: patchValue(command?.takeProfit), timeInForce: command?.timeInForce === undefined ? undefined : String(command.timeInForce).toUpperCase(), expiresAt: command?.expiresAt === undefined ? undefined : command.expiresAt } }
+function normalize(command) { return { accountId: String(command?.accountId || '').trim(), orderId: String(command?.orderId || '').trim(), clientRequestId: String(command?.clientRequestId || '').trim(), volume: patchValue(command?.volume), limitPrice: patchValue(command?.limitPrice), stopPrice: patchValue(command?.stopPrice), stopLoss: patchValue(command?.stopLoss), takeProfit: patchValue(command?.takeProfit), timeInForce: command?.timeInForce === undefined ? undefined : String(command.timeInForce).toUpperCase(), expiresAt: command?.expiresAt === undefined ? undefined : command.expiresAt }; }
 function resolveReservation(reservation) { if (reservation.created) return null; if (reservation.inProgress) throw new AppError('An identical amend command is already in progress', { statusCode: 409, code: 'COMMAND_IN_PROGRESS' }); if (reservation.record.state === 'COMPLETED') return { ...(reservation.record.response || {}), idempotentReplay: true }; const stored = reservation.record.response?.error || {}; throw new AppError(stored.message || 'Previous amendment failed', { statusCode: Number(stored.statusCode) || 409, code: stored.code || reservation.record.failureCode || 'PENDING_AMEND_FAILED' }); }
 
 module.exports = { PendingOrderAmendService };
