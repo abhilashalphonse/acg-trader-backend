@@ -13,9 +13,7 @@ function calculatePositionValuation({ position, quote }) {
   const normalized = normalizePosition(position);
   const closePriceNumber = normalized.side === 'BUY' ? quote?.bid : quote?.ask;
   const hasExecutablePrice = Number.isFinite(closePriceNumber);
-  const status = !quote || !hasExecutablePrice
-    ? 'WAITING'
-    : quote.isStale ? 'STALE' : 'LIVE';
+  const status = !quote || !hasExecutablePrice ? 'WAITING' : quote.isStale ? 'STALE' : 'LIVE';
 
   if (!hasExecutablePrice) {
     return {
@@ -34,10 +32,7 @@ function calculatePositionValuation({ position, quote }) {
   const priceDifference = normalized.side === 'BUY'
     ? subtractDecimal(closePrice, normalized.entryPrice)
     : subtractDecimal(normalized.entryPrice, closePrice);
-  const floatingPnl = multiplyDecimal(
-    multiplyDecimal(priceDifference, normalized.contractSize),
-    normalized.openVolume,
-  );
+  const floatingPnl = multiplyDecimal(multiplyDecimal(priceDifference, normalized.contractSize), normalized.openVolume);
 
   return {
     ...normalized,
@@ -51,7 +46,7 @@ function calculatePositionValuation({ position, quote }) {
   };
 }
 
-function aggregateAccountValuation({ account, positionValuations = [] }) {
+function aggregateAccountValuation({ account, positionValuations = [], currencyConverter = null, nowMs = Date.now() }) {
   const balance = decimalValue(account?.state?.balance, '0');
   let floatingPnl = '0';
   let usedMargin = '0';
@@ -62,13 +57,20 @@ function aggregateAccountValuation({ account, positionValuations = [] }) {
   const accountCurrency = String(account?.currency || '').toUpperCase();
   for (const valuation of positionValuations) {
     usedMargin = addDecimal(usedMargin, decimalValue(valuation.margin, '0'));
-    const quoteCurrency = String(valuation.quoteCurrency || '').toUpperCase();
-    if ((accountCurrency && quoteCurrency && accountCurrency !== quoteCurrency) || valuation.floatingPnl == null) {
+    const pnlCurrency = String(valuation.quoteCurrency || '').toUpperCase();
+    if (valuation.floatingPnl == null) {
       hasUnpriced = true;
       staleSymbols.add(valuation.symbol);
       continue;
     }
-    floatingPnl = addDecimal(floatingPnl, valuation.floatingPnl);
+    try {
+      const converted = convertPnl(valuation.floatingPnl, pnlCurrency, accountCurrency, currencyConverter, nowMs);
+      floatingPnl = addDecimal(floatingPnl, converted);
+    } catch {
+      hasUnpriced = true;
+      staleSymbols.add(valuation.symbol);
+      continue;
+    }
     if (valuation.valuationStatus !== 'LIVE') {
       hasStale = true;
       staleSymbols.add(valuation.symbol);
@@ -100,6 +102,12 @@ function aggregateAccountValuation({ account, positionValuations = [] }) {
   };
 }
 
+function convertPnl(amount, fromCurrency, toCurrency, currencyConverter, nowMs) {
+  if (fromCurrency && toCurrency && fromCurrency === toCurrency) return normalizeDecimal(amount);
+  if (!currencyConverter?.convert) throw new Error('conversion unavailable');
+  return currencyConverter.convert(amount, fromCurrency, toCurrency, { nowMs });
+}
+
 function normalizePosition(position) {
   return {
     id: String(position?.id || position?._id || ''),
@@ -116,17 +124,7 @@ function normalizePosition(position) {
   };
 }
 
-function accountIdOf(account) {
-  return String(account?.id || account?._id || account?.accountId || '');
-}
+function accountIdOf(account) { return String(account?.id || account?._id || account?.accountId || ''); }
+function decimalValue(value, fallback = null) { if (value === null || value === undefined) return fallback; return normalizeDecimal(value?.toString ? value.toString() : String(value)); }
 
-function decimalValue(value, fallback = null) {
-  if (value === null || value === undefined) return fallback;
-  return normalizeDecimal(value?.toString ? value.toString() : String(value));
-}
-
-module.exports = {
-  calculatePositionValuation,
-  aggregateAccountValuation,
-  normalizePosition,
-};
+module.exports = { calculatePositionValuation, aggregateAccountValuation, normalizePosition, convertPnl };

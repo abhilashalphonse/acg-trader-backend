@@ -14,12 +14,14 @@ class ValuationEngine {
   constructor({
     eventBus,
     quoteStore,
+    currencyConverter = null,
     logger,
     accountModel = TradingAccount,
     positionModel = Position,
   }) {
     this.eventBus = eventBus;
     this.quoteStore = quoteStore;
+    this.currencyConverter = currencyConverter;
     this.logger = logger;
     this.accountModel = accountModel;
     this.positionModel = positionModel;
@@ -45,19 +47,14 @@ class ValuationEngine {
     if (this.started) return;
     this.started = true;
     this.#attachListeners();
-
     try {
       const openPositions = await this.positionModel.find({ status: 'OPEN' }).lean();
       const accountIds = [...new Set(openPositions.map(position => String(position.accountId)))];
-      const accounts = accountIds.length
-        ? await this.accountModel.find({ _id: { $in: accountIds } }).lean()
-        : [];
-
+      const accounts = accountIds.length ? await this.accountModel.find({ _id: { $in: accountIds } }).lean() : [];
       for (const account of accounts) this.#storeAccountBase(account);
       for (const position of openPositions) this.#storePosition(position);
       for (const position of openPositions) this.#revaluePosition(String(position._id), this.quoteStore.get(position.symbol), false);
       for (const accountId of accountIds) this.#recalculateAccount(accountId, false);
-
       this.logger?.info({ openPositions: this.positions.size, accounts: this.accountBases.size }, 'Realtime valuation engine recovered');
     } catch (error) {
       this.#detachListeners();
@@ -80,15 +77,8 @@ class ValuationEngine {
 
   health() {
     const statuses = { LIVE: 0, STALE: 0, WAITING: 0 };
-    for (const valuation of this.accountValuations.values()) {
-      statuses[valuation.valuationStatus] = (statuses[valuation.valuationStatus] || 0) + 1;
-    }
-    return {
-      started: this.started,
-      openPositions: this.positions.size,
-      accounts: this.accountValuations.size,
-      statuses,
-    };
+    for (const valuation of this.accountValuations.values()) statuses[valuation.valuationStatus] = (statuses[valuation.valuationStatus] || 0) + 1;
+    return { started: this.started, openPositions: this.positions.size, accounts: this.accountValuations.size, statuses };
   }
 
   getPositionSnapshot(positionId) {
@@ -105,7 +95,6 @@ class ValuationEngine {
     const key = String(accountId || '');
     const existing = this.getAccountSnapshot(key);
     if (existing) return existing;
-
     const account = await this.accountModel.findById(key).lean();
     if (!account) return null;
     this.#storeAccountBase(account);
@@ -116,47 +105,36 @@ class ValuationEngine {
   projectAccountDocument(account) {
     if (!account) return null;
     const accountId = String(account._id || account.id || '');
-    const positionValuations = this.#valuationsForAccount(accountId);
-    return aggregateAccountValuation({ account, positionValuations });
+    return aggregateAccountValuation({
+      account,
+      positionValuations: this.#valuationsForAccount(accountId),
+      currencyConverter: this.currencyConverter,
+      nowMs: Date.now(),
+    });
   }
 
   overlayAccountDocument(account, { requireLive = false } = {}) {
     const projection = this.projectAccountDocument(account);
     if (!projection) return null;
-
     if (requireLive && projection.valuationStatus !== 'LIVE') {
-      throw new AppError('Account valuation is not live; new exposure is paused until all open positions have executable quotes', {
+      throw new AppError('Account valuation is not live; new exposure is paused until all open positions and currency conversions have executable quotes', {
         statusCode: 409,
         code: 'ACCOUNT_VALUATION_NOT_LIVE',
-        details: {
-          valuationStatus: projection.valuationStatus,
-          staleSymbols: projection.staleSymbols,
-        },
+        details: { valuationStatus: projection.valuationStatus, staleSymbols: projection.staleSymbols },
       });
     }
-
     if (!projection.complete) return projection;
     const balance = account.state.balance.toString();
     account.state.floatingPnl = projection.floatingPnl;
     account.state.equity = addDecimal(balance, projection.floatingPnl);
     account.state.usedMargin = projection.usedMargin;
     account.state.freeMargin = subtractDecimal(account.state.equity, projection.usedMargin);
-    return {
-      ...projection,
-      balance,
-      equity: account.state.equity.toString(),
-      freeMargin: account.state.freeMargin.toString(),
-    };
+    return { ...projection, balance, equity: account.state.equity.toString(), freeMargin: account.state.freeMargin.toString() };
   }
 
   #safeEvent(event, callback) {
-    try {
-      callback();
-    } catch (error) {
-      this.logger?.error({ err: error, event }, 'Realtime valuation event failed');
-    }
+    try { callback(); } catch (error) { this.logger?.error({ err: error, event }, 'Realtime valuation event failed'); }
   }
-
   #attachListeners() {
     this.eventBus.on('market.tick', this.onTick);
     this.eventBus.on('market.quote', this.onStaleQuote);
@@ -165,7 +143,6 @@ class ValuationEngine {
     this.eventBus.on('trading.position.closed', this.onPositionClosed);
     this.eventBus.on('trading.account.updated', this.onAccountUpdated);
   }
-
   #detachListeners() {
     this.eventBus.off('market.tick', this.onTick);
     this.eventBus.off('market.quote', this.onStaleQuote);
@@ -174,11 +151,9 @@ class ValuationEngine {
     this.eventBus.off('trading.position.closed', this.onPositionClosed);
     this.eventBus.off('trading.account.updated', this.onAccountUpdated);
   }
-
   #handleQuote(quote) {
     if (!quote?.symbol) return;
     const ids = [...(this.positionsBySymbol.get(String(quote.symbol).toUpperCase()) || [])];
-    if (!ids.length) return;
     const touchedAccounts = new Set();
     for (const id of ids) {
       const position = this.positions.get(id);
@@ -186,20 +161,17 @@ class ValuationEngine {
       touchedAccounts.add(position.accountId);
       this.#revaluePosition(id, quote, true);
     }
+    // FX conversion quotes can change account P&L even when the account has no position in that pair.
+    for (const accountId of this.accountBases.keys()) touchedAccounts.add(accountId);
     for (const accountId of touchedAccounts) this.#recalculateAccount(accountId, true);
   }
-
   #upsertPosition(position) {
     const normalized = normalizePosition(position);
-    if (!normalized.id || normalized.status !== 'OPEN') {
-      this.#removePosition(position);
-      return;
-    }
+    if (!normalized.id || normalized.status !== 'OPEN') { this.#removePosition(position); return; }
     this.#storePosition(position);
     this.#revaluePosition(normalized.id, this.quoteStore.get(normalized.symbol), true);
     this.#recalculateAccount(normalized.accountId, true);
   }
-
   #removePosition(position) {
     const id = String(position?.id || position?._id || '');
     const existing = this.positions.get(id);
@@ -210,19 +182,16 @@ class ValuationEngine {
     this.positionValuations.delete(id);
     if (accountId) this.#recalculateAccount(accountId, true);
   }
-
   #upsertAccount(account) {
     const accountId = this.#storeAccountBase(account);
     if (accountId) this.#recalculateAccount(accountId, true);
   }
-
   #storeAccountBase(account) {
     const id = String(account?.id || account?._id || account?.accountId || '');
     if (!id) return null;
     this.accountBases.set(id, normalizeAccount(account));
     return id;
   }
-
   #storePosition(position) {
     const normalized = normalizePosition(position);
     if (!normalized.id) return null;
@@ -233,30 +202,28 @@ class ValuationEngine {
     addIndex(this.positionsByAccount, normalized.accountId, normalized.id);
     return normalized.id;
   }
-
   #unindexPosition(position) {
     removeIndex(this.positionsBySymbol, position.symbol, position.id);
     removeIndex(this.positionsByAccount, position.accountId, position.id);
   }
-
   #revaluePosition(id, quote, emit) {
     const position = this.positions.get(id);
     if (!position) return null;
-    const valuation = {
-      ...calculatePositionValuation({ position, quote }),
-      sequence: ++this.sequence,
-      valuedAtMs: Date.now(),
-    };
+    const valuation = { ...calculatePositionValuation({ position, quote }), sequence: ++this.sequence, valuedAtMs: Date.now() };
     this.positionValuations.set(id, valuation);
     if (emit) this.eventBus.emit('valuation.position.updated', clone(valuation));
     return valuation;
   }
-
   #recalculateAccount(accountId, emit) {
     const base = this.accountBases.get(String(accountId));
     if (!base) return null;
     const valuation = {
-      ...aggregateAccountValuation({ account: base, positionValuations: this.#valuationsForAccount(accountId) }),
+      ...aggregateAccountValuation({
+        account: base,
+        positionValuations: this.#valuationsForAccount(accountId),
+        currencyConverter: this.currencyConverter,
+        nowMs: Date.now(),
+      }),
       sequence: ++this.sequence,
       valuedAtMs: Date.now(),
     };
@@ -264,7 +231,6 @@ class ValuationEngine {
     if (emit) this.eventBus.emit('valuation.account.updated', clone(valuation));
     return valuation;
   }
-
   #valuationsForAccount(accountId) {
     const ids = this.positionsByAccount.get(String(accountId)) || new Set();
     return [...ids].map(id => this.positionValuations.get(id)).filter(Boolean);
@@ -285,31 +251,9 @@ function normalizeAccount(account) {
     },
   };
 }
-
-function valueString(value, fallback = null) {
-  if (value === null || value === undefined) return fallback;
-  return value.toString();
-}
-
-function addIndex(map, key, value) {
-  if (!key) return;
-  let set = map.get(key);
-  if (!set) {
-    set = new Set();
-    map.set(key, set);
-  }
-  set.add(value);
-}
-
-function removeIndex(map, key, value) {
-  const set = map.get(key);
-  if (!set) return;
-  set.delete(value);
-  if (!set.size) map.delete(key);
-}
-
-function clone(value) {
-  return value == null ? value : JSON.parse(JSON.stringify(value));
-}
+function valueString(value, fallback = null) { if (value === null || value === undefined) return fallback; return value.toString(); }
+function addIndex(map, key, value) { if (!key) return; let set = map.get(key); if (!set) { set = new Set(); map.set(key, set); } set.add(value); }
+function removeIndex(map, key, value) { const set = map.get(key); if (!set) return; set.delete(value); if (!set.size) map.delete(key); }
+function clone(value) { return value == null ? value : JSON.parse(JSON.stringify(value)); }
 
 module.exports = { ValuationEngine };

@@ -1,8 +1,14 @@
 'use strict';
 
-// ACG-owned simulated CFD specifications. These are product policy defaults,
-// not claims about universal broker contract terms. Runtime trading remains
-// disabled until explicitly enabled per Instrument document.
+// ACG-owned simulated CFD product specifications. These values are the
+// authoritative execution defaults for ACG Trader, not universal broker terms.
+// Execution remains disabled until explicitly enabled on the Instrument record.
+const FX_WEEK = Object.freeze([
+  Object.freeze({ days: [0], open: '22:00', close: '23:59' }),
+  Object.freeze({ days: [1, 2, 3, 4], open: '00:00', close: '23:59' }),
+  Object.freeze({ days: [5], open: '00:00', close: '22:00' }),
+]);
+
 const ACG_INSTRUMENT_CATALOG = Object.freeze([
   Object.freeze({
     symbol: 'EURUSD',
@@ -11,6 +17,8 @@ const ACG_INSTRUMENT_CATALOG = Object.freeze([
     assetClass: 'FOREX',
     baseCurrency: 'EUR',
     quoteCurrency: 'USD',
+    pnlCurrency: 'USD',
+    marginCurrency: 'USD',
     digits: 5,
     tickSize: '0.00001',
     pipSize: '0.0001',
@@ -23,16 +31,11 @@ const ACG_INSTRUMENT_CATALOG = Object.freeze([
     commissionPerLot: '0',
     swapLong: '0',
     swapShort: '0',
-    spread: {
-      mode: 'SYNTHETIC',
-      fixedPoints: '10',
-      markupPoints: '0',
-    },
-    tradingSessions: [],
+    spread: { mode: 'SYNTHETIC', fixedPoints: '10', markupPoints: '0' },
+    tradingSessions: FX_WEEK,
+    tradingHolidays: [],
     timezone: 'UTC',
-    providerMappings: {
-      twelveData: 'EUR/USD',
-    },
+    providerMappings: { twelveData: 'EUR/USD' },
     maxQuoteAgeMs: 10000,
     chartEnabled: true,
     executionEnabled: false,
@@ -45,6 +48,8 @@ const ACG_INSTRUMENT_CATALOG = Object.freeze([
     assetClass: 'METAL',
     baseCurrency: 'XAU',
     quoteCurrency: 'USD',
+    pnlCurrency: 'USD',
+    marginCurrency: 'USD',
     digits: 2,
     tickSize: '0.01',
     pipSize: '0.01',
@@ -57,16 +62,11 @@ const ACG_INSTRUMENT_CATALOG = Object.freeze([
     commissionPerLot: '0',
     swapLong: '0',
     swapShort: '0',
-    spread: {
-      mode: 'SYNTHETIC',
-      fixedPoints: '30',
-      markupPoints: '0',
-    },
-    tradingSessions: [],
+    spread: { mode: 'SYNTHETIC', fixedPoints: '30', markupPoints: '0' },
+    tradingSessions: FX_WEEK,
+    tradingHolidays: [],
     timezone: 'UTC',
-    providerMappings: {
-      twelveData: 'XAU/USD',
-    },
+    providerMappings: { twelveData: 'XAU/USD' },
     maxQuoteAgeMs: 10000,
     chartEnabled: true,
     executionEnabled: false,
@@ -74,4 +74,4 @@ const ACG_INSTRUMENT_CATALOG = Object.freeze([
   }),
 ]);
 
-module.exports = { ACG_INSTRUMENT_CATALOG };
+module.exports = { ACG_INSTRUMENT_CATALOG, FX_WEEK };

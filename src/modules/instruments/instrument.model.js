@@ -7,8 +7,8 @@ const Decimal128 = Schema.Types.Decimal128;
 
 const sessionSchema = new Schema({
   days: [{ type: Number, min: 0, max: 6 }],
-  open: { type: String, required: true },
-  close: { type: String, required: true },
+  open: { type: String, required: true, match: /^\d{2}:\d{2}$/ },
+  close: { type: String, required: true, match: /^\d{2}:\d{2}$/ },
 }, { _id: false });
 
 const instrumentSchema = new Schema({
@@ -23,6 +23,8 @@ const instrumentSchema = new Schema({
   },
   baseCurrency: { type: String, uppercase: true, trim: true, default: null },
   quoteCurrency: { type: String, uppercase: true, trim: true, default: null },
+  pnlCurrency: { type: String, uppercase: true, trim: true, default: null },
+  marginCurrency: { type: String, uppercase: true, trim: true, default: null },
 
   digits: { type: Number, required: true, min: 0, max: 12 },
   tickSize: { type: Decimal128, required: true },
@@ -46,6 +48,7 @@ const instrumentSchema = new Schema({
   },
 
   tradingSessions: { type: [sessionSchema], default: [] },
+  tradingHolidays: { type: [String], default: [] },
   timezone: { type: String, default: 'UTC' },
 
   providerMappings: { type: Map, of: String, default: {} },
