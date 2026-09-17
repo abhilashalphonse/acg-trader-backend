@@ -8,11 +8,13 @@ const { Deal } = require('../../src/modules/trading/deal.model');
 const { Position } = require('../../src/modules/trading/position.model');
 const { AccountLedger } = require('../../src/modules/trading/account-ledger.model');
 
+const tenantId = new mongoose.Types.ObjectId();
 const accountId = new mongoose.Types.ObjectId();
 const orderObjectId = new mongoose.Types.ObjectId();
 
 function baseOrder(overrides = {}) {
   return new Order({
+    tenantId,
     accountId,
     clientOrderId: 'client-order-1',
     symbol: 'EURUSD',
@@ -25,6 +27,7 @@ function baseOrder(overrides = {}) {
 
 function basePosition(overrides = {}) {
   return new Position({
+    tenantId,
     accountId,
     sourceOrderId: orderObjectId,
     symbol: 'EURUSD',
@@ -108,6 +111,7 @@ test('position snapshots immutable execution specifications required for future 
 
 test('deal requires positive executed volume and price', async () => {
   const deal = new Deal({
+    tenantId,
     accountId,
     orderId: orderObjectId,
     symbol: 'EURUSD',
@@ -119,6 +123,7 @@ test('deal requires positive executed volume and price', async () => {
   await deal.validate();
 
   const bad = new Deal({
+    tenantId,
     accountId,
     orderId: orderObjectId,
     symbol: 'EURUSD',
@@ -132,6 +137,7 @@ test('deal requires positive executed volume and price', async () => {
 
 test('ledger requires exact balance equation and preserves immutable accounting identifiers', async () => {
   const deal = new Deal({
+    tenantId,
     accountId,
     orderId: orderObjectId,
     symbol: 'EURUSD',
@@ -143,6 +149,7 @@ test('ledger requires exact balance equation and preserves immutable accounting 
   await deal.validate();
 
   const ledger = new AccountLedger({
+    tenantId,
     accountId,
     type: 'REALIZED_PNL',
     amount: '25.50',
@@ -155,6 +162,7 @@ test('ledger requires exact balance equation and preserves immutable accounting 
   await ledger.validate();
 
   const invalid = new AccountLedger({
+    tenantId,
     accountId,
     type: 'REALIZED_PNL',
     amount: '-200',
@@ -167,6 +175,7 @@ test('ledger requires exact balance equation and preserves immutable accounting 
   await assert.rejects(invalid.validate(), error => Boolean(error.errors?.balanceAfter));
 
   const negativeButCorrect = new AccountLedger({
+    tenantId,
     accountId,
     type: 'REALIZED_PNL',
     amount: '-200',
