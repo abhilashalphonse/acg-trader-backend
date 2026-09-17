@@ -4,27 +4,24 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { TradingCommandService, childId } = require('../src/modules/trading/trading-command.service');
 
-function queryOne(value) { return { lean: async () => value }; }
 function queryMany(values) { return { sort: () => ({ lean: async () => values }) }; }
 
-function createService({ position, positions, priorClose, closeImpl, openImpl } = {}) {
-  const calls = { close: [], open: [] };
+function createService({ positions = [], closeImpl, reverseImpl } = {}) {
+  const calls = { close: [], reverse: [] };
   const marketOrderService = {
     closeMarketPosition: async command => {
       calls.close.push(command);
       return closeImpl ? closeImpl(command) : { operation: 'CLOSE', position: { id: command.positionId, status: 'CLOSED' } };
     },
-    openMarketOrder: async command => {
-      calls.open.push(command);
-      return openImpl ? openImpl(command) : { operation: 'OPEN', position: { id: 'new-position', symbol: command.symbol, side: command.side } };
+  };
+  const atomicReverseService = {
+    reversePosition: async command => {
+      calls.reverse.push(command);
+      return reverseImpl ? reverseImpl(command) : { operation: 'REVERSE', atomic: true, position: { id: 'replacement-position' } };
     },
   };
-  const positionModel = {
-    findOne: () => queryOne(position),
-    find: () => queryMany(positions || []),
-  };
-  const orderModel = { findOne: () => queryOne(priorClose) };
-  return { service: new TradingCommandService({ marketOrderService, positionModel, orderModel }), calls };
+  const positionModel = { find: () => queryMany(positions) };
+  return { service: new TradingCommandService({ marketOrderService, atomicReverseService, positionModel }), calls };
 }
 
 const basePosition = {
@@ -44,52 +41,29 @@ test('childId is deterministic and fits the order id limit', () => {
   assert.ok(a.length <= 128);
 });
 
-test('reverse closes the original position and opens the opposite side with the same volume', async () => {
-  const { service, calls } = createService({ position: basePosition });
-  const result = await service.reversePosition({
-    accountId: basePosition.accountId,
-    positionId: basePosition._id,
-    clientRequestId: 'reverse-1',
-    source: 'WEB',
-  });
-  assert.equal(result.complete, true);
-  assert.equal(result.resumed, false);
-  assert.equal(calls.close.length, 1);
-  assert.equal(calls.open.length, 1);
-  assert.equal(calls.open[0].side, 'SELL');
-  assert.equal(calls.open[0].volume, '1.00');
-  assert.equal(calls.open[0].symbol, 'EURUSD');
-});
-
-test('reverse retry resumes the open leg only after verifying its own prior close', async () => {
-  const closed = { ...basePosition, status: 'CLOSED', openVolume: '0' };
-  const { service, calls } = createService({ position: closed, priorClose: { status: 'FILLED' } });
-  const result = await service.reversePosition({
-    accountId: closed.accountId,
-    positionId: closed._id,
-    clientRequestId: 'reverse-retry',
-  });
-  assert.equal(result.complete, true);
-  assert.equal(result.resumed, true);
+test('reverse delegates the complete command to the atomic reverse service exactly once', async () => {
+  const { service, calls } = createService();
+  const command = { accountId: basePosition.accountId, positionId: basePosition._id, clientRequestId: 'reverse-1', source: 'WEB' };
+  const result = await service.reversePosition(command);
+  assert.equal(result.atomic, true);
+  assert.equal(calls.reverse.length, 1);
+  assert.deepEqual(calls.reverse[0], command);
   assert.equal(calls.close.length, 0);
-  assert.equal(calls.open.length, 1);
-  assert.equal(calls.open[0].volume, '1.00');
 });
 
-test('reverse refuses to reverse an already-closed position not closed by the same command', async () => {
-  const closed = { ...basePosition, status: 'CLOSED', openVolume: '0' };
-  const { service } = createService({ position: closed, priorClose: null });
+test('reverse propagates atomic service failure without falling back to client-style close/open composition', async () => {
+  const expected = Object.assign(new Error('transaction failed'), { code: 'TRANSACTION_UNAVAILABLE' });
+  const { service, calls } = createService({ reverseImpl: async () => { throw expected; } });
   await assert.rejects(
-    () => service.reversePosition({ accountId: closed.accountId, positionId: closed._id, clientRequestId: 'new-reverse' }),
-    error => error.code === 'POSITION_ALREADY_CLOSED',
+    () => service.reversePosition({ accountId: basePosition.accountId, positionId: basePosition._id, clientRequestId: 'reverse-fail' }),
+    error => error === expected,
   );
+  assert.equal(calls.reverse.length, 1);
+  assert.equal(calls.close.length, 0);
 });
 
 test('close all reports partial failure without losing successful closes', async () => {
-  const positions = [
-    basePosition,
-    { ...basePosition, _id: '64b000000000000000000002', symbol: 'XAUUSD' },
-  ];
+  const positions = [basePosition, { ...basePosition, _id: '64b000000000000000000002', symbol: 'XAUUSD' }];
   const { service, calls } = createService({
     positions,
     closeImpl: command => {
