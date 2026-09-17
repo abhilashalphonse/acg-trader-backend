@@ -19,7 +19,9 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
     const database = databaseHealth();
     const market = marketRuntime?.health?.() || { enabled: false, state: 'NOT_INITIALIZED' };
     const trading = tradingRuntime?.health?.() || { enabled: false, started: false, state: 'NOT_INITIALIZED' };
-    const tradingReady = trading.enabled === false || (trading.started === true && trading.reconciliation?.recovery?.consistent !== false);
+    const reconciliationOperational = trading.reconciliation?.state !== 'DEGRADED';
+    const recoveryConsistent = trading.reconciliation?.recovery?.consistent !== false;
+    const tradingReady = trading.enabled === false || (trading.started === true && reconciliationOperational && recoveryConsistent);
     const ready = Boolean(database.connected && tradingReady);
 
     res.status(ready ? 200 : 503).json({
@@ -30,6 +32,7 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
       checks: {
         databaseConnected: Boolean(database.connected),
         tradingRuntimeReady: tradingReady,
+        reconciliationOperational,
         recoveryConsistent: trading.reconciliation?.recovery?.consistent ?? null,
       },
       timestamp: new Date().toISOString(),
