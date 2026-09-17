@@ -25,6 +25,7 @@ function fixture(overrides = {}) {
   }];
   const position = [{
     _id: '507f191e810c19729de860ec', accountId: account._id, tenantId: account.tenantId, status: 'OPEN', margin: '100',
+    stopLoss: null, takeProfit: null, trailing: { enabled: false },
   }];
   const order = [{
     _id: '507f191e810c19729de860ed', orderId: 'order-1', accountId: account._id, tenantId: account.tenantId, status: 'FILLED',
@@ -38,12 +39,10 @@ function fixture(overrides = {}) {
 
 function serviceFor(data, options = {}) {
   const reports = [];
+  const recoveryPositions = options.recoveryPositions || data.position;
   const accountModel = { find: () => query([data.account]) };
   const ledgerModel = { find: () => query(data.ledger) };
-  const positionModel = {
-    find: () => query(data.position),
-    countDocuments: async () => options.databaseOpenPositions ?? data.position.filter(item => item.status === 'OPEN').length,
-  };
+  const positionModel = { find: filter => query(filter?.status === 'OPEN' ? recoveryPositions.filter(item => item.status === 'OPEN') : data.position) };
   const orderModel = {
     find: () => query(data.order),
     countDocuments: async filter => {
@@ -61,10 +60,14 @@ function serviceFor(data, options = {}) {
     },
     find: () => query(reports),
   };
+  const defaultProtected = recoveryPositions.filter(item => item.status === 'OPEN' && (item.stopLoss != null || item.takeProfit != null)).length;
+  const defaultTrailing = recoveryPositions.filter(item => item.status === 'OPEN' && item.trailing?.enabled === true).length;
   return new ReconciliationService({
     commandQueue: { run: async (_accountId, work) => work() },
-    valuationEngine: { health: () => ({ openPositions: options.recoveredOpenPositions ?? data.position.filter(item => item.status === 'OPEN').length }) },
+    valuationEngine: { health: () => ({ openPositions: options.recoveredOpenPositions ?? recoveryPositions.filter(item => item.status === 'OPEN').length }) },
     pendingOrderEngine: { health: () => ({ pendingOrders: options.recoveredPendingOrders ?? 0 }) },
+    protectionTriggerEngine: { health: () => ({ protectedPositions: options.recoveredProtectedPositions ?? defaultProtected }) },
+    trailingStopEngine: { health: () => ({ trailingPositions: options.recoveredTrailingPositions ?? defaultTrailing }) },
     accountModel, ledgerModel, positionModel, orderModel, dealModel, reportModel,
     now: (() => { let tick = 0; return () => new Date(1_700_000_000_000 + tick++ * 1000); })(),
   });
@@ -102,18 +105,47 @@ test('reconciliation detects ledger chain, balance, margin and missing execution
 
 test('startup recovery verification detects incomplete in-memory recovery and persists an issue report', async () => {
   const data = fixture();
-  const service = serviceFor(data, { databaseOpenPositions: 2, recoveredOpenPositions: 1, databasePending: 3, recoveredPendingOrders: 2 });
+  const recoveryPositions = [
+    { ...data.position[0], stopLoss: '1', trailing: { enabled: true } },
+    { ...data.position[0], _id: '507f191e810c19729de860f0', stopLoss: null, takeProfit: '2', trailing: { enabled: false } },
+  ];
+  const service = serviceFor(data, {
+    recoveryPositions,
+    recoveredOpenPositions: 1,
+    databasePending: 3,
+    recoveredPendingOrders: 2,
+    recoveredProtectedPositions: 1,
+    recoveredTrailingPositions: 0,
+  });
   const recovery = await service.verifyRecovery({ persist: true });
   assert.equal(recovery.consistent, false);
   const health = service.health();
   assert.equal(health.recovery.consistent, false);
-  assert.equal(health.lastReport.issueCount, 2);
+  assert.equal(health.lastReport.issueCount, 4);
 });
 
-test('startup recovery verification is healthy when database and recovered engine counts agree', async () => {
+test('startup recovery verification is healthy when all recoverable engine indexes agree with MongoDB', async () => {
   const data = fixture();
-  const service = serviceFor(data, { databaseOpenPositions: 1, recoveredOpenPositions: 1, databasePending: 2, databaseTriggered: 1, recoveredPendingOrders: 3 });
+  const recoveryPositions = [{ ...data.position[0], stopLoss: '0.9', trailing: { enabled: true } }];
+  const service = serviceFor(data, {
+    recoveryPositions,
+    recoveredOpenPositions: 1,
+    databasePending: 2,
+    databaseTriggered: 1,
+    recoveredPendingOrders: 3,
+    recoveredProtectedPositions: 1,
+    recoveredTrailingPositions: 1,
+  });
   const recovery = await service.verifyRecovery({ persist: true });
   assert.equal(recovery.consistent, true);
   assert.equal(service.health().lastReport.issueCount, 0);
+});
+
+test('periodic reconciliation timer is observable and can be stopped cleanly', () => {
+  const service = serviceFor(fixture());
+  service.startPeriodic(60_000);
+  assert.equal(service.health().periodic.enabled, true);
+  assert.equal(service.health().periodic.intervalMs, 60_000);
+  service.stopPeriodic();
+  assert.equal(service.health().periodic.enabled, false);
 });
