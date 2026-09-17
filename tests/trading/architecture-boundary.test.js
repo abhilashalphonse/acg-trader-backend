@@ -12,7 +12,7 @@ test('ACG Trader does not own the prop-firm challenge risk engine', () => {
   assert.equal(fs.existsSync(path.join(root, 'src/modules/trading/challenge-risk-decision.model.js')), false);
 
   const runtime = fs.readFileSync(path.join(root, 'src/modules/trading/trading.runtime.js'), 'utf8');
-  assert.doesNotMatch(runtime, /ChallengeRiskEngine/);
+  assert.doesNotMatch(runtime, /\bChallengeRiskEngine\b/);
   assert.doesNotMatch(runtime, /challengeRiskPolicy/);
   assert.match(runtime, /executionRiskPolicy:\s*true/);
   assert.match(runtime, /propChallengeRiskEngine:\s*false/);
