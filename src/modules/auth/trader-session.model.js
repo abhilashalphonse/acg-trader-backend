@@ -11,7 +11,7 @@ const traderSessionSchema = new Schema({
   ownerExternalRef: { type: String, default: null, immutable: true, index: true },
   accountIds: [{ type: Schema.Types.ObjectId, ref: 'TradingAccount', required: true }],
   credentialId: { type: Schema.Types.ObjectId, ref: 'TraderCredential', default: null, immutable: true },
-  expiresAt: { type: Date, required: true, index: true },
+  expiresAt: { type: Date, required: true },
   revokedAt: { type: Date, default: null, index: true },
   lastSeenAt: { type: Date, default: Date.now },
   metadata: { type: Schema.Types.Mixed, default: {} },
