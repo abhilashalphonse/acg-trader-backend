@@ -20,6 +20,13 @@ function createFakeModels() {
   return { FakeAccount, orderModel, positionModel, records, cancelled };
 }
 
+test('provisioning rejects commands without tenantId', () => {
+  assert.throws(
+    () => normalizeProvisionCommand({ externalRef: 'challenge-123', ownerExternalRef: 'user-9', initialBalance: '100000' }),
+    error => error.code === 'INVALID_ACCOUNT_CONTROL_COMMAND' && /tenantId/.test(error.message),
+  );
+});
+
 test('normalizeProvisionCommand builds a tenant-scoped challenge account safely', () => {
   const command = normalizeProvisionCommand({ tenantId: TENANT_ID, externalRef: 'challenge-123', ownerExternalRef: 'user-9', initialBalance: '100000', leverage: 100, riskPolicy: { dailyLoss: { limit: '3000' }, maxLoss: { limit: '6000' }, profitTarget: '10000', allowedSymbols: ['eur/usd', 'xauusd'] } });
   assert.equal(command.tenantId, TENANT_ID); assert.equal(command.accountType, 'CHALLENGE'); assert.equal(command.initialBalance, '100000'); assert.deepEqual(command.riskPolicy.allowedSymbols, ['EURUSD', 'XAUUSD']); assert.equal(buildInitialState('100000').freeMargin, '100000');
