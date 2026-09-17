@@ -5,6 +5,7 @@ const { logger } = require('../../infrastructure/logger/logger');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
 const { MarketOrderService } = require('./market-order.service');
+const { AccountControlService } = require('./account-control.service');
 const { ValuationEngine } = require('./valuation-engine');
 const { ProtectionTriggerEngine } = require('./protection-trigger-engine');
 const { PendingOrderService } = require('./pending-order.service');
@@ -25,6 +26,12 @@ function createTradingRuntime({ marketRuntime }) {
     valuationEngine,
     logger,
   });
+  const accountControlService = new AccountControlService({
+    eventBus: marketRuntime.eventBus,
+    commandQueue,
+    marketOrderService,
+    logger,
+  });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus: marketRuntime.eventBus, marketOrderService, logger });
   const pendingOrderService = new PendingOrderService({
     quoteStore: marketRuntime.quoteStore,
@@ -35,20 +42,8 @@ function createTradingRuntime({ marketRuntime }) {
     logger,
   });
   const pendingOrderEngine = new PendingOrderEngine({ eventBus: marketRuntime.eventBus, pendingOrderService, logger });
-  const positionProtectionService = new PositionProtectionService({
-    quoteStore: marketRuntime.quoteStore,
-    eventBus: marketRuntime.eventBus,
-    commandQueue,
-    idempotencyService,
-    logger,
-  });
-  const trailingStopService = new TrailingStopService({
-    quoteStore: marketRuntime.quoteStore,
-    eventBus: marketRuntime.eventBus,
-    commandQueue,
-    idempotencyService,
-    logger,
-  });
+  const positionProtectionService = new PositionProtectionService({ quoteStore: marketRuntime.quoteStore, eventBus: marketRuntime.eventBus, commandQueue, idempotencyService, logger });
+  const trailingStopService = new TrailingStopService({ quoteStore: marketRuntime.quoteStore, eventBus: marketRuntime.eventBus, commandQueue, idempotencyService, logger });
   const trailingStopEngine = new TrailingStopEngine({ eventBus: marketRuntime.eventBus, trailingStopService, logger });
 
   let started = false;
@@ -56,6 +51,7 @@ function createTradingRuntime({ marketRuntime }) {
   return {
     enabled: env.tradingApiEnabled,
     marketOrderService,
+    accountControlService,
     pendingOrderService,
     positionProtectionService,
     trailingStopService,
@@ -100,6 +96,12 @@ function createTradingRuntime({ marketRuntime }) {
         pendingOrders: pendingOrderEngine.health(),
         trailing: trailingStopEngine.health(),
         capabilities: {
+          accountProvisioning: true,
+          accountPauseResume: true,
+          accountDisable: true,
+          accountBreach: true,
+          accountClose: true,
+          accountLiquidation: true,
           marketOpen: true,
           marketClose: true,
           partialClose: true,
