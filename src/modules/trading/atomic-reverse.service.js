@@ -1,7 +1,7 @@
 'use strict';
 
 const { AppError } = require('../../shared/errors/app-error');
-const { subtractDecimal, compareDecimal } = require('../../shared/decimal/decimal');
+const { addDecimal, subtractDecimal, compareDecimal } = require('../../shared/decimal/decimal');
 const { normalizeSymbol } = require('../market-data/market.utils');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { Instrument } = require('../instruments/instrument.model');
@@ -48,15 +48,7 @@ class AtomicReverseService {
 
           const openPlan = planMarketOpen({ account, instrument, quote, side: oppositeSide, volume: originalVolume, stopLoss: normalized.stopLoss, takeProfit: normalized.takeProfit, nowMs });
           const open = await this.#persistOpen({ account, plan: openPlan, quote, normalized, session, nowMs });
-          const response = {
-            operation: 'REVERSE',
-            atomic: true,
-            originalPositionId: normalized.positionId,
-            close,
-            open,
-            position: open.position,
-            account: open.account,
-          };
+          const response = { operation: 'REVERSE', atomic: true, originalPositionId: normalized.positionId, close, open, position: open.position, account: open.account };
           const completed = await this.idempotencyService.complete(reservation.record._id, { resourceType: 'POSITION', resourceId: open.position.positionId || open.position.id, response }, { session });
           if (!completed) throw new AppError('Idempotency record could not be completed', { statusCode: 409, code: 'IDEMPOTENCY_STATE_CONFLICT' });
           return response;
@@ -87,7 +79,7 @@ class AtomicReverseService {
     const deal = new this.dealModel({ accountId: account._id, orderId: order._id, positionId: position._id, symbol: plan.symbol, side: plan.side, type: 'OPEN', volume: plan.volume, price: plan.fillPrice, requestedPrice: normalized.requestedPrice, slippage: calculateAdverseSlippage({ side: plan.side, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice }), commission: plan.commission, swap: '0', realizedPnl: '0', quoteSequence: plan.quoteSequence, quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null, quoteSource: quote?.source || null, executedAt: now });
     applyOpenAccountMutation(account, plan);
     const ledgers = [];
-    if (compareDecimal(plan.commission, '0') > 0) ledgers.push(new this.ledgerModel({ accountId: account._id, type: 'COMMISSION', amount: subtractDecimal('0', plan.commission), balanceBefore: String(Number(account.state.balance.toString()) + Number(plan.commission)), balanceAfter: account.state.balance, currency: account.currency, referenceType: 'DEAL', referenceId: deal.dealId, idempotencyKey: `${order.clientOrderId}:commission`, reason: 'Execution commission' }));
+    if (compareDecimal(plan.commission, '0') > 0) ledgers.push(new this.ledgerModel({ accountId: account._id, type: 'COMMISSION', amount: subtractDecimal('0', plan.commission), balanceBefore: addDecimal(account.state.balance, plan.commission), balanceAfter: account.state.balance, currency: account.currency, referenceType: 'DEAL', referenceId: deal.dealId, idempotencyKey: `${order.clientOrderId}:commission`, reason: 'Execution commission' }));
     await order.save({ session }); await position.save({ session }); await deal.save({ session }); for (const ledger of ledgers) await ledger.save({ session }); await account.save({ session });
     return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
   }
