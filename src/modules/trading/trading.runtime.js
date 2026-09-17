@@ -7,6 +7,7 @@ const { IdempotencyService } = require('./idempotency.service');
 const { MarketOrderService } = require('./market-order.service');
 const { AccountControlService } = require('./account-control.service');
 const { AccountLedgerService } = require('../accounts/account-ledger.service');
+const { PlatformEventRelay } = require('../integration/platform-event-relay');
 const { ValuationEngine } = require('./valuation-engine');
 const { ProtectionTriggerEngine } = require('./protection-trigger-engine');
 const { PendingOrderService } = require('./pending-order.service');
@@ -38,6 +39,17 @@ function createTradingRuntime({ marketRuntime }) {
     commandQueue,
     logger,
   });
+  const platformEventRelay = new PlatformEventRelay({
+    eventBus: marketRuntime.eventBus,
+    enabled: env.platformEvents.enabled,
+    webhookUrl: env.platformEvents.webhookUrl,
+    webhookSecret: env.platformEvents.webhookSecret,
+    pollIntervalMs: env.platformEvents.pollIntervalMs,
+    timeoutMs: env.platformEvents.timeoutMs,
+    batchSize: env.platformEvents.batchSize,
+    maxAttempts: env.platformEvents.maxAttempts,
+    logger,
+  });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus: marketRuntime.eventBus, marketOrderService, logger });
   const pendingOrderService = new PendingOrderService({
     quoteStore: marketRuntime.quoteStore,
@@ -59,6 +71,7 @@ function createTradingRuntime({ marketRuntime }) {
     marketOrderService,
     accountControlService,
     accountLedgerService,
+    platformEventRelay,
     pendingOrderService,
     positionProtectionService,
     trailingStopService,
@@ -72,18 +85,24 @@ function createTradingRuntime({ marketRuntime }) {
       if (started) return;
       await valuationEngine.start();
       try {
-        await protectionTriggerEngine.start();
+        await platformEventRelay.start();
         try {
-          await pendingOrderEngine.start();
+          await protectionTriggerEngine.start();
           try {
-            await trailingStopEngine.start();
-            started = true;
+            await pendingOrderEngine.start();
+            try {
+              await trailingStopEngine.start();
+              started = true;
+            } catch (error) {
+              await pendingOrderEngine.stop();
+              throw error;
+            }
           } catch (error) {
-            await pendingOrderEngine.stop();
+            await protectionTriggerEngine.stop();
             throw error;
           }
         } catch (error) {
-          await protectionTriggerEngine.stop();
+          await platformEventRelay.stop();
           throw error;
         }
       } catch (error) {
@@ -99,6 +118,7 @@ function createTradingRuntime({ marketRuntime }) {
         started,
         pendingAccounts: commandQueue.pendingAccounts,
         valuation: valuationEngine.health(),
+        platformEvents: platformEventRelay.health(),
         protection: protectionTriggerEngine.health(),
         pendingOrders: pendingOrderEngine.health(),
         trailing: trailingStopEngine.health(),
@@ -112,6 +132,8 @@ function createTradingRuntime({ marketRuntime }) {
           accountBreach: true,
           accountClose: true,
           accountLiquidation: true,
+          platformEventRelay: true,
+          signedPlatformWebhooks: true,
           marketOpen: true,
           marketClose: true,
           partialClose: true,
@@ -138,6 +160,7 @@ function createTradingRuntime({ marketRuntime }) {
       await trailingStopEngine.stop();
       await pendingOrderEngine.stop();
       await protectionTriggerEngine.stop();
+      await platformEventRelay.stop();
       await commandQueue.drainAll();
       await valuationEngine.stop();
       started = false;

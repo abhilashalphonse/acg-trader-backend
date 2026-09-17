@@ -27,6 +27,13 @@ const schema = z.object({
   AUTH_FEDERATION_TICKET_TTL_SECONDS: positiveInt(60),
   AUTH_MAX_FAILED_LOGINS: positiveInt(5),
   AUTH_LOCKOUT_SECONDS: positiveInt(900),
+  PLATFORM_EVENTS_ENABLED: booleanFromEnv.default(false),
+  ACG_FUNDED_WEBHOOK_URL: z.string().url().optional(),
+  ACG_FUNDED_WEBHOOK_SECRET: z.string().min(16).optional(),
+  PLATFORM_EVENT_POLL_INTERVAL_MS: positiveInt(1000),
+  PLATFORM_EVENT_TIMEOUT_MS: positiveInt(5000),
+  PLATFORM_EVENT_BATCH_SIZE: positiveInt(100),
+  PLATFORM_EVENT_MAX_ATTEMPTS: positiveInt(12),
   MARKET_GATEWAY_ENABLED: booleanFromEnv.default(true),
   MARKET_PROVIDER: z.enum(['twelve-data']).default('twelve-data'),
   MARKET_SYMBOLS: z.string().default('EURUSD,XAUUSD'),
@@ -63,6 +70,7 @@ if (raw.MARKET_GATEWAY_ENABLED && !symbols.length) throw new Error('MARKET_SYMBO
 if (raw.MARKET_GATEWAY_ENABLED && raw.MARKET_PROVIDER === 'twelve-data' && (!raw.TWELVE_DATA_API_KEY || raw.TWELVE_DATA_API_KEY === 'your_api_key_here')) throw new Error('TWELVE_DATA_API_KEY is required when MARKET_GATEWAY_ENABLED=true');
 if (!raw.MARKET_WS_PATH.startsWith('/')) throw new Error('MARKET_WS_PATH must start with /');
 if (raw.TWELVE_DATA_RECONNECT_MAX_MS < raw.TWELVE_DATA_RECONNECT_MIN_MS) throw new Error('TWELVE_DATA_RECONNECT_MAX_MS must be >= TWELVE_DATA_RECONNECT_MIN_MS');
+if (raw.PLATFORM_EVENTS_ENABLED && (!raw.ACG_FUNDED_WEBHOOK_URL || !raw.ACG_FUNDED_WEBHOOK_SECRET)) throw new Error('ACG_FUNDED_WEBHOOK_URL and ACG_FUNDED_WEBHOOK_SECRET are required when PLATFORM_EVENTS_ENABLED=true');
 
 const env = Object.freeze({
   nodeEnv: raw.NODE_ENV,
@@ -81,6 +89,15 @@ const env = Object.freeze({
     federationTicketTtlSeconds: raw.AUTH_FEDERATION_TICKET_TTL_SECONDS,
     maxFailedLogins: raw.AUTH_MAX_FAILED_LOGINS,
     lockoutSeconds: raw.AUTH_LOCKOUT_SECONDS,
+  }),
+  platformEvents: Object.freeze({
+    enabled: raw.PLATFORM_EVENTS_ENABLED,
+    webhookUrl: raw.ACG_FUNDED_WEBHOOK_URL || null,
+    webhookSecret: raw.ACG_FUNDED_WEBHOOK_SECRET || null,
+    pollIntervalMs: raw.PLATFORM_EVENT_POLL_INTERVAL_MS,
+    timeoutMs: raw.PLATFORM_EVENT_TIMEOUT_MS,
+    batchSize: raw.PLATFORM_EVENT_BATCH_SIZE,
+    maxAttempts: raw.PLATFORM_EVENT_MAX_ATTEMPTS,
   }),
   market: Object.freeze({
     enabled: raw.MARKET_GATEWAY_ENABLED,
