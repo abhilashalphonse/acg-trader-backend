@@ -32,13 +32,11 @@ const accountStateSchema = new Schema({
 }, { _id: false });
 
 const tradingAccountSchema = new Schema({
-  // Migration-safe: legacy rows may remain null until scripts/migrate-multitenancy.js runs.
-  // New provisioning requires tenantId in AccountControlService.
-  tenantId: { type: Schema.Types.ObjectId, ref: 'Tenant', default: null, index: true },
+  tenantId: { type: Schema.Types.ObjectId, ref: 'Tenant', required: true, immutable: true, index: true },
   accountCode: { type: String, required: true, uppercase: true, trim: true },
   userId: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   ownerExternalRef: { type: String, default: null, index: true },
-  externalRef: { type: String, default: null },
+  externalRef: { type: String, required: true, trim: true },
 
   accountType: { type: String, enum: ['DEMO', 'CHALLENGE', 'FUNDED'], default: 'DEMO', index: true },
   positionMode: { type: String, enum: ['HEDGING'], default: 'HEDGING' },
@@ -64,10 +62,10 @@ tradingAccountSchema.pre('validate', function requireOwner(next) {
   next();
 });
 
-tradingAccountSchema.index({ status: 1, tradingEnabled: 1 });
+tradingAccountSchema.index({ tenantId: 1, accountCode: 1 }, { unique: true });
+tradingAccountSchema.index({ tenantId: 1, externalRef: 1 }, { unique: true });
 tradingAccountSchema.index({ tenantId: 1, ownerExternalRef: 1, status: 1 });
-tradingAccountSchema.index({ tenantId: 1, accountCode: 1 }, { unique: true, partialFilterExpression: { tenantId: { $type: 'objectId' } } });
-tradingAccountSchema.index({ tenantId: 1, externalRef: 1 }, { unique: true, partialFilterExpression: { tenantId: { $type: 'objectId' }, externalRef: { $type: 'string' } } });
+tradingAccountSchema.index({ tenantId: 1, status: 1, tradingEnabled: 1 });
 
 const TradingAccount = mongoose.models.TradingAccount || mongoose.model('TradingAccount', tradingAccountSchema);
 
