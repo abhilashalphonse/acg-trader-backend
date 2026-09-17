@@ -40,9 +40,9 @@ function createMarketRuntime() {
       await gateway.start();
       logger.info({ symbols: env.market.symbols, timeframes: env.market.candleTimeframes }, 'ACG Market Gateway started');
     },
-    attachWebSocket(server, authService) {
+    attachWebSocket(server, authService, tradingRuntime) {
       if (wsServer) return wsServer;
-      wsServer = createMarketWebSocketServer({ server, runtime: this, authService, path: env.market.wsPath, corsOrigins: env.corsOrigins, pingIntervalMs: env.market.wsPingIntervalMs, maxBufferBytes: env.market.wsMaxBufferBytes, logger });
+      wsServer = createMarketWebSocketServer({ server, runtime: this, tradingRuntime, authService, path: env.market.wsPath, corsOrigins: env.corsOrigins, pingIntervalMs: env.market.wsPingIntervalMs, maxBufferBytes: env.market.wsMaxBufferBytes, logger });
       return wsServer;
     },
     async stop() {
@@ -51,8 +51,9 @@ function createMarketRuntime() {
       started = false;
     },
     health() {
-      if (!env.market.enabled) return { enabled: false, state: 'DISABLED', symbols: env.market.symbols };
-      return { enabled: true, ...gateway.status() };
+      const websocket = wsServer?.health?.() || { clients: 0, accountSubscriptions: 0, path: env.market.wsPath };
+      if (!env.market.enabled) return { enabled: false, state: 'DISABLED', symbols: env.market.symbols, websocket };
+      return { enabled: true, ...gateway.status(), websocket };
     },
   };
 }
