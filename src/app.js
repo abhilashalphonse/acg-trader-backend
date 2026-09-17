@@ -13,6 +13,7 @@ const { createHealthRouter } = require('./modules/health/health.routes');
 const { createMarketRouter } = require('./modules/market-data/market.routes');
 const { createInstrumentRouter } = require('./modules/instruments/instrument.routes');
 const { createTradingRouter } = require('./modules/trading/trading.routes');
+const { createAccountControlRouter } = require('./modules/trading/account-control.routes');
 const { notFoundHandler, errorHandler } = require('./shared/http/error-middleware');
 
 function createApp({ marketRuntime, tradingRuntime }) {
@@ -62,6 +63,7 @@ function createApp({ marketRuntime, tradingRuntime }) {
 
   app.use('/v1/instruments', createInstrumentRouter());
   app.use('/v1/market', createMarketRouter(marketRuntime));
+  app.use('/v1/trading/accounts', createAccountControlRouter(tradingRuntime));
   app.use('/v1/trading', createTradingRouter(tradingRuntime));
 
   app.use(notFoundHandler);
