@@ -86,6 +86,7 @@ function createTradingRuntime({ marketRuntime }) {
               await trailingStopEngine.start();
               started = true;
               await reconciliationService.verifyRecovery({ persist: true });
+              if (env.reconciliation.enabled) reconciliationService.startPeriodic(env.reconciliation.intervalMs);
             } catch (error) { await pendingOrderEngine.stop(); throw error; }
           } catch (error) { await protectionTriggerEngine.stop(); throw error; }
         } catch (error) { await platformEventRelay.stop(); throw error; }
@@ -94,9 +95,10 @@ function createTradingRuntime({ marketRuntime }) {
     health() {
       const reconciliation = reconciliationService.health();
       const recoveryConsistent = reconciliation.recovery == null || reconciliation.recovery.consistent !== false;
+      const integrityHealthy = !['DEGRADED', 'ISSUES'].includes(reconciliation.state);
       return {
         enabled: env.tradingApiEnabled,
-        state: !env.tradingApiEnabled ? 'API_DISABLED' : (!started ? 'STARTING' : (recoveryConsistent ? 'READY' : 'DEGRADED')),
+        state: !env.tradingApiEnabled ? 'API_DISABLED' : (!started ? 'STARTING' : (recoveryConsistent && integrityHealthy ? 'READY' : 'DEGRADED')),
         started,
         pendingAccounts: commandQueue.pendingAccounts,
         valuation: valuationEngine.health(),
@@ -114,12 +116,13 @@ function createTradingRuntime({ marketRuntime }) {
           marketOpen: true, marketClose: true, partialClose: true, realtimeValuation: true, accountEquity: true,
           pendingOrders: true, limitOrders: true, stopOrders: true, stopLimitOrders: true, pendingOrderExpiry: true, pendingOrderCancel: true,
           protectiveTriggers: true, stopLoss: true, takeProfit: true, protectionManagement: true, breakEven: true, trailing: true,
-          reconciliation: true, immutableReconciliationReports: true, recoveryVerification: true,
+          reconciliation: true, periodicReconciliation: env.reconciliation.enabled, immutableReconciliationReports: true, recoveryVerification: true,
           riskEngine: false,
         },
       };
     },
     async stop() {
+      reconciliationService.stopPeriodic();
       await trailingStopEngine.stop();
       await pendingOrderEngine.stop();
       await protectionTriggerEngine.stop();
