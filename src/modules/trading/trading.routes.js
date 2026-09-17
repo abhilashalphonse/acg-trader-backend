@@ -19,6 +19,8 @@ const cancelPendingSchema = z.object({ accountId: objectId, clientRequestId: z.s
 const protectionSchema = z.object({ accountId: objectId, clientRequestId: z.string().trim().min(1).max(128), stopLoss: patchDecimal, takeProfit: patchDecimal, source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API') }).strict().superRefine((value, ctx) => { if (value.stopLoss === undefined && value.takeProfit === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['stopLoss'], message: 'At least one of stopLoss or takeProfit must be supplied' }); });
 const breakEvenSchema = z.object({ accountId: objectId, clientRequestId: z.string().trim().min(1).max(128), source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API') }).strict();
 const trailingSchema = z.object({ accountId: objectId, clientRequestId: z.string().trim().min(1).max(128), enabled: z.boolean(), distancePoints: z.union([z.string().min(1), z.number().finite(), z.null()]).optional().default(null).transform(value => value == null ? null : String(value)), source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API') }).strict().superRefine((value, ctx) => { if (value.enabled && value.distancePoints == null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['distancePoints'], message: 'distancePoints is required when trailing is enabled' }); });
+const reverseSchema = z.object({ accountId: objectId, clientRequestId: z.string().trim().min(1).max(128), stopLoss: optionalDecimal, takeProfit: optionalDecimal, requestedPrice: optionalDecimal, source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API') }).strict();
+const closeAllSchema = z.object({ accountId: objectId, clientRequestId: z.string().trim().min(1).max(128), source: z.enum(['WEB', 'MOBILE', 'API']).optional().default('API') }).strict();
 
 function createTradingRouter(runtime, authService) {
   const router = express.Router();
@@ -73,6 +75,25 @@ function createTradingRouter(runtime, authService) {
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
 
+  router.post('/accounts/:accountId/positions/close-all', async (req, res) => {
+    const accountId = parseObjectId(req.params.accountId);
+    const command = parse(closeAllSchema, req.body);
+    assertResourceAccount(accountId, command.accountId, 'ACCOUNT_MISMATCH');
+    requireAccountGrant(req.traderPrincipal, accountId);
+    const result = await runtime.tradingCommandService.closeAllPositions(command);
+    res.status(result.complete ? 200 : 207).json(result);
+  });
+
+  router.post('/positions/:positionId/reverse', async (req, res) => {
+    const positionId = parseObjectId(req.params.positionId);
+    const command = parse(reverseSchema, req.body);
+    const accountId = await positionAccountId(positionId);
+    assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH');
+    requireAccountGrant(req.traderPrincipal, accountId);
+    const result = await runtime.tradingCommandService.reversePosition({ ...command, positionId });
+    res.status(201).json(result);
+  });
+
   router.patch('/positions/:positionId/protection', positionCommand(positionProtectionCommand(runtime, 'updateProtection'), protectionSchema));
   router.post('/positions/:positionId/break-even', positionCommand(positionProtectionCommand(runtime, 'moveStopToBreakEven'), breakEvenSchema));
   router.patch('/positions/:positionId/trailing', positionCommand(async command => runtime.trailingStopService.configure(command), trailingSchema));
@@ -110,4 +131,4 @@ function parseObjectId(value) { const result = objectId.safeParse(value); if (!r
 function parse(schema, value) { const result = schema.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
 function validationError(error) { return new AppError('Invalid trading command', { statusCode: 400, code: 'INVALID_TRADING_COMMAND', details: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) }); }
 
-module.exports = { createTradingRouter, openSchema, pendingSchema, closeSchema, cancelPendingSchema, protectionSchema, breakEvenSchema, trailingSchema };
+module.exports = { createTradingRouter, openSchema, pendingSchema, closeSchema, cancelPendingSchema, protectionSchema, breakEvenSchema, trailingSchema, reverseSchema, closeAllSchema };
