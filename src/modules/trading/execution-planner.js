@@ -71,19 +71,12 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   const openVolume = assertPositiveDecimal(position.openVolume, 'position.openVolume');
   const volumeStep = normalizeDecimal(position.volumeStep || instrument.volumeStep);
   const requestedVolume = volume == null ? openVolume : assertPositiveDecimal(volume, 'volume');
-
-  if (compareDecimal(requestedVolume, openVolume) > 0) {
-    throw new AppError('Close volume exceeds the open position volume', { statusCode: 400, code: 'INVALID_CLOSE_VOLUME', details: { requestedVolume, openVolume } });
-  }
-  if (!isStepAligned(requestedVolume, volumeStep)) {
-    throw new AppError('Close volume is not aligned to the instrument volume step', { statusCode: 400, code: 'INVALID_CLOSE_VOLUME_STEP', details: { volume: requestedVolume, volumeStep } });
-  }
+  if (compareDecimal(requestedVolume, openVolume) > 0) throw new AppError('Close volume exceeds the open position volume', { statusCode: 400, code: 'INVALID_CLOSE_VOLUME', details: { requestedVolume, openVolume } });
+  if (!isStepAligned(requestedVolume, volumeStep)) throw new AppError('Close volume is not aligned to the instrument volume step', { statusCode: 400, code: 'INVALID_CLOSE_VOLUME_STEP', details: { volume: requestedVolume, volumeStep } });
 
   const remainingVolume = subtractDecimal(openVolume, requestedVolume);
   const minVolume = normalizeDecimal(instrument.minVolume);
-  if (compareDecimal(remainingVolume, '0') > 0 && compareDecimal(remainingVolume, minVolume) < 0) {
-    throw new AppError('Partial close would leave a position below the minimum volume', { statusCode: 400, code: 'INVALID_REMAINING_VOLUME', details: { remainingVolume, minVolume } });
-  }
+  if (compareDecimal(remainingVolume, '0') > 0 && compareDecimal(remainingVolume, minVolume) < 0) throw new AppError('Partial close would leave a position below the minimum volume', { statusCode: 400, code: 'INVALID_REMAINING_VOLUME', details: { remainingVolume, minVolume } });
 
   const closeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
   const fillPrice = executablePrice(quote, closeSide, instrument);
@@ -98,30 +91,14 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
 
   const currentMargin = normalizeDecimal(position.margin ?? '0');
   const fullClose = compareDecimal(requestedVolume, openVolume) === 0;
-  let releasedMargin = fullClose
-    ? currentMargin
-    : divideDecimal(multiplyDecimal(currentMargin, requestedVolume), openVolume, { scale: 12, rounding: ROUNDING.HALF_UP });
+  let releasedMargin = fullClose ? currentMargin : divideDecimal(multiplyDecimal(currentMargin, requestedVolume), openVolume, { scale: 12, rounding: ROUNDING.HALF_UP });
   if (compareDecimal(releasedMargin, currentMargin) > 0) releasedMargin = currentMargin;
 
   return Object.freeze({
-    symbol: normalizeSymbol(position.symbol),
-    closeSide,
-    volume: requestedVolume,
-    remainingVolume,
-    fullClose,
-    fillPrice,
-    entryPrice,
-    contractSize,
-    volumeStep,
-    quoteCurrency: pnlCurrency,
-    pnlCurrency,
-    realizedPnlQuote,
-    realizedPnl,
-    commission,
-    netBalanceChange,
-    releasedMargin,
-    quoteSequence: quote.sequence ?? null,
-    quoteReceivedAtMs: quote.receivedAtMs,
+    symbol: normalizeSymbol(position.symbol), closeSide, volume: requestedVolume, remainingVolume, fullClose,
+    fillPrice, entryPrice, contractSize, volumeStep, quoteCurrency: pnlCurrency, pnlCurrency,
+    realizedPnlQuote, realizedPnl, commission, netBalanceChange, releasedMargin,
+    quoteSequence: quote.sequence ?? null, quoteReceivedAtMs: quote.receivedAtMs,
     dealType: fullClose ? 'CLOSE' : 'PARTIAL_CLOSE',
   });
 }
@@ -132,9 +109,7 @@ function validateAccountForOpen(account, symbol) {
   if (account.tradingEnabled !== true) throw new AppError('Trading is disabled for this account', { statusCode: 409, code: 'ACCOUNT_TRADING_DISABLED' });
   const allowed = account.riskPolicy?.allowedSymbols || [];
   const canonical = normalizeSymbol(symbol);
-  if (allowed.length && !allowed.map(normalizeSymbol).includes(canonical)) {
-    throw new AppError('Symbol is not allowed for this trading account', { statusCode: 403, code: 'SYMBOL_NOT_ALLOWED', details: { symbol: canonical } });
-  }
+  if (allowed.length && !allowed.map(normalizeSymbol).includes(canonical)) throw new AppError('Symbol is not allowed for this trading account', { statusCode: 403, code: 'SYMBOL_NOT_ALLOWED', details: { symbol: canonical } });
 }
 function validateAccountForClose(account) { if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' }); }
 function validateInstrumentForOpen(instrument) {
@@ -193,9 +168,8 @@ function calculateRequiredMargin({ account, instrument, volume, fillPrice, curre
   const notional = multiplyDecimal(multiplyDecimal(fillPrice, instrument.contractSize), volume);
   const marginCurrency = String(instrument.marginCurrency || instrument.quoteCurrency || '').toUpperCase();
   let rawMargin;
-  if (instrument.marginRate != null && compareDecimal(instrument.marginRate, '0') > 0) {
-    rawMargin = multiplyDecimal(notional, instrument.marginRate);
-  } else {
+  if (instrument.marginRate != null && compareDecimal(instrument.marginRate, '0') > 0) rawMargin = multiplyDecimal(notional, instrument.marginRate);
+  else {
     const accountLeverage = Number(account.leverage);
     const instrumentLeverage = Number(instrument.defaultLeverage);
     const effectiveLeverage = Math.min(accountLeverage, instrumentLeverage);
@@ -205,12 +179,13 @@ function calculateRequiredMargin({ account, instrument, volume, fillPrice, curre
   return convertCurrency(rawMargin, marginCurrency, account.currency, currencyConverter, nowMs);
 }
 
-function convertCurrency(amount, fromCurrency, toCurrency, currencyConverter, nowMs = Date.now()) {
+function convertCurrency(amount, fromCurrency, toCurrency, currencyConverter = null, nowMs = Date.now()) {
   const from = String(fromCurrency || '').toUpperCase();
   const to = String(toCurrency || '').toUpperCase();
   if (from && to && from === to) return normalizeDecimal(amount);
-  if (!currencyConverter?.convert) throw new AppError('Live currency conversion path is unavailable', { statusCode: 409, code: 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE', details: { fromCurrency: from || null, toCurrency: to || null } });
-  return currencyConverter.convert(amount, from, to, { nowMs });
+  const converter = currencyConverter || require('./currency-conversion-engine').getDefaultCurrencyConversionEngine();
+  if (!converter?.convert) throw new AppError('Live currency conversion path is unavailable', { statusCode: 409, code: 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE', details: { fromCurrency: from || null, toCurrency: to || null } });
+  return converter.convert(amount, from, to, { nowMs });
 }
 
 function validateOpenPosition(position, account) {
@@ -221,16 +196,4 @@ function validateOpenPosition(position, account) {
 function normalizeSide(side) { const value = String(side || '').toUpperCase(); if (!['BUY', 'SELL'].includes(value)) throw new AppError('Order side must be BUY or SELL', { statusCode: 400, code: 'INVALID_ORDER_SIDE' }); return value; }
 function calculateAdverseSlippage({ side, fillPrice, requestedPrice }) { if (requestedPrice == null || requestedPrice === '') return '0'; const requested = normalizeDecimal(requestedPrice); return side === 'BUY' ? subtractDecimal(fillPrice, requested) : subtractDecimal(requested, fillPrice); }
 
-module.exports = {
-  planMarketOpen,
-  planMarketClose,
-  calculateRequiredMargin,
-  calculateCommission,
-  calculateAdverseSlippage,
-  convertCurrency,
-  validateVolume,
-  validateAccountForOpen,
-  validateAccountForClose,
-  validateInstrumentForOpen,
-  validateInstrumentForClose,
-};
+module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, validateVolume, validateAccountForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose };
