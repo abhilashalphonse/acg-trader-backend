@@ -124,8 +124,12 @@ class AuthService {
     const ids = uniqueIds(accountIds);
     if (!ids.length) throw new AppError('At least one accountId is required', { statusCode: 400, code: 'ACCOUNT_GRANT_REQUIRED' });
 
-    const accounts = await this.accountModel.find({ _id: { $in: ids }, tenantId: String(tenantId), ownerExternalRef: owner }).select('_id').lean();
-    if (accounts.length !== ids.length) {
+    const accounts = await Promise.all(ids.map(id => this.accountModel.findOne({
+      _id: id,
+      tenantId: String(tenantId),
+      ownerExternalRef: owner,
+    }).select('_id').lean()));
+    if (accounts.some(account => !account)) {
       throw new AppError('One or more accounts are not owned by this tenant user', { statusCode: 403, code: 'ACCOUNT_GRANT_FORBIDDEN' });
     }
 
@@ -144,12 +148,13 @@ class AuthService {
 
   async exchangeFederationTicket(ticket) {
     const now = this.now();
-    const record = await this.federationTicketModel.findOneAndUpdate(
-      { tokenHash: hashToken(requiredString(ticket, 'ticket')), consumedAt: null, expiresAt: { $gt: now } },
-      { $set: { consumedAt: now } },
-      { new: true },
-    );
-    if (!record) throw new AppError('Federated login ticket is invalid or expired', { statusCode: 401, code: 'FEDERATION_TICKET_INVALID' });
+    const tokenHash = hashToken(requiredString(ticket, 'ticket'));
+    const record = await this.federationTicketModel.findOne({ tokenHash, consumedAt: null });
+    if (!record || !record.expiresAt || record.expiresAt <= now) {
+      throw new AppError('Federated login ticket is invalid or expired', { statusCode: 401, code: 'FEDERATION_TICKET_INVALID' });
+    }
+    record.consumedAt = now;
+    await record.save();
 
     const tenant = await this.tenantModel.findOne({ _id: record.tenantId, status: 'ACTIVE' });
     if (!tenant) throw new AppError('Tenant is not active', { statusCode: 403, code: 'TENANT_DISABLED' });
@@ -165,8 +170,13 @@ class AuthService {
 
   async authenticateSessionToken(token) {
     const now = this.now();
-    const session = await this.sessionModel.findOne({ tokenHash: hashToken(requiredString(token, 'accessToken')), revokedAt: null, expiresAt: { $gt: now } }).lean();
-    if (!session) throw new AppError('Trading session is invalid or expired', { statusCode: 401, code: 'TRADER_SESSION_INVALID' });
+    const session = await this.sessionModel.findOne({
+      tokenHash: hashToken(requiredString(token, 'accessToken')),
+      revokedAt: null,
+    }).lean();
+    if (!session || !session.expiresAt || session.expiresAt <= now) {
+      throw new AppError('Trading session is invalid or expired', { statusCode: 401, code: 'TRADER_SESSION_INVALID' });
+    }
     await this.sessionModel.updateOne({ _id: session._id }, { $set: { lastSeenAt: now } });
     return {
       sessionId: String(session._id),
