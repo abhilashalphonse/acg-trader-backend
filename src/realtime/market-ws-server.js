@@ -4,7 +4,12 @@ const { WebSocketServer, WebSocket } = require('ws');
 const { normalizeSymbol } = require('../modules/market-data/market.utils');
 
 function createMarketWebSocketServer({ server, runtime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, logger }) {
-  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, clientTracking: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: false,
+    clientTracking: true,
+    handleProtocols(protocols) { return protocols.has('acg-trader') ? 'acg-trader' : false; },
+  });
   const subscriptions = new WeakMap();
   let outboundSequence = 0;
   let closed = false;
@@ -25,7 +30,7 @@ function createMarketWebSocketServer({ server, runtime, authService, path, corsO
     const origin = request.headers.origin;
     if (origin && !corsOrigins.includes('*') && !corsOrigins.includes(origin)) { rejectUpgrade(socket, 403, 'Forbidden'); return; }
     try {
-      const token = url.searchParams.get('access_token');
+      const token = websocketAccessToken(request);
       if (!token) { rejectUpgrade(socket, 401, 'Unauthorized'); return; }
       request.traderPrincipal = await authService.authenticateSessionToken(token);
     } catch {
@@ -126,6 +131,13 @@ function createMarketWebSocketServer({ server, runtime, authService, path, corsO
     for (const socket of wss.clients) socket.terminate();
     await new Promise(resolve => wss.close(() => resolve()));
   } };
+}
+
+function websocketAccessToken(request) {
+  const header = String(request.headers['sec-websocket-protocol'] || '');
+  const protocols = header.split(',').map(value => value.trim()).filter(Boolean);
+  const authProtocol = protocols.find(value => value.startsWith('auth.'));
+  return authProtocol ? authProtocol.slice(5) : null;
 }
 
 function rejectUpgrade(socket, status, message) {
