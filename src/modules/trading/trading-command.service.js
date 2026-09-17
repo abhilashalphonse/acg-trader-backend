@@ -3,33 +3,51 @@
 const crypto = require('crypto');
 const { AppError } = require('../../shared/errors/app-error');
 const { Position } = require('./position.model');
+const { Order } = require('./order.model');
 
 class TradingCommandService {
-  constructor({ marketOrderService, positionModel = Position, logger }) {
+  constructor({ marketOrderService, positionModel = Position, orderModel = Order, logger }) {
     this.marketOrderService = marketOrderService;
     this.positionModel = positionModel;
+    this.orderModel = orderModel;
     this.logger = logger;
   }
 
   async reversePosition(command) {
     const accountId = String(command.accountId || '');
     const positionId = String(command.positionId || '');
-    const position = await this.positionModel.findOne({ _id: positionId, accountId, status: 'OPEN' }).lean();
-    if (!position) throw new AppError('Open position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
-
-    const volume = String(position.openVolume);
-    const oppositeSide = String(position.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
     const closeOrderId = childId(command.clientRequestId, 'reverse-close');
     const openOrderId = childId(command.clientRequestId, 'reverse-open');
+    const position = await this.positionModel.findOne({ _id: positionId, accountId }).lean();
+    if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
 
-    const close = await this.marketOrderService.closeMarketPosition({
-      accountId,
-      positionId,
-      clientOrderId: closeOrderId,
-      volume: null,
-      requestedPrice: command.requestedPrice ?? null,
-      source: command.source || 'API',
-    });
+    const resumed = String(position.status).toUpperCase() === 'CLOSED';
+    if (resumed) {
+      const priorClose = await this.orderModel.findOne({
+        accountId,
+        clientOrderId: closeOrderId,
+        targetPositionId: positionId,
+        status: 'FILLED',
+      }).lean();
+      if (!priorClose) throw new AppError('Position is already closed and was not closed by this reverse command', { statusCode: 409, code: 'POSITION_ALREADY_CLOSED' });
+    } else if (String(position.status).toUpperCase() !== 'OPEN') {
+      throw new AppError('Position is not open', { statusCode: 409, code: 'POSITION_NOT_OPEN' });
+    }
+
+    const volume = String(resumed ? position.initialVolume : position.openVolume);
+    const oppositeSide = String(position.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+    let close = null;
+
+    if (!resumed) {
+      close = await this.marketOrderService.closeMarketPosition({
+        accountId,
+        positionId,
+        clientOrderId: closeOrderId,
+        volume: null,
+        requestedPrice: command.requestedPrice ?? null,
+        source: command.source || 'API',
+      });
+    }
 
     try {
       const open = await this.marketOrderService.openMarketOrder({
@@ -46,6 +64,7 @@ class TradingCommandService {
       return {
         operation: 'REVERSE',
         complete: true,
+        resumed,
         originalPositionId: positionId,
         close,
         open,
@@ -59,7 +78,7 @@ class TradingCommandService {
           originalPositionId: positionId,
           closeOrderId,
           openOrderId,
-          recovery: 'Retry the same reverse command. Child command idempotency prevents the close leg from executing twice.',
+          recovery: 'Retry the same reverse command. The close leg is verified and will not execute twice.',
           causeCode: error?.code || null,
         },
       });
