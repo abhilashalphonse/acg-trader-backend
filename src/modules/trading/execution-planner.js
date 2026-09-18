@@ -117,6 +117,14 @@ function validateChallengeRiskForOpen(account) {
   const equity = normalizeDecimal(state.equity ?? state.balance ?? '0');
   const balance = normalizeDecimal(state.balance ?? '0');
   const initial = normalizeDecimal(state.initialBalance ?? '0');
+
+  const currentRiskDay = new Date().toISOString().slice(0, 10);
+  if (account.riskDayKey !== currentRiskDay) {
+    account.riskDayKey = currentRiskDay;
+    state.dailyStartEquity = equity;
+    state.realizedPnlToday = '0';
+  }
+
   const dailyStart = normalizeDecimal(state.dailyStartEquity ?? initial);
 
   const dailyLimit = normalizeDecimal(policy.dailyLoss?.limit ?? '0');
