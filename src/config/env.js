@@ -57,6 +57,8 @@ const schema = z.object({
   TWELVE_DATA_HTTP_TIMEOUT_MS: positiveInt(10000),
 });
 
+const platformEventsExplicitlyConfigured = Object.prototype.hasOwnProperty.call(process.env, 'PLATFORM_EVENTS_ENABLED');
+
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
   const details = parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ');
@@ -72,7 +74,12 @@ if (raw.MARKET_GATEWAY_ENABLED && !symbols.length) throw new Error('MARKET_SYMBO
 if (raw.MARKET_GATEWAY_ENABLED && raw.MARKET_PROVIDER === 'twelve-data' && (!raw.TWELVE_DATA_API_KEY || raw.TWELVE_DATA_API_KEY === 'your_api_key_here')) throw new Error('TWELVE_DATA_API_KEY is required when MARKET_GATEWAY_ENABLED=true');
 if (!raw.MARKET_WS_PATH.startsWith('/')) throw new Error('MARKET_WS_PATH must start with /');
 if (raw.TWELVE_DATA_RECONNECT_MAX_MS < raw.TWELVE_DATA_RECONNECT_MIN_MS) throw new Error('TWELVE_DATA_RECONNECT_MAX_MS must be >= TWELVE_DATA_RECONNECT_MIN_MS');
-if (raw.PLATFORM_EVENTS_ENABLED && (!raw.ACG_FUNDED_WEBHOOK_URL || !raw.ACG_FUNDED_WEBHOOK_SECRET)) throw new Error('ACG_FUNDED_WEBHOOK_URL and ACG_FUNDED_WEBHOOK_SECRET are required when PLATFORM_EVENTS_ENABLED=true');
+const resolvedPlatformEventsEnabled = platformEventsExplicitlyConfigured
+  ? raw.PLATFORM_EVENTS_ENABLED
+  : Boolean(raw.ACG_FUNDED_WEBHOOK_URL && raw.ACG_FUNDED_WEBHOOK_SECRET);
+if (resolvedPlatformEventsEnabled && (!raw.ACG_FUNDED_WEBHOOK_URL || !raw.ACG_FUNDED_WEBHOOK_SECRET)) {
+  throw new Error('ACG_FUNDED_WEBHOOK_URL and ACG_FUNDED_WEBHOOK_SECRET are required when platform events are enabled');
+}
 
 const env = Object.freeze({
   nodeEnv: raw.NODE_ENV,
@@ -94,7 +101,7 @@ const env = Object.freeze({
     lockoutSeconds: raw.AUTH_LOCKOUT_SECONDS,
   }),
   platformEvents: Object.freeze({
-    enabled: raw.PLATFORM_EVENTS_ENABLED,
+    enabled: resolvedPlatformEventsEnabled,
     webhookUrl: raw.ACG_FUNDED_WEBHOOK_URL || null,
     webhookSecret: raw.ACG_FUNDED_WEBHOOK_SECRET || null,
     pollIntervalMs: raw.PLATFORM_EVENT_POLL_INTERVAL_MS,
