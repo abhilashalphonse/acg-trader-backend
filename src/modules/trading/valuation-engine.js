@@ -161,8 +161,12 @@ class ValuationEngine {
       touchedAccounts.add(position.accountId);
       this.#revaluePosition(id, quote, true);
     }
-    // FX conversion quotes can change account P&L even when the account has no position in that pair.
-    for (const accountId of this.accountBases.keys()) touchedAccounts.add(accountId);
+    // FX conversion quotes can change P&L for accounts that have open
+    // positions in other symbols. Flat accounts have nothing to revalue and
+    // must not emit valuation updates on every market tick.
+    for (const [accountId, positionIds] of this.positionsByAccount.entries()) {
+      if (positionIds?.size) touchedAccounts.add(accountId);
+    }
     for (const accountId of touchedAccounts) this.#recalculateAccount(accountId, true);
   }
   #upsertPosition(position) {
