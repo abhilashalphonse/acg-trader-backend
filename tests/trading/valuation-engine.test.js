@@ -160,3 +160,47 @@ test('flat accounts do not emit valuation updates on subsequent market ticks', a
 
   await engine.stop();
 });
+
+
+test('startup recovery uses a trusted $in selector for account ids', async () => {
+  const account = {
+    _id: 'a1',
+    accountCode: 'A1',
+    currency: 'USD',
+    state: { balance: '10000', realizedPnlToday: '0', dailyStartEquity: '10000' },
+  };
+  const position = {
+    _id: 'p1',
+    positionId: 'pos-1',
+    accountId: 'a1',
+    symbol: 'EURUSD',
+    side: 'BUY',
+    status: 'OPEN',
+    openVolume: '1',
+    entryPrice: '1.1000',
+    contractSize: '100000',
+    volumeStep: '0.01',
+    quoteCurrency: 'USD',
+    margin: '1100',
+  };
+
+  let capturedFilter = null;
+  const engine = new ValuationEngine({
+    eventBus: new EventEmitter(),
+    quoteStore: { get: () => null },
+    logger: { info() {}, error() {} },
+    positionModel: { find: () => query([position]) },
+    accountModel: {
+      find: filter => {
+        capturedFilter = filter;
+        return query([account]);
+      },
+      findById: () => query(account),
+    },
+  });
+
+  await engine.start();
+  assert.deepEqual(capturedFilter?._id?.$in, ['a1']);
+  assert.equal(capturedFilter?._id?.$eq, undefined);
+  await engine.stop();
+});
