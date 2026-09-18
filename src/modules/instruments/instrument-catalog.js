@@ -373,7 +373,7 @@ function commoditySpec(spec) {
     quoteCurrency: spec.quoteCurrency, digits: spec.digits, tickSize: spec.tickSize,
     pipSize: spec.pipSize, contractSize: spec.contractSize,
     defaultLeverage: spec.defaultLeverage, fixedPoints: spec.fixedPoints,
-    providerSymbol: spec.providerSymbol, tradingSessions: [],
+    providerSymbol: spec.providerSymbol, tradingSessions: FX_WEEK,
   });
 }
 
