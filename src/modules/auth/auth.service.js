@@ -151,32 +151,59 @@ class AuthService {
     const now = this.now();
     const tokenHash = hashToken(requiredString(ticket, 'ticket'));
 
-    // Consume the ticket atomically. Only one concurrent exchange can match
-    // consumedAt:null, which prevents replay from creating multiple sessions.
-    const record = await this.federationTicketModel.findOneAndUpdate(
-      {
-        tokenHash,
-        consumedAt: null,
-        expiresAt: mongoose.trusted({ $gt: now }),
-      },
-      { $set: { consumedAt: now } },
-      { new: true },
-    );
+    let record;
+    try {
+      // Consume the ticket atomically. Only one concurrent exchange can match
+      // consumedAt:null, which prevents replay from creating multiple sessions.
+      record = await this.federationTicketModel.findOneAndUpdate(
+        {
+          tokenHash,
+          consumedAt: null,
+          expiresAt: mongoose.trusted({ $gt: now }),
+        },
+        { $set: { consumedAt: now } },
+        { new: true },
+      );
+    } catch (error) {
+      throw new AppError(`Federation ticket lookup failed: ${error.message}`, {
+        statusCode: 500,
+        code: 'FEDERATION_TICKET_LOOKUP_FAILED',
+        expose: true,
+      });
+    }
 
     if (!record) {
       throw new AppError('Federated login ticket is invalid or expired', { statusCode: 401, code: 'FEDERATION_TICKET_INVALID' });
     }
 
-    const tenant = await this.tenantModel.findOne({ _id: record.tenantId, status: 'ACTIVE' });
+    let tenant;
+    try {
+      tenant = await this.tenantModel.findOne({ _id: record.tenantId, status: 'ACTIVE' });
+    } catch (error) {
+      throw new AppError(`Federation tenant lookup failed: ${error.message}`, {
+        statusCode: 500,
+        code: 'FEDERATION_TENANT_LOOKUP_FAILED',
+        expose: true,
+      });
+    }
+
     if (!tenant) throw new AppError('Tenant is not active', { statusCode: 403, code: 'TENANT_DISABLED' });
     this.#assertAuthMode(tenant, 'FEDERATED');
 
-    return this.#createSession({
-      tenantId: record.tenantId,
-      authMethod: 'FEDERATED',
-      ownerExternalRef: record.ownerExternalRef,
-      accountIds: record.accountIds,
-    });
+    try {
+      return await this.#createSession({
+        tenantId: record.tenantId,
+        authMethod: 'FEDERATED',
+        ownerExternalRef: record.ownerExternalRef,
+        accountIds: record.accountIds,
+      });
+    } catch (error) {
+      throw new AppError(`Federation session creation failed: ${error.message}`, {
+        statusCode: 500,
+        code: 'FEDERATION_SESSION_CREATE_FAILED',
+        expose: true,
+      });
+    }
   }
 
   async authenticateSessionToken(token) {
