@@ -2,9 +2,6 @@ name: Backend CI
 
 on:
   push:
-    branches:
-      - main
-      - feature/multitenant-auth
   pull_request:
     branches:
       - main
