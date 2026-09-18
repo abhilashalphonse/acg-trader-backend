@@ -1,5 +1,6 @@
 'use strict';
 
+const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const {
   addDecimal,
@@ -207,7 +208,7 @@ class PendingOrderService {
   }
 
   async listPendingOrders(accountId) {
-    const orders = await this.orderModel.find({ accountId, status: { $in: ACTIVE_PENDING_STATUSES } })
+    const orders = await this.orderModel.find({ accountId, status: mongoose.trusted({ $in: ACTIVE_PENDING_STATUSES }) })
       .sort({ createdAt: -1 })
       .lean();
     return orders.map(serializeOrder);

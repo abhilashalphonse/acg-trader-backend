@@ -1,5 +1,6 @@
 'use strict';
 
+const mongoose = require('mongoose');
 const { addDecimal, compareDecimal, normalizeDecimal } = require('../../shared/decimal/decimal');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { AccountLedger } = require('../trading/account-ledger.model');
@@ -34,6 +35,8 @@ class ReconciliationService {
     this.lastError = null;
     this.periodicTimer = null;
     this.periodicIntervalMs = null;
+    this.periodicCursorId = null;
+    this.periodicAccountBatchSize = 100;
   }
 
   health() {
@@ -129,8 +132,26 @@ class ReconciliationService {
     try {
       const filter = {};
       if (tenantId) filter.tenantId = tenantId;
-      if (Array.isArray(accountIds) && accountIds.length) filter._id = { $in: [...new Set(accountIds.map(String))] };
-      const accounts = await this.accountModel.find(filter).sort({ _id: 1 }).lean();
+      if (Array.isArray(accountIds) && accountIds.length) {
+        filter._id = mongoose.trusted({ $in: [...new Set(accountIds.map(String))] });
+      } else if (scope === 'PERIODIC' && this.periodicCursorId) {
+        filter._id = mongoose.trusted({ $gt: this.periodicCursorId });
+      }
+
+      let accountQuery = this.accountModel.find(filter).sort({ _id: 1 });
+      if (scope === 'PERIODIC') accountQuery = accountQuery.limit(this.periodicAccountBatchSize);
+      let accounts = await accountQuery.lean();
+
+      if (scope === 'PERIODIC' && !accounts.length && this.periodicCursorId) {
+        this.periodicCursorId = null;
+        accounts = await this.accountModel.find(tenantId ? { tenantId } : {})
+          .sort({ _id: 1 })
+          .limit(this.periodicAccountBatchSize)
+          .lean();
+      }
+      if (scope === 'PERIODIC' && accounts.length) {
+        this.periodicCursorId = String(accounts[accounts.length - 1]._id);
+      }
       const issues = [];
       for (const account of accounts) {
         const accountIssues = this.commandQueue?.run

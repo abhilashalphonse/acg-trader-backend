@@ -1,5 +1,6 @@
 'use strict';
 
+const mongoose = require('mongoose');
 const { Order } = require('./order.model');
 const { Deal } = require('./deal.model');
 const { Position } = require('./position.model');
@@ -21,11 +22,12 @@ async function page(model, accountId, query, serializer, timeField) {
   if (query.status) filter.status = String(query.status).toUpperCase();
   if (query.side) filter.side = String(query.side).toUpperCase();
   if (query.from || query.to) {
-    filter[timeField] = {};
-    if (query.from) filter[timeField].$gte = new Date(query.from);
-    if (query.to) filter[timeField].$lte = new Date(query.to);
+    const range = {};
+    if (query.from) range.$gte = new Date(query.from);
+    if (query.to) range.$lte = new Date(query.to);
+    filter[timeField] = mongoose.trusted(range);
   }
-  if (query.cursor) filter._id = { $lt: query.cursor };
+  if (query.cursor) filter._id = mongoose.trusted({ $lt: query.cursor });
   const limit = Math.max(1, Math.min(200, Number(query.limit) || 50));
   const docs = await model.find(filter).sort({ _id: -1 }).limit(limit + 1).lean();
   const hasMore = docs.length > limit;

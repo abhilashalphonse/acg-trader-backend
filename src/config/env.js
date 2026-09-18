@@ -71,7 +71,11 @@ const persistTimeframes = [...new Set(csv(raw.MARKET_PERSIST_TIMEFRAMES).map(val
 for (const timeframe of [...candleTimeframes, ...persistTimeframes]) if (!SUPPORTED_TIMEFRAMES.has(timeframe)) throw new Error(`Invalid market timeframe: ${timeframe}`);
 for (const timeframe of persistTimeframes) if (!candleTimeframes.includes(timeframe)) throw new Error(`Persist timeframe ${timeframe} must also be in MARKET_CANDLE_TIMEFRAMES`);
 if (raw.MARKET_GATEWAY_ENABLED && !symbols.length) throw new Error('MARKET_SYMBOLS must include at least one symbol');
-if (raw.MARKET_GATEWAY_ENABLED && raw.MARKET_PROVIDER === 'twelve-data' && (!raw.TWELVE_DATA_API_KEY || raw.TWELVE_DATA_API_KEY === 'your_api_key_here')) throw new Error('TWELVE_DATA_API_KEY is required when MARKET_GATEWAY_ENABLED=true');
+if (
+  raw.MARKET_GATEWAY_ENABLED
+  && raw.MARKET_PROVIDER === 'twelve-data'
+  && (!raw.TWELVE_DATA_API_KEY || /^(your_|<)/i.test(raw.TWELVE_DATA_API_KEY))
+) throw new Error('TWELVE_DATA_API_KEY is required when MARKET_GATEWAY_ENABLED=true');
 if (!raw.MARKET_WS_PATH.startsWith('/')) throw new Error('MARKET_WS_PATH must start with /');
 if (raw.TWELVE_DATA_RECONNECT_MAX_MS < raw.TWELVE_DATA_RECONNECT_MIN_MS) throw new Error('TWELVE_DATA_RECONNECT_MAX_MS must be >= TWELVE_DATA_RECONNECT_MIN_MS');
 const resolvedPlatformEventsEnabled = platformEventsExplicitlyConfigured

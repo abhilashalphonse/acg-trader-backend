@@ -1,5 +1,6 @@
 'use strict';
 
+const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const {
   normalizeDecimal,
@@ -37,7 +38,7 @@ class AccountLedgerService {
   async list(accountId, { tenantId, limit = 100, before = null } = {}) {
     const scope = { accountId: String(accountId) };
     if (tenantId) scope.tenantId = tenantId;
-    if (before) scope.createdAt = { $lt: new Date(before) };
+    if (before) scope.createdAt = mongoose.trusted({ $lt: new Date(before) });
 
     const entries = await this.ledgerModel.find(scope)
       .sort({ createdAt: -1, _id: -1 })

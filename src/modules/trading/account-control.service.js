@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const { normalizeDecimal, compareDecimal } = require('../../shared/decimal/decimal');
 const { TradingAccount } = require('../accounts/trading-account.model');
@@ -309,7 +310,7 @@ class AccountControlService {
 
   async #cancelPending(accountId, reason, now, session) {
     const result = await this.orderModel.updateMany(
-      { accountId, status: { $in: ['PENDING', 'TRIGGERED'] } },
+      { accountId, status: mongoose.trusted({ $in: ['PENDING', 'TRIGGERED'] }) },
       {
         $set: {
           status: 'CANCELLED',

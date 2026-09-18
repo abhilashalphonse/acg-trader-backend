@@ -168,7 +168,6 @@ class AuthService {
       throw new AppError(`Federation ticket lookup failed: ${error.message}`, {
         statusCode: 500,
         code: 'FEDERATION_TICKET_LOOKUP_FAILED',
-        expose: true,
       });
     }
 
@@ -183,7 +182,6 @@ class AuthService {
       throw new AppError(`Federation tenant lookup failed: ${error.message}`, {
         statusCode: 500,
         code: 'FEDERATION_TENANT_LOOKUP_FAILED',
-        expose: true,
       });
     }
 
@@ -198,10 +196,17 @@ class AuthService {
         accountIds: record.accountIds,
       });
     } catch (error) {
-      throw new AppError(`Federation session creation failed: ${error.message}`, {
+      try {
+        await this.federationTicketModel.updateOne(
+          { _id: record._id, consumedAt: now },
+          { $set: { consumedAt: null } },
+        );
+      } catch {
+        // The original session-creation error is more useful to operators.
+      }
+      throw new AppError('Federation session creation failed', {
         statusCode: 500,
         code: 'FEDERATION_SESSION_CREATE_FAILED',
-        expose: true,
       });
     }
   }
