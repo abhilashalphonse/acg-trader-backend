@@ -106,10 +106,56 @@ function validateAccountForOpen(account, symbol) {
   if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
   if (account.status !== 'ACTIVE') throw new AppError('Trading account is not active', { statusCode: 409, code: 'ACCOUNT_NOT_ACTIVE', details: { status: account.status } });
   if (account.tradingEnabled !== true) throw new AppError('Trading is disabled for this account', { statusCode: 409, code: 'ACCOUNT_TRADING_DISABLED' });
+  validateChallengeRiskForOpen(account);
   const allowed = account.riskPolicy?.allowedSymbols || [];
   const canonical = normalizeSymbol(symbol);
   if (allowed.length && !allowed.map(normalizeSymbol).includes(canonical)) throw new AppError('Symbol is not allowed for this trading account', { statusCode: 403, code: 'SYMBOL_NOT_ALLOWED', details: { symbol: canonical } });
 }
+function validateChallengeRiskForOpen(account) {
+  const state = account.state || {};
+  const policy = account.riskPolicy || {};
+  const equity = normalizeDecimal(state.equity ?? state.balance ?? '0');
+  const balance = normalizeDecimal(state.balance ?? '0');
+  const initial = normalizeDecimal(state.initialBalance ?? '0');
+  const dailyStart = normalizeDecimal(state.dailyStartEquity ?? initial);
+
+  const dailyLimit = normalizeDecimal(policy.dailyLoss?.limit ?? '0');
+  if (compareDecimal(dailyLimit, '0') > 0) {
+    const dailyFloor = subtractDecimal(dailyStart, dailyLimit);
+    if (compareDecimal(equity, dailyFloor) <= 0) {
+      throw new AppError('Daily loss limit has been reached', {
+        statusCode: 409,
+        code: 'DAILY_LOSS_LIMIT_REACHED',
+        details: { equity, dailyStartEquity: dailyStart, dailyLossLimit: dailyLimit },
+      });
+    }
+  }
+
+  const maxLimit = normalizeDecimal(policy.maxLoss?.limit ?? '0');
+  if (compareDecimal(maxLimit, '0') > 0) {
+    const maxFloor = subtractDecimal(initial, maxLimit);
+    if (compareDecimal(equity, maxFloor) <= 0) {
+      throw new AppError('Maximum loss limit has been reached', {
+        statusCode: 409,
+        code: 'MAX_LOSS_LIMIT_REACHED',
+        details: { equity, initialBalance: initial, maxLossLimit: maxLimit },
+      });
+    }
+  }
+
+  const target = normalizeDecimal(policy.profitTarget ?? '0');
+  if (compareDecimal(target, '0') > 0) {
+    const targetBalance = addDecimal(initial, target);
+    if (compareDecimal(balance, targetBalance) >= 0) {
+      throw new AppError('Profit target has been reached; new exposure is paused pending challenge transition', {
+        statusCode: 409,
+        code: 'PROFIT_TARGET_REACHED',
+        details: { balance, targetBalance, profitTarget: target },
+      });
+    }
+  }
+}
+
 function validateAccountForClose(account) { if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' }); }
 function validateInstrumentForOpen(instrument) {
   if (!instrument) throw new AppError('Instrument was not found', { statusCode: 404, code: 'INSTRUMENT_NOT_FOUND' });
@@ -195,4 +241,4 @@ function validateOpenPosition(position, account) {
 function normalizeSide(side) { const value = String(side || '').toUpperCase(); if (!['BUY', 'SELL'].includes(value)) throw new AppError('Order side must be BUY or SELL', { statusCode: 400, code: 'INVALID_ORDER_SIDE' }); return value; }
 function calculateAdverseSlippage({ side, fillPrice, requestedPrice }) { if (requestedPrice == null || requestedPrice === '') return '0'; const requested = normalizeDecimal(requestedPrice); return side === 'BUY' ? subtractDecimal(fillPrice, requested) : subtractDecimal(requested, fillPrice); }
 
-module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, validateVolume, validateAccountForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose };
+module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, validateVolume, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose };
