@@ -81,6 +81,7 @@ class MarketOrderService {
         });
 
         this.#emitEvents(transactionResult.events);
+        this.#emitAuthoritativeValuation(normalized.accountId);
         return transactionResult;
       });
       return this.#decorateResponse(result.response, normalized.accountId, false);
@@ -135,6 +136,7 @@ class MarketOrderService {
         });
 
         this.#emitEvents(transactionResult.events);
+        this.#emitAuthoritativeValuation(normalized.accountId);
         return transactionResult;
       });
       return this.#decorateResponse(result.response, normalized.accountId, false);
@@ -349,6 +351,15 @@ class MarketOrderService {
       });
     } catch (failureError) {
       this.logger?.error({ err: failureError, originalError: error }, 'Failed to record idempotent trading command failure');
+    }
+  }
+
+  #emitAuthoritativeValuation(accountId) {
+    try {
+      const valuation = this.valuationEngine?.getAccountSnapshot(accountId);
+      if (valuation) this.eventBus?.emit('valuation.account.updated', valuation);
+    } catch (error) {
+      this.logger?.error({ err: error, accountId }, 'Failed to emit authoritative post-command valuation');
     }
   }
 
