@@ -1,6 +1,7 @@
 'use strict';
 
 const { AppError } = require('../errors/app-error');
+const { env } = require('../../config/env');
 
 function notFoundHandler(req, _res, next) {
   next(new AppError(`Route not found: ${req.method} ${req.originalUrl}`, {
@@ -12,7 +13,7 @@ function notFoundHandler(req, _res, next) {
 function errorHandler(error, req, res, _next) {
   const statusCode = Number(error.statusCode) || 500;
   const code = error.code || 'INTERNAL_ERROR';
-  const expose = error.expose === true || statusCode < 500;
+  const expose = error.expose === true || statusCode < 500 || !env.isProduction;
 
   req.log?.[statusCode >= 500 ? 'error' : 'warn']({ err: error, code }, 'Request failed');
 
