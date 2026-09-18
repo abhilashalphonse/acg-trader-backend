@@ -126,3 +126,37 @@ test('post-commit position/account events update the in-memory indexes before th
   assert.equal(snapshot.usedMargin, '0');
   await engine.stop();
 });
+
+
+test('flat accounts do not emit valuation updates on subsequent market ticks', async () => {
+  const { engine, eventBus } = fixture();
+  await engine.start();
+
+  eventBus.emit('trading.position.closed', { id: 'p1', accountId: 'a1', symbol: 'EURUSD', status: 'CLOSED' });
+  eventBus.emit('trading.account.updated', {
+    id: 'a1',
+    accountCode: 'A1',
+    currency: 'USD',
+    state: { balance: '10100', realizedPnlToday: '100', dailyStartEquity: '10000' },
+  });
+
+  let accountEvents = 0;
+  eventBus.on('valuation.account.updated', () => { accountEvents += 1; });
+
+  eventBus.emit('market.tick', {
+    symbol: 'EURUSD',
+    bid: 1.103,
+    ask: 1.1032,
+    sequence: 3,
+    receivedAtMs: 3000,
+    source: 'test',
+    isStale: false,
+  });
+
+  assert.equal(accountEvents, 0);
+  assert.equal(engine.getAccountSnapshot('a1').positionCount, 0);
+  assert.equal(engine.getAccountSnapshot('a1').floatingPnl, '0');
+  assert.equal(engine.getAccountSnapshot('a1').equity, '10100');
+
+  await engine.stop();
+});
