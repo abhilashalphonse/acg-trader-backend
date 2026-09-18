@@ -1,5 +1,6 @@
 'use strict';
 
+const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const { addDecimal, subtractDecimal } = require('../../shared/decimal/decimal');
 const { TradingAccount } = require('../accounts/trading-account.model');
@@ -50,7 +51,7 @@ class ValuationEngine {
     try {
       const openPositions = await this.positionModel.find({ status: 'OPEN' }).lean();
       const accountIds = [...new Set(openPositions.map(position => String(position.accountId)))];
-      const accounts = accountIds.length ? await this.accountModel.find({ _id: { $in: accountIds } }).lean() : [];
+      const accounts = accountIds.length ? await this.accountModel.find({ _id: mongoose.trusted({ $in: accountIds }) }).lean() : [];
       for (const account of accounts) this.#storeAccountBase(account);
       for (const position of openPositions) this.#storePosition(position);
       for (const position of openPositions) this.#revaluePosition(String(position._id), this.quoteStore.get(position.symbol), false);
