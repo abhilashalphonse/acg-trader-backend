@@ -34,9 +34,10 @@ class PlatformEventRelay {
     if (!this.enabled) return;
     if (!this.webhookUrl || !this.webhookSecret) throw new Error('Platform event relay requires webhookUrl and webhookSecret');
     if (typeof this.fetchImpl !== 'function') throw new Error('Platform event relay requires fetch');
+    // ACG Trader valuation engine is the sole authority for Funded
+    // balance/equity/margin snapshots. Execution and ledger events are
+    // inputs to valuation, not competing snapshot sources.
     this.#listen('valuation.account.updated', payload => this.#captureSnapshot(payload, 'VALUATION'));
-    this.#listen('trading.account.updated', payload => this.#captureSnapshot(payload, 'EXECUTION'));
-    this.#listen('trading.account.balance.updated', payload => this.#captureSnapshot(payload?.account || payload, 'LEDGER'));
     this.#listen('trading.deal.created', payload => this.#captureDeal(payload));
     for (const event of ['trading.account.paused', 'trading.account.resumed', 'trading.account.disabled', 'trading.account.breached', 'trading.account.closed']) {
       this.#listen(event, payload => this.#captureControl(payload, event));
