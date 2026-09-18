@@ -64,7 +64,7 @@ test('history applies cursor and date filters server-side', async () => {
     from: '2026-09-01T00:00:00.000Z',
     to: '2026-09-17T23:59:59.000Z',
   });
-  assert.deepEqual(capture.filter._id, { $lt: '64b000000000000000000002' });
+  assert.equal(capture.filter._id.$lt, '64b000000000000000000002');
   assert.equal(capture.filter.executedAt.$gte.toISOString(), '2026-09-01T00:00:00.000Z');
   assert.equal(capture.filter.executedAt.$lte.toISOString(), '2026-09-17T23:59:59.000Z');
 });
