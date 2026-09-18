@@ -4,7 +4,7 @@ const { Instrument } = require('./instrument.model');
 
 const READY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const UNAVAILABLE_TTL_MS = 6 * 60 * 60 * 1000;
-const REMOTE_ASSET_CLASSES = new Set(['FOREX', 'CRYPTO', 'EQUITY', 'METAL', 'ENERGY', 'INDEX', 'OTHER']);
+const REMOTE_ASSET_CLASSES = new Set(['FOREX', 'CRYPTO', 'EQUITY']);
 
 function createInstrumentIdentityService({ apiKey, apiBase, timeoutMs = 10000, logger } = {}) {
   const inFlight = new Map();
