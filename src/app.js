@@ -12,6 +12,7 @@ const { logger } = require('./infrastructure/logger/logger');
 const { createHealthRouter } = require('./modules/health/health.routes');
 const { createMarketRouter } = require('./modules/market-data/market.routes');
 const { createInstrumentRouter } = require('./modules/instruments/instrument.routes');
+const { createInstrumentIdentityService } = require('./modules/instruments/instrument-identity.service');
 const { createTradingRouter } = require('./modules/trading/trading.routes');
 const { createAccountControlRouter } = require('./modules/trading/account-control.routes');
 const { createAccountLedgerRouter } = require('./modules/accounts/account-ledger.routes');
@@ -23,6 +24,12 @@ const { notFoundHandler, errorHandler } = require('./shared/http/error-middlewar
 function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   const app = express();
   const { authService } = authRuntime;
+  const identityService = createInstrumentIdentityService({
+    apiKey: env.twelveData.apiKey,
+    apiBase: env.twelveData.apiBase,
+    timeoutMs: env.twelveData.httpTimeoutMs,
+    logger,
+  });
 
   if (env.trustProxy) app.set('trust proxy', 1);
   app.disable('x-powered-by');
@@ -56,7 +63,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
 
   app.use('/v1/auth', createAuthRouter(authService));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
-  app.use('/v1/instruments', createInstrumentRouter());
+  app.use('/v1/instruments', createInstrumentRouter({ identityService }));
   app.use('/v1/market', createMarketRouter(marketRuntime));
   app.use('/v1/internal/operations', createOperationsRouter(tradingRuntime, authService));
   app.use('/v1/internal/trading/accounts/:accountId/ledger', createAccountLedgerRouter(tradingRuntime, authService));

@@ -11,6 +11,15 @@ const sessionSchema = new Schema({
   close: { type: String, required: true, match: /^\d{2}:\d{2}$/ },
 }, { _id: false });
 
+const identitySchema = new Schema({
+  provider: { type: String, enum: ['twelve-data'], default: 'twelve-data' },
+  status: { type: String, enum: ['UNKNOWN', 'READY', 'UNAVAILABLE'], default: 'UNKNOWN' },
+  logoUrl: { type: String, default: null },
+  baseLogoUrl: { type: String, default: null },
+  quoteLogoUrl: { type: String, default: null },
+  checkedAt: { type: Date, default: null },
+}, { _id: false });
+
 const instrumentSchema = new Schema({
   symbol: { type: String, required: true, unique: true, uppercase: true, trim: true },
   displaySymbol: { type: String, required: true, trim: true },
@@ -52,6 +61,7 @@ const instrumentSchema = new Schema({
   timezone: { type: String, default: 'UTC' },
 
   providerMappings: { type: Map, of: String, default: {} },
+  identity: { type: identitySchema, default: undefined },
   maxQuoteAgeMs: { type: Number, default: 5000, min: 100 },
 
   chartEnabled: { type: Boolean, default: true, index: true },
