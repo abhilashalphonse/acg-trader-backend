@@ -19,7 +19,7 @@ class PlatformEventRelay {
     timeoutMs = 5000,
     batchSize = 100,
     maxAttempts = 12,
-    snapshotCoalesceMs = 250,
+    snapshotCoalesceMs = 1000,
     retentionMs = 7 * 24 * 60 * 60 * 1000,
     now = () => new Date(),
   } = {}) {
@@ -181,7 +181,7 @@ class PlatformEventRelay {
     const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
     if (!fundedAccountId) return;
     const state = payload?.state || account.state || {};
-    await this.#enqueue(account, fundedAccountId, 'ACCOUNT_SNAPSHOT', {
+    const snapshotPayload = {
       provider: 'acg-trader',
       platformAccountId: accountId,
       accountCode: account.accountCode || payload?.accountCode || null,
@@ -199,12 +199,42 @@ class PlatformEventRelay {
       valuationSequence: numberOrNull(payload?.sequence),
       valuedAtMs: numberOrNull(payload?.valuedAtMs),
       source,
-    }, {
-      phase: metadataValue(account.metadata, 'phase'),
-      occurredAt: source === 'VALUATION' && Number.isFinite(Number(payload?.valuedAtMs))
-        ? new Date(Number(payload.valuedAtMs))
-        : null,
-    });
+    };
+    const occurredAt = source === 'VALUATION' && Number.isFinite(Number(payload?.valuedAtMs))
+      ? new Date(Number(payload.valuedAtMs))
+      : this.now();
+    const eventMetadata = {
+      phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
+      tenantId: String(account.tenantId),
+      externalRef: account.externalRef || null,
+    };
+    const eventId = crypto.randomUUID();
+    const envelope = {
+      eventId: `acg-trader:${eventId}`,
+      eventType: 'ACG_TRADER_ACCOUNT_SNAPSHOT',
+      aggregateId: String(fundedAccountId),
+      timestamp: occurredAt.toISOString(),
+      payload: snapshotPayload,
+      metadata: eventMetadata,
+    };
+
+    try {
+      await this.#postEnvelope(envelope);
+      this.lastSuccessfulDeliveryAt = this.now().toISOString();
+    } catch (error) {
+      this.deliveryFailures += 1;
+      this.lastDeliveryFailureAt = this.now().toISOString();
+      this.logger?.warn({ err: error, accountId }, 'Realtime account snapshot delivery failed; queued for durable retry');
+      await this.#enqueue(
+        account,
+        fundedAccountId,
+        'ACCOUNT_SNAPSHOT',
+        snapshotPayload,
+        { ...eventMetadata, occurredAt },
+        null,
+        eventId,
+      );
+    }
   }
 
   async #captureDeal(payload) {
@@ -246,9 +276,10 @@ class PlatformEventRelay {
     }, { phase: metadataValue(account.metadata, 'phase') });
   }
 
-  async #enqueue(account, aggregateId, eventType, payload, metadata = {}, session = null) {
+  async #enqueue(account, aggregateId, eventType, payload, metadata = {}, session = null, eventId = null) {
     const { occurredAt = null, ...eventMetadata } = metadata || {};
     const document = {
+      ...(eventId ? { eventId } : {}),
       tenantId: account.tenantId,
       accountId: account._id,
       aggregateId: String(aggregateId),
@@ -274,23 +305,8 @@ class PlatformEventRelay {
       payload: record.payload,
       metadata: record.metadata || {},
     };
-    const timestamp = String(Date.now());
-    const signature = signEnvelope(this.webhookSecret, timestamp, envelope);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchImpl(this.webhookUrl, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-acg-event-timestamp': timestamp,
-          'x-acg-event-signature': signature,
-          'x-acg-event-id': envelope.eventId,
-        },
-        body: JSON.stringify(envelope),
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`ACG Funded webhook returned HTTP ${response.status}`);
+      await this.#postEnvelope(envelope);
       record.status = 'DELIVERED';
       record.deliveredAt = this.now();
       record.lastAttemptAt = this.now();
@@ -314,6 +330,28 @@ class PlatformEventRelay {
       this.deliveryFailures += 1;
       this.lastDeliveryFailureAt = this.now().toISOString();
       this.logger?.warn({ err: error, eventId: record.eventId, attempts: record.attempts }, 'Platform event delivery failed');
+    }
+  }
+
+  async #postEnvelope(envelope) {
+    const timestamp = String(Date.now());
+    const signature = signEnvelope(this.webhookSecret, timestamp, envelope);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(this.webhookUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-acg-event-timestamp': timestamp,
+          'x-acg-event-signature': signature,
+          'x-acg-event-id': envelope.eventId,
+        },
+        body: JSON.stringify(envelope),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`ACG Funded webhook returned HTTP ${response.status}`);
+      return response;
     } finally {
       clearTimeout(timer);
     }

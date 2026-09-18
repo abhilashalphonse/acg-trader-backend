@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
+const EventEmitter = require('events');
 const { PlatformEventRelay, signEnvelope, canonicalJson, retryDelayMs } = require('../../src/modules/integration/platform-event-relay');
 
 const SECRET = 'test-secret-at-least-16-chars';
@@ -108,4 +109,69 @@ test('account control facts are inserted transactionally', async () => {
   assert.equal(calls[0].options.session, session);
   assert.equal(calls[0].documents[0].eventType, 'ACCOUNT_CONTROLLED');
   assert.equal(calls[0].documents[0].payload.status, 'BREACHED');
+});
+
+
+test('successful realtime snapshots are delivered directly without Mongo outbox writes', async () => {
+  const eventBus = new EventEmitter();
+  const outboxCreates = [];
+  const deliveries = [];
+  const account = {
+    _id: '64b000000000000000000001',
+    tenantId: '64a000000000000000000001',
+    accountCode: 'ACG-1',
+    externalRef: 'challenge-1',
+    riskDayKey: '2026-09-18',
+    state: { dailyStartEquity: '100000' },
+    metadata: { fundedAccountId: 'FUNDED-1' },
+  };
+  const outboxModel = {
+    async countDocuments() { return 0; },
+    find() {
+      return {
+        sort() {
+          return {
+            async limit() { return []; },
+          };
+        },
+      };
+    },
+    async create(input) { outboxCreates.push(input); return input; },
+  };
+  const relay = new PlatformEventRelay({
+    enabled: true,
+    eventBus,
+    webhookUrl: 'https://funded.example.test/webhook',
+    webhookSecret: 'test-secret-at-least-16-chars',
+    snapshotCoalesceMs: 1,
+    accountModel: { findById: () => ({ lean: async () => account }) },
+    outboxModel,
+    fetchImpl: async (_url, request) => {
+      deliveries.push(JSON.parse(request.body));
+      return { ok: true, status: 200 };
+    },
+  });
+
+  await relay.start();
+  eventBus.emit('valuation.account.updated', {
+    accountId: String(account._id),
+    accountCode: account.accountCode,
+    balance: '100000',
+    equity: '100100',
+    usedMargin: '1000',
+    freeMargin: '99100',
+    floatingPnl: '100',
+    positionCount: 1,
+    valuationStatus: 'LIVE',
+    complete: true,
+    sequence: 10,
+    valuedAtMs: Date.parse('2026-09-18T12:00:00.000Z'),
+  });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await relay.stop();
+
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].eventType, 'ACG_TRADER_ACCOUNT_SNAPSHOT');
+  assert.equal(deliveries[0].payload.equity, '100100');
+  assert.equal(outboxCreates.length, 0);
 });
