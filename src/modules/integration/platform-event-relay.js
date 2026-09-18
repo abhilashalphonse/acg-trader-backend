@@ -43,13 +43,12 @@ class PlatformEventRelay {
     if (!this.enabled) return;
     if (!this.webhookUrl || !this.webhookSecret) throw new Error('Platform event relay requires webhookUrl and webhookSecret');
     if (typeof this.fetchImpl !== 'function') throw new Error('Platform event relay requires fetch');
-    // ACG Trader valuation engine is the sole authority for Funded
-    // balance/equity/margin snapshots. Execution and ledger events are
-    // inputs to valuation, not competing snapshot sources.
+    // Realtime account snapshots are reconstructable and intentionally
+    // coalesced. Immutable DEAL_CREATED and ACCOUNT_CONTROLLED facts are
+    // enqueued transactionally by the trading/account services themselves.
     this.#listen('valuation.account.updated', payload => this.#queueSnapshot(payload));
-    this.#listen('trading.deal.created', payload => this.#captureDeal(payload));
-    for (const event of ['trading.account.paused', 'trading.account.resumed', 'trading.account.disabled', 'trading.account.breached', 'trading.account.closed']) {
-      this.#listen(event, payload => this.#captureControl(payload, event));
+    if (typeof this.outboxModel.countDocuments === 'function') {
+      this.deadEvents = await this.outboxModel.countDocuments({ status: 'DEAD' });
     }
     this.timer = setInterval(() => this.flush().catch(error => this.logger?.error({ err: error }, 'Platform event relay flush failed')), this.pollIntervalMs);
     this.timer.unref?.();
@@ -84,6 +83,45 @@ class PlatformEventRelay {
       deliveryFailures: this.deliveryFailures,
       deadEvents: this.deadEvents,
     };
+  }
+
+  async enqueueDeal({ account, deal, session = null } = {}) {
+    if (!this.enabled || !account || !deal) return null;
+    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    if (!fundedAccountId) return null;
+
+    return this.#enqueue(account, fundedAccountId, 'DEAL_CREATED', {
+      provider: 'acg-trader',
+      platformAccountId: String(account._id || account.id || ''),
+      dealId: deal.dealId || deal.id || null,
+      positionId: deal.positionId ? String(deal.positionId) : null,
+      symbol: deal.symbol || null,
+      side: deal.side || null,
+      type: deal.type || null,
+      volume: decimal(deal.volume),
+      price: decimal(deal.price),
+      realizedPnl: decimal(deal.realizedPnl),
+      commission: decimal(deal.commission),
+      executedAt: deal.executedAt instanceof Date ? deal.executedAt.toISOString() : (deal.executedAt || this.now().toISOString()),
+    }, {
+      phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
+    }, session);
+  }
+
+  async enqueueControl({ account, sourceEvent, session = null } = {}) {
+    if (!this.enabled || !account) return null;
+    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    if (!fundedAccountId) return null;
+
+    return this.#enqueue(account, fundedAccountId, 'ACCOUNT_CONTROLLED', {
+      provider: 'acg-trader',
+      platformAccountId: String(account._id || account.id || ''),
+      status: account.status || null,
+      tradingEnabled: Boolean(account.tradingEnabled),
+      sourceEvent: sourceEvent || null,
+    }, {
+      phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
+    }, session);
   }
 
   async flush() {
@@ -208,9 +246,9 @@ class PlatformEventRelay {
     }, { phase: metadataValue(account.metadata, 'phase') });
   }
 
-  async #enqueue(account, aggregateId, eventType, payload, metadata = {}) {
+  async #enqueue(account, aggregateId, eventType, payload, metadata = {}, session = null) {
     const { occurredAt = null, ...eventMetadata } = metadata || {};
-    await this.outboxModel.create({
+    const document = {
       tenantId: account.tenantId,
       accountId: account._id,
       aggregateId: String(aggregateId),
@@ -218,7 +256,13 @@ class PlatformEventRelay {
       occurredAt: occurredAt || this.now(),
       payload,
       metadata: { ...eventMetadata, tenantId: String(account.tenantId), externalRef: account.externalRef || null },
-    });
+    };
+
+    if (session) {
+      const created = await this.outboxModel.create([document], { session });
+      return created[0] || null;
+    }
+    return this.outboxModel.create(document);
   }
 
   async #deliver(record) {

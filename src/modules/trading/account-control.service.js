@@ -20,6 +20,7 @@ class AccountControlService {
     eventBus = null,
     logger = null,
     marketOrderService = null,
+    platformEventRelay = null,
     accountModel = TradingAccount,
     orderModel = Order,
     positionModel = Position,
@@ -33,6 +34,7 @@ class AccountControlService {
       eventBus,
       logger,
       marketOrderService,
+      platformEventRelay,
       accountModel,
       orderModel,
       positionModel,
@@ -163,6 +165,7 @@ class AccountControlService {
           tradingEnabledAfter: true,
           reason,
         }, session);
+        await this.platformEventRelay?.enqueueControl({ account, sourceEvent: 'trading.account.resumed', session });
         return { account, changed: true };
       });
 
@@ -252,6 +255,7 @@ class AccountControlService {
           tradingEnabledAfter: false,
           reason,
         }, session);
+        await this.platformEventRelay?.enqueueControl({ account: current, sourceEvent: 'trading.account.closed', session });
         return { account: current, changed: true };
       });
 
@@ -295,6 +299,7 @@ class AccountControlService {
             tradingEnabledAfter: false,
             reason,
           }, session);
+          await this.platformEventRelay?.enqueueControl({ account, sourceEvent: event, session });
         }
 
         return { account, changed: !alreadyApplied, cancelledPending };

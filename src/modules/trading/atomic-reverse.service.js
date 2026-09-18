@@ -17,8 +17,8 @@ const { runMongoTransaction, applyOpenAccountMutation, applyCloseAccountAndPosit
 const { serializeOrder, serializeDeal, serializePosition, serializeAccount } = require('./trading.serializer');
 
 class AtomicReverseService {
-  constructor({ quoteStore, eventBus, valuationEngine, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, dealModel = Deal, positionModel = Position, ledgerModel = AccountLedger, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), runTransaction = runMongoTransaction }) {
-    Object.assign(this, { quoteStore, eventBus, valuationEngine, logger, accountModel, instrumentModel, orderModel, dealModel, positionModel, ledgerModel, commandQueue, idempotencyService, runTransaction });
+  constructor({ quoteStore, eventBus, valuationEngine, platformEventRelay = null, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, dealModel = Deal, positionModel = Position, ledgerModel = AccountLedger, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), runTransaction = runMongoTransaction }) {
+    Object.assign(this, { quoteStore, eventBus, valuationEngine, platformEventRelay, logger, accountModel, instrumentModel, orderModel, dealModel, positionModel, ledgerModel, commandQueue, idempotencyService, runTransaction });
   }
 
   async reversePosition(command) {
@@ -74,6 +74,7 @@ class AtomicReverseService {
     const deal = new this.dealModel({ accountId: account._id, orderId: order._id, positionId: position._id, symbol: plan.symbol, side: plan.closeSide, type: plan.dealType, volume: plan.volume, price: plan.fillPrice, requestedPrice: normalized.requestedPrice, slippage: calculateAdverseSlippage({ side: plan.closeSide, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice }), commission: plan.commission, swap: '0', realizedPnl: plan.realizedPnl, quoteSequence: plan.quoteSequence, quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null, quoteSource: quote?.source || null, executedAt: now });
     const ledgers = applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel: this.ledgerModel, now, valuationComplete, closeReason: 'REVERSE' });
     await order.save({ session }); await deal.save({ session }); await position.save({ session }); for (const ledger of ledgers) await ledger.save({ session }); await account.save({ session });
+    await this.platformEventRelay?.enqueueDeal({ account, deal, session });
     return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
   }
 
@@ -87,6 +88,7 @@ class AtomicReverseService {
     const ledgers = [];
     if (compareDecimal(plan.commission, '0') > 0) ledgers.push(new this.ledgerModel({ accountId: account._id, type: 'COMMISSION', amount: subtractDecimal('0', plan.commission), balanceBefore: addDecimal(account.state.balance, plan.commission), balanceAfter: account.state.balance, currency: account.currency, referenceType: 'DEAL', referenceId: deal.dealId, idempotencyKey: `${clientOrderId}:commission`, reason: 'Execution commission' }));
     await order.save({ session }); await position.save({ session }); await deal.save({ session }); for (const ledger of ledgers) await ledger.save({ session }); await account.save({ session });
+    await this.platformEventRelay?.enqueueDeal({ account, deal, session });
     return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
   }
 

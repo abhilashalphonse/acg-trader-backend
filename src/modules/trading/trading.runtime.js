@@ -32,11 +32,6 @@ function createTradingRuntime({ marketRuntime }) {
   setDefaultCurrencyConversionEngine(currencyConversionEngine);
 
   const valuationEngine = new ValuationEngine({ quoteStore: marketRuntime.quoteStore, eventBus, currencyConverter: currencyConversionEngine, logger });
-  const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
-  const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
-  const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
-  const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, logger });
-  const accountLedgerService = new AccountLedgerService({ eventBus, commandQueue, logger });
   const platformEventRelay = new PlatformEventRelay({
     eventBus,
     enabled: env.platformEvents.enabled,
@@ -48,8 +43,13 @@ function createTradingRuntime({ marketRuntime }) {
     maxAttempts: env.platformEvents.maxAttempts,
     logger,
   });
+  const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, logger });
+  const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, logger });
+  const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
+  const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger });
+  const accountLedgerService = new AccountLedgerService({ eventBus, commandQueue, logger });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus, marketOrderService, logger });
-  const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
+  const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, logger });
   const pendingOrderAmendService = new PendingOrderAmendService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
   const tradingHistoryService = new TradingHistoryService();
   const pendingOrderEngine = new PendingOrderEngine({ eventBus, pendingOrderService, logger });

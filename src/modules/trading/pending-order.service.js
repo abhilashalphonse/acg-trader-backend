@@ -62,6 +62,7 @@ class PendingOrderService {
     quoteStore,
     eventBus,
     valuationEngine,
+    platformEventRelay = null,
     logger,
     accountModel = TradingAccount,
     instrumentModel = Instrument,
@@ -77,6 +78,7 @@ class PendingOrderService {
       quoteStore,
       eventBus,
       valuationEngine,
+      platformEventRelay,
       logger,
       accountModel,
       instrumentModel,
@@ -352,6 +354,7 @@ class PendingOrderService {
         await deal.save({ session });
         for (const ledger of ledgers) await ledger.save({ session });
         await account.save({ session });
+        await this.platformEventRelay?.enqueueDeal({ account, deal, session });
 
         return {
           operation: 'PENDING_FILL',

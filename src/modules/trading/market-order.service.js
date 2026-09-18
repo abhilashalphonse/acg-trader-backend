@@ -26,6 +26,7 @@ class MarketOrderService {
     eventBus,
     logger,
     valuationEngine = null,
+    platformEventRelay = null,
     accountModel = TradingAccount,
     instrumentModel = Instrument,
     orderModel = Order,
@@ -41,6 +42,7 @@ class MarketOrderService {
       eventBus,
       logger,
       valuationEngine,
+      platformEventRelay,
       accountModel,
       instrumentModel,
       orderModel,
@@ -226,6 +228,7 @@ class MarketOrderService {
     await deal.save({ session });
     for (const ledger of ledgers) await ledger.save({ session });
     await account.save({ session });
+    await this.platformEventRelay?.enqueueDeal({ account, deal, session });
 
     const response = executionResponse('OPEN', order, deal, position, account);
     await this.#completeReservation(reservation.record._id, order.orderId, response, session);
@@ -290,6 +293,7 @@ class MarketOrderService {
     await position.save({ session });
     for (const ledger of ledgers) await ledger.save({ session });
     await account.save({ session });
+    await this.platformEventRelay?.enqueueDeal({ account, deal, session });
 
     const operation = normalized.reason || (plan.fullClose ? 'CLOSE' : 'PARTIAL_CLOSE');
     const response = executionResponse(operation, order, deal, position, account);
