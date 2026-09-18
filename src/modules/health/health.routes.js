@@ -21,7 +21,14 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
     const trading = tradingRuntime?.health?.() || { enabled: false, started: false, state: 'NOT_INITIALIZED' };
     const reconciliationOperational = trading.reconciliation?.state !== 'DEGRADED';
     const recoveryConsistent = trading.reconciliation?.recovery?.consistent !== false;
-    const tradingReady = trading.enabled === false || (trading.started === true && reconciliationOperational && recoveryConsistent);
+    const platformEventsOperational = trading.platformEvents?.enabled !== true
+      || (trading.platformEvents?.started === true && trading.platformEvents?.webhookConfigured === true);
+    const tradingReady = trading.enabled === false || (
+      trading.started === true
+      && reconciliationOperational
+      && recoveryConsistent
+      && platformEventsOperational
+    );
     const ready = Boolean(database.connected && tradingReady);
 
     res.status(ready ? 200 : 503).json({
@@ -34,6 +41,7 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
         tradingRuntimeReady: tradingReady,
         reconciliationOperational,
         recoveryConsistent: trading.reconciliation?.recovery?.consistent ?? null,
+        platformEventsOperational,
       },
       timestamp: new Date().toISOString(),
     });
