@@ -56,7 +56,7 @@ function createTradingRuntime({ marketRuntime }) {
       if (started) return;
       await valuationEngine.start();
       riskDayEngine.start();
-      try { await platformEventRelay.start(); try { await protectionTriggerEngine.start(); try { await pendingOrderEngine.start(); try { await trailingStopEngine.start(); started = true; await reconciliationService.verifyRecovery({ persist: true }); if (env.reconciliation.enabled) reconciliationService.startPeriodic(env.reconciliation.intervalMs); } catch (error) { await pendingOrderEngine.stop(); throw error; } } catch (error) { await protectionTriggerEngine.stop(); throw error; } } catch (error) { await platformEventRelay.stop(); throw error; } } catch (error) { await valuationEngine.stop(); throw error; }
+      try { await platformEventRelay.start(); try { await protectionTriggerEngine.start(); try { await pendingOrderEngine.start(); try { await trailingStopEngine.start(); started = true; await reconciliationService.verifyRecovery({ persist: true }); if (env.reconciliation.enabled) reconciliationService.startPeriodic(env.reconciliation.intervalMs); } catch (error) { await pendingOrderEngine.stop(); throw error; } } catch (error) { await protectionTriggerEngine.stop(); throw error; } } catch (error) { await platformEventRelay.stop(); throw error; } } catch (error) { riskDayEngine.stop(); await valuationEngine.stop(); throw error; }
     },
     health() {
       const reconciliation = reconciliationService.health();
