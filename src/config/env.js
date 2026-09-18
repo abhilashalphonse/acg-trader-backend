@@ -81,9 +81,18 @@ if (raw.TWELVE_DATA_RECONNECT_MAX_MS < raw.TWELVE_DATA_RECONNECT_MIN_MS) throw n
 const resolvedPlatformEventsEnabled = platformEventsExplicitlyConfigured
   ? raw.PLATFORM_EVENTS_ENABLED
   : Boolean(raw.ACG_FUNDED_WEBHOOK_URL && raw.ACG_FUNDED_WEBHOOK_SECRET);
-if (resolvedPlatformEventsEnabled && (!raw.ACG_FUNDED_WEBHOOK_URL || !raw.ACG_FUNDED_WEBHOOK_SECRET)) {
-  throw new Error('ACG_FUNDED_WEBHOOK_URL and ACG_FUNDED_WEBHOOK_SECRET are required when platform events are enabled');
+if (
+  resolvedPlatformEventsEnabled
+  && (
+    !raw.ACG_FUNDED_WEBHOOK_URL
+    || !raw.ACG_FUNDED_WEBHOOK_SECRET
+    || /^</.test(raw.ACG_FUNDED_WEBHOOK_SECRET)
+    || /example\.com/i.test(raw.ACG_FUNDED_WEBHOOK_URL)
+  )
+) {
+  throw new Error('A real ACG_FUNDED_WEBHOOK_URL and ACG_FUNDED_WEBHOOK_SECRET are required when platform events are enabled');
 }
+if (/</.test(raw.MONGODB_URI)) throw new Error('MONGODB_URI still contains an example placeholder');
 
 const env = Object.freeze({
   nodeEnv: raw.NODE_ENV,

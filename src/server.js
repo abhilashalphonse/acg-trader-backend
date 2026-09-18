@@ -78,6 +78,14 @@ async function start() {
 
   process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.on('SIGINT', () => { void shutdown('SIGINT'); });
+  process.on('unhandledRejection', error => {
+    logger.fatal({ err: error }, 'Unhandled promise rejection');
+    void shutdown('UNHANDLED_REJECTION');
+  });
+  process.on('uncaughtException', error => {
+    logger.fatal({ err: error }, 'Uncaught exception');
+    void shutdown('UNCAUGHT_EXCEPTION');
+  });
 }
 
 function listenHttpServer(server, port) {
