@@ -151,17 +151,9 @@ function validateChallengeRiskForOpen(account) {
     }
   }
 
-  const target = normalizeDecimal(policy.profitTarget ?? '0');
-  if (compareDecimal(target, '0') > 0) {
-    const targetBalance = addDecimal(initial, target);
-    if (compareDecimal(balance, targetBalance) >= 0) {
-      throw new AppError('Profit target has been reached; new exposure is paused pending challenge transition', {
-        statusCode: 409,
-        code: 'PROFIT_TARGET_REACHED',
-        details: { balance, targetBalance, profitTarget: target },
-      });
-    }
-  }
+  // Profit-target progression remains authoritative in ACG Funded because
+  // minimum-trading-day state is owned there. Trader only enforces loss limits
+  // locally; Funded disables the account once target + min-days are satisfied.
 }
 
 function validateAccountForClose(account) { if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' }); }
