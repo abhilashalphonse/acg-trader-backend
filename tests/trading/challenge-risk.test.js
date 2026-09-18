@@ -42,9 +42,8 @@ test('rejects new exposure at max loss limit', () => {
   );
 });
 
-test('rejects new exposure after profit target is reached', () => {
-  assert.throws(
+test('profit target alone does not locally block exposure because Funded owns minimum-day progression', () => {
+  assert.doesNotThrow(
     () => validateChallengeRiskForOpen(account({ state: { balance: '110000', equity: '110000' } })),
-    error => error.code === 'PROFIT_TARGET_REACHED',
   );
 });
