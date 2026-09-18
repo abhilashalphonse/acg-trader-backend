@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { PlatformEventOutbox } = require('./platform-event-outbox.model');
 
@@ -62,7 +63,7 @@ class PlatformEventRelay {
     if (!this.enabled || this.running) return;
     this.running = true;
     try {
-      const due = await this.outboxModel.find({ status: 'PENDING', nextAttemptAt: { $lte: this.now() } })
+      const due = await this.outboxModel.find({ status: 'PENDING', nextAttemptAt: mongoose.trusted({ $lte: this.now() }) })
         .sort({ createdAt: 1, _id: 1 })
         .limit(this.batchSize);
       for (const record of due) await this.#deliver(record);
