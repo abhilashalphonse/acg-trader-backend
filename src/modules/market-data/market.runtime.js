@@ -35,9 +35,13 @@ function createMarketRuntime() {
     historyService,
     async start() {
       if (started) return;
-      started = true;
-      if (!env.market.enabled) { logger.warn('Market Gateway is disabled by configuration'); return; }
+      if (!env.market.enabled) {
+        started = true;
+        logger.warn('Market Gateway is disabled by configuration');
+        return;
+      }
       await gateway.start();
+      started = true;
       logger.info({ symbols: env.market.symbols, timeframes: env.market.candleTimeframes }, 'ACG Market Gateway started');
     },
     attachWebSocket(server, authService, tradingRuntime) {

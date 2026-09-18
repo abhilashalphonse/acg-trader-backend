@@ -2,17 +2,22 @@
 
 const http = require('http');
 const { env } = require('./config/env');
-const { connectDatabase, disconnectDatabase } = require('./config/database');
+const { connectDatabase, verifyTransactionSupport, disconnectDatabase } = require('./config/database');
+const { ensureCriticalIndexes } = require('./config/indexes');
 const { logger } = require('./infrastructure/logger/logger');
 const { createApp } = require('./app');
 const { createMarketRuntime } = require('./modules/market-data/market.runtime');
 const { createTradingRuntime } = require('./modules/trading/trading.runtime');
 const { createAuthRuntime } = require('./modules/auth/auth.runtime');
-const { ensureInstrumentCatalog } = require('./modules/instruments/instrument-catalog.service');
+const { syncInstrumentCatalog } = require('./modules/instruments/instrument-catalog.service');
 
 async function start() {
   await connectDatabase();
-  if (env.instrumentCatalogAutoSeed) await ensureInstrumentCatalog({ logger });
+  if (env.tradingApiEnabled) {
+    await verifyTransactionSupport();
+    await ensureCriticalIndexes({ logger });
+  }
+  if (env.instrumentCatalogAutoSeed) await syncInstrumentCatalog({ logger });
 
   const marketRuntime = createMarketRuntime();
   const tradingRuntime = createTradingRuntime({ marketRuntime });
@@ -27,20 +32,31 @@ async function start() {
 
   server.keepAliveTimeout = 65_000;
   server.headersTimeout = 66_000;
-  server.listen(env.port, () => logger.info({ port: env.port, market: marketRuntime.health(), trading: tradingRuntime.health() }, 'ACG Trader backend listening'));
 
   let shuttingDown = false;
   const shutdown = async signal => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Graceful shutdown started');
-    const forceTimer = setTimeout(() => { logger.fatal('Graceful shutdown timed out; forcing exit'); process.exit(1); }, env.shutdownTimeoutMs);
+    const forceTimer = setTimeout(() => {
+      logger.fatal('Graceful shutdown timed out; forcing exit');
+      process.exit(1);
+    }, env.shutdownTimeoutMs);
     forceTimer.unref();
+
     let exitCode = 0;
     try {
-      await tradingRuntime.stop();
+      const httpClosed = closeHttpServer(server);
+      server.closeIdleConnections?.();
+
+      // Stop new realtime/market work first. QuoteStore remains available to
+      // HTTP commands that were already accepted before server.close().
       await marketRuntime.stop();
-      await closeHttpServer(server);
+      await httpClosed;
+
+      // No new commands can enter after HTTP/WS are drained, so trading can
+      // safely wait for command queues and durable event delivery.
+      await tradingRuntime.stop();
       await disconnectDatabase();
       logger.info('Graceful shutdown complete');
     } catch (error) {
@@ -51,10 +67,44 @@ async function start() {
       process.exit(exitCode);
     }
   };
+
+  server.on('error', error => {
+    logger.error({ err: error }, 'HTTP server error');
+    if (!shuttingDown) void shutdown('HTTP_SERVER_ERROR');
+  });
+
+  await listenHttpServer(server, env.port);
+  logger.info({ port: env.port, market: marketRuntime.health(), trading: tradingRuntime.health() }, 'ACG Trader backend listening');
+
   process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.on('SIGINT', () => { void shutdown('SIGINT'); });
 }
 
-function closeHttpServer(server) { return new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+function listenHttpServer(server, port) {
+  return new Promise((resolve, reject) => {
+    const onError = error => {
+      server.off('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port);
+  });
+}
 
-start().catch(error => { logger.fatal({ err: error }, 'ACG Trader backend failed to start'); process.exit(1); });
+function closeHttpServer(server) {
+  return new Promise((resolve, reject) => {
+    if (!server.listening) return resolve();
+    server.close(error => error ? reject(error) : resolve());
+  });
+}
+
+start().catch(async error => {
+  logger.fatal({ err: error }, 'ACG Trader backend failed to start');
+  try { await disconnectDatabase(); } catch {}
+  process.exit(1);
+});
