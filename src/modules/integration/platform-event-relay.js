@@ -101,8 +101,15 @@ class PlatformEventRelay {
       openPositions: numberOrNull(payload?.positionCount),
       valuationStatus: payload?.valuationStatus || null,
       complete: payload?.complete == null ? null : Boolean(payload.complete),
+      valuationSequence: numberOrNull(payload?.sequence),
+      valuedAtMs: numberOrNull(payload?.valuedAtMs),
       source,
-    }, { phase: metadataValue(account.metadata, 'phase') });
+    }, {
+      phase: metadataValue(account.metadata, 'phase'),
+      occurredAt: source === 'VALUATION' && Number.isFinite(Number(payload?.valuedAtMs))
+        ? new Date(Number(payload.valuedAtMs))
+        : null,
+    });
   }
 
   async #captureDeal(payload) {
@@ -145,14 +152,15 @@ class PlatformEventRelay {
   }
 
   async #enqueue(account, aggregateId, eventType, payload, metadata = {}) {
+    const { occurredAt = null, ...eventMetadata } = metadata || {};
     await this.outboxModel.create({
       tenantId: account.tenantId,
       accountId: account._id,
       aggregateId: String(aggregateId),
       eventType,
-      occurredAt: this.now(),
+      occurredAt: occurredAt || this.now(),
       payload,
-      metadata: { ...metadata, tenantId: String(account.tenantId), externalRef: account.externalRef || null },
+      metadata: { ...eventMetadata, tenantId: String(account.tenantId), externalRef: account.externalRef || null },
     });
   }
 
