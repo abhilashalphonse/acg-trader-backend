@@ -13,7 +13,7 @@ const { AccountLedger } = require('./account-ledger.model');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('./execution-planner');
-const { runMongoTransaction, applyOpenAccountMutation, applyCloseAccountAndPositionMutation, loadOpenExposure } = require('./market-order.service');
+const { runMongoTransaction, applyOpenAccountMutation, applyCloseAccountAndPositionMutation, loadOpenExposure, hasExposureLimits } = require('./market-order.service');
 const { serializeOrder, serializeDeal, serializePosition, serializeAccount } = require('./trading.serializer');
 
 class AtomicReverseService {
@@ -46,7 +46,9 @@ class AtomicReverseService {
           const oppositeSide = String(position.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
           const closePlan = planMarketClose({ account, instrument, quote, position, volume: null, nowMs });
           const close = await this.#persistClose({ account, position, plan: closePlan, quote, normalized, session, nowMs, valuationComplete: valuationProjection ? valuationProjection.complete : true });
-          const exposure = await loadOpenExposure(this.positionModel, normalized.accountId, session);
+          const exposure = hasExposureLimits(account)
+            ? await loadOpenExposure(this.positionModel, normalized.accountId, session)
+            : null;
           const openPlan = planMarketOpen({ account, instrument, quote, side: oppositeSide, volume: originalVolume, stopLoss: normalized.stopLoss, takeProfit: normalized.takeProfit, nowMs, exposure });
           const open = await this.#persistOpen({ account, plan: openPlan, quote, normalized, session, nowMs });
           const response = { operation: 'REVERSE', atomic: true, originalPositionId: normalized.positionId, close, open, position: open.position, account: open.account };

@@ -190,3 +190,34 @@ test('adverse slippage is positive when the fill is worse for either side', () =
   assert.equal(calculateAdverseSlippage({ side: 'BUY', fillPrice: '1.1001', requestedPrice: '1.1' }), '0.0001');
   assert.equal(calculateAdverseSlippage({ side: 'SELL', fillPrice: '1.0999', requestedPrice: '1.1' }), '0.0001');
 });
+
+
+test('market execution enforces maximum open positions', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxOpenPositions: 2 } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      exposure: { currentOpenPositions: 2, currentTotalVolume: '1.5' },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_OPEN_POSITIONS_REACHED',
+  );
+});
+
+test('market execution enforces maximum total volume', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxTotalVolume: '2' } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '0.6',
+      exposure: { currentOpenPositions: 2, currentTotalVolume: '1.5' },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_TOTAL_VOLUME_REACHED',
+  );
+});

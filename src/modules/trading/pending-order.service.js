@@ -28,6 +28,7 @@ const {
   runMongoTransaction,
   applyOpenAccountMutation,
   loadOpenExposure,
+  hasExposureLimits,
 } = require('./market-order.service');
 const {
   serializeOrder,
@@ -253,7 +254,9 @@ class PendingOrderService {
         const account = await this.accountModel.findById(accountId).session(session);
         if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
         const instrument = await this.instrumentModel.findOne({ symbol: normalizeSymbol(order.symbol) }).session(session);
-        const exposure = await loadOpenExposure(this.positionModel, accountId, session);
+        const exposure = hasExposureLimits(account)
+          ? await loadOpenExposure(this.positionModel, accountId, session)
+          : null;
 
         let plan;
         try {

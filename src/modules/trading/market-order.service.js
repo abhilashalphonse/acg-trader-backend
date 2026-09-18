@@ -67,7 +67,9 @@ class MarketOrderService {
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
           const instrument = await this.instrumentModel.findOne({ symbol: normalized.symbol }).session(session);
-          const exposure = await loadOpenExposure(this.positionModel, normalized.accountId, session);
+          const exposure = hasExposureLimits(account)
+            ? await loadOpenExposure(this.positionModel, normalized.accountId, session)
+            : null;
           const plan = planMarketOpen({
             account,
             instrument,
@@ -529,6 +531,11 @@ function normalizeCloseReason(reason) {
   return value;
 }
 
+function hasExposureLimits(account) {
+  return account?.riskPolicy?.maxOpenPositions != null
+    || account?.riskPolicy?.maxTotalVolume != null;
+}
+
 async function loadOpenExposure(positionModel, accountId, session = null) {
   let query = positionModel.find({ accountId: String(accountId), status: 'OPEN' }).select('openVolume').lean();
   if (session) query = query.session(session);
@@ -576,4 +583,5 @@ module.exports = {
   applyCloseAccountAndPositionMutation,
   normalizeCloseReason,
   loadOpenExposure,
+  hasExposureLimits,
 };

@@ -128,3 +128,17 @@ test('closed accounts reject balance mutations', async () => {
     error => error.code === 'ACCOUNT_CLOSED',
   );
 });
+
+
+test('balance mutation emits canonical trading.account.updated for realtime valuation refresh', async () => {
+  const fixture = createFixture();
+  const events = [];
+  fixture.service.eventBus = { emit(name, payload) { events.push([name, payload]); } };
+
+  await fixture.service.mutate(ACCOUNT_ID, command());
+
+  const accountEvent = events.find(([name]) => name === 'trading.account.updated');
+  assert.ok(accountEvent);
+  assert.equal(accountEvent[1].id, ACCOUNT_ID);
+  assert.equal(accountEvent[1].state.balance, '1250');
+});

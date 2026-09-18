@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const EventEmitter = require('events');
-const { RiskDayEngine } = require('../../src/modules/trading/risk-day-engine');
+const { RiskDayEngine, dayKeyInTimezone } = require('../../src/modules/trading/risk-day-engine');
 
 function document() {
   return {
@@ -80,4 +80,12 @@ test('stale valuation cannot reset the risk day', async () => {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(doc.riskDayKey, '2026-09-17');
   engine.stop();
+});
+
+
+test('risk day key follows the configured account timezone', () => {
+  assert.equal(
+    dayKeyInTimezone(new Date('2026-09-18T23:30:00.000Z'), 'Europe/Lisbon'),
+    '2026-09-19',
+  );
 });

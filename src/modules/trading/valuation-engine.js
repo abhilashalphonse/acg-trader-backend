@@ -206,7 +206,9 @@ class ValuationEngine {
   }
   #upsertAccount(account) {
     const accountId = this.#storeAccountBase(account);
-    if (accountId) this.scheduleAccountRevalue(accountId);
+    if (!accountId) return;
+    this.pendingAccountRevalues.delete(accountId);
+    this.#recalculateAccount(accountId, true);
   }
   #storeAccountBase(account) {
     const id = String(account?.id || account?._id || account?.accountId || '');
