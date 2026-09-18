@@ -119,7 +119,10 @@ function validateChallengeRiskForOpen(account) {
   const initial = normalizeDecimal(state.initialBalance ?? '0');
 
   const currentRiskDay = new Date().toISOString().slice(0, 10);
-  if (account.riskDayKey !== currentRiskDay) {
+  // Only roll forward an explicitly known prior day. A missing riskDayKey must
+  // never reset the baseline at order time because that could mask an existing
+  // loss; the LIVE valuation RiskDayEngine will initialize it safely.
+  if (account.riskDayKey && account.riskDayKey !== currentRiskDay) {
     account.riskDayKey = currentRiskDay;
     state.dailyStartEquity = equity;
     state.realizedPnlToday = '0';
