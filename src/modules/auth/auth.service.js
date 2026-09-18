@@ -1,5 +1,6 @@
 'use strict';
 
+const mongoose = require('mongoose');
 const crypto = require('crypto');
 const { promisify } = require('util');
 const { AppError } = require('../../shared/errors/app-error');
@@ -156,7 +157,7 @@ class AuthService {
       {
         tokenHash,
         consumedAt: null,
-        expiresAt: { $gt: now },
+        expiresAt: mongoose.trusted({ $gt: now }),
       },
       { $set: { consumedAt: now } },
       { new: true },
