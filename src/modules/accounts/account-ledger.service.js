@@ -11,6 +11,7 @@ const { TradingAccount } = require('./trading-account.model');
 const { AccountLedger } = require('../trading/account-ledger.model');
 const { AccountCommandQueue } = require('../trading/account-command-queue');
 const { runMongoTransaction } = require('../trading/market-order.service');
+const { serializeAccount } = require('../trading/trading.serializer');
 
 const MUTATION_TYPES = new Set(['DEPOSIT', 'WITHDRAWAL', 'ADJUSTMENT']);
 
@@ -122,6 +123,7 @@ class AccountLedgerService {
         ledger: serializeLedgerEntry(result.ledger),
         idempotentReplay: false,
       };
+      this.#emit('trading.account.updated', serializeAccount(result.account));
       this.#emit('trading.account.balance.updated', response);
       return response;
     });

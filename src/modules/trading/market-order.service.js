@@ -67,10 +67,12 @@ class MarketOrderService {
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
           const instrument = await this.instrumentModel.findOne({ symbol: normalized.symbol }).session(session);
+          const exposure = await loadOpenExposure(this.positionModel, normalized.accountId, session);
           const plan = planMarketOpen({
             account,
             instrument,
             quote: quoteSnapshot,
+            exposure,
             side: normalized.side,
             volume: normalized.volume,
             stopLoss: normalized.stopLoss,
@@ -527,6 +529,15 @@ function normalizeCloseReason(reason) {
   return value;
 }
 
+async function loadOpenExposure(positionModel, accountId, session = null) {
+  let query = positionModel.find({ accountId: String(accountId), status: 'OPEN' }).select('openVolume').lean();
+  if (session) query = query.session(session);
+  const positions = await query;
+  let currentTotalVolume = '0';
+  for (const position of positions) currentTotalVolume = addDecimal(currentTotalVolume, position.openVolume?.toString?.() ?? String(position.openVolume || '0'));
+  return { currentOpenPositions: positions.length, currentTotalVolume };
+}
+
 async function runMongoTransaction(work) {
   const session = await mongoose.startSession();
   let result;
@@ -564,4 +575,5 @@ module.exports = {
   applyOpenAccountMutation,
   applyCloseAccountAndPositionMutation,
   normalizeCloseReason,
+  loadOpenExposure,
 };

@@ -362,16 +362,32 @@ class AccountControlService {
         results.push({ positionId, status: 'CLOSED', result });
       } catch (error) {
         this.logger?.error({ err: error, accountId: String(accountId), positionId }, 'Account liquidation failed');
-        throw new AppError('Failed to liquidate all open positions', {
-          statusCode: 409,
-          code: 'ACCOUNT_LIQUIDATION_FAILED',
-          details: {
-            positionId,
-            closedPositions: results.length,
-            causeCode: error?.code || null,
+        results.push({
+          positionId,
+          status: 'FAILED',
+          error: {
+            code: error?.code || 'COMMAND_FAILED',
+            message: error?.message || 'Position liquidation failed',
+            statusCode: Number(error?.statusCode) || 500,
           },
         });
       }
+    }
+
+    const failed = results.filter(item => item.status === 'FAILED');
+    if (failed.length) {
+      throw new AppError('Failed to liquidate all open positions', {
+        statusCode: 409,
+        code: 'ACCOUNT_LIQUIDATION_FAILED',
+        details: {
+          requestedPositions: positions.length,
+          closedPositions: results.length - failed.length,
+          failedPositions: failed.map(item => ({
+            positionId: item.positionId,
+            causeCode: item.error.code,
+          })),
+        },
+      });
     }
     return results;
   }

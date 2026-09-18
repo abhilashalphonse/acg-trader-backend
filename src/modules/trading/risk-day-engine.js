@@ -1,6 +1,7 @@
 'use strict';
 
 const { TradingAccount } = require('../accounts/trading-account.model');
+const { AccountCommandQueue } = require('./account-command-queue');
 const { serializeAccount } = require('./trading.serializer');
 
 class RiskDayEngine {
@@ -8,19 +9,18 @@ class RiskDayEngine {
     eventBus,
     logger = null,
     accountModel = TradingAccount,
+    commandQueue = new AccountCommandQueue(),
     now = () => new Date(),
   } = {}) {
     this.eventBus = eventBus;
     this.logger = logger;
     this.accountModel = accountModel;
+    this.commandQueue = commandQueue;
     this.now = now;
     this.started = false;
-    this.inFlight = new Set();
-    this.onValuation = valuation => {
-      void this.#handleValuation(valuation).catch(error => {
-        this.logger?.error({ err: error, accountId: valuation?.accountId || valuation?.id }, 'Risk day rollover failed');
-      });
-    };
+    this.inFlight = new Map();
+    this.dayCache = new Map();
+    this.onValuation = valuation => this.#schedule(valuation);
   }
 
   start() {
@@ -29,45 +29,93 @@ class RiskDayEngine {
     this.eventBus?.on('valuation.account.updated', this.onValuation);
   }
 
-  stop() {
+  async stop() {
     if (!this.started) return;
     this.eventBus?.off('valuation.account.updated', this.onValuation);
     this.started = false;
+    await Promise.allSettled([...this.inFlight.values()]);
+    this.inFlight.clear();
+    this.dayCache.clear();
   }
 
   health() {
-    return { started: this.started, inFlight: this.inFlight.size };
+    return { started: this.started, inFlight: this.inFlight.size, cachedAccounts: this.dayCache.size };
   }
 
-  async #handleValuation(valuation) {
+  #schedule(valuation) {
     if (!valuation || valuation.complete !== true || String(valuation.valuationStatus || '').toUpperCase() !== 'LIVE') return;
 
     const accountId = String(valuation.accountId || valuation.id || '').trim();
     if (!accountId || this.inFlight.has(accountId)) return;
 
+    const cached = this.dayCache.get(accountId);
+    if (cached) {
+      const currentDay = dayKeyInTimezone(this.now(), cached.timezone);
+      if (cached.dayKey === currentDay) return;
+    }
+
+    const work = this.#handleValuation(valuation)
+      .catch(error => {
+        this.logger?.error({ err: error, accountId }, 'Risk day rollover failed');
+      })
+      .finally(() => {
+        if (this.inFlight.get(accountId) === work) this.inFlight.delete(accountId);
+      });
+    this.inFlight.set(accountId, work);
+  }
+
+  async #handleValuation(valuation) {
+    const accountId = String(valuation.accountId || valuation.id || '').trim();
     const equity = Number(valuation.equity);
     if (!Number.isFinite(equity)) return;
 
-    this.inFlight.add(accountId);
-    try {
-      const dayKey = this.now().toISOString().slice(0, 10);
+    const result = await this.commandQueue.run(accountId, async () => {
       const account = await this.accountModel.findById(accountId);
-      if (!account || account.riskDayKey === dayKey) return;
+      if (!account) return null;
+
+      const timezone = String(account.riskTimezone || 'UTC');
+      const dayKey = dayKeyInTimezone(this.now(), timezone);
+      if (account.riskDayKey === dayKey) return { account, dayKey, timezone, changed: false };
 
       account.riskDayKey = dayKey;
       account.state.dailyStartEquity = String(equity);
       account.state.realizedPnlToday = '0';
       await account.save();
+      return { account, dayKey, timezone, changed: true };
+    });
 
+    if (!result) return;
+    this.dayCache.set(accountId, { dayKey: result.dayKey, timezone: result.timezone });
+
+    if (result.changed) {
       try {
-        this.eventBus?.emit('trading.account.updated', serializeAccount(account));
+        this.eventBus?.emit('trading.account.updated', serializeAccount(result.account));
       } catch (error) {
         this.logger?.error({ err: error, accountId }, 'Risk day account update event failed');
       }
-    } finally {
-      this.inFlight.delete(accountId);
     }
   }
 }
 
-module.exports = { RiskDayEngine };
+function dayKeyInTimezone(date, timeZone = 'UTC') {
+  let formatter;
+  try {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+  } catch {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+  }
+  const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+module.exports = { RiskDayEngine, dayKeyInTimezone };

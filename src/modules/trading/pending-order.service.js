@@ -26,6 +26,7 @@ const {
 const {
   runMongoTransaction,
   applyOpenAccountMutation,
+  loadOpenExposure,
 } = require('./market-order.service');
 const {
   serializeOrder,
@@ -50,6 +51,8 @@ const PERMANENT_TRIGGER_REJECTIONS = new Set([
   'INVALID_LEVERAGE',
   'INSUFFICIENT_MARGIN',
   'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
+  'MAX_OPEN_POSITIONS_REACHED',
+  'MAX_TOTAL_VOLUME_REACHED',
 ]);
 
 class PendingOrderService {
@@ -249,6 +252,7 @@ class PendingOrderService {
         const account = await this.accountModel.findById(accountId).session(session);
         if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
         const instrument = await this.instrumentModel.findOne({ symbol: normalizeSymbol(order.symbol) }).session(session);
+        const exposure = await loadOpenExposure(this.positionModel, accountId, session);
 
         let plan;
         try {
@@ -256,6 +260,7 @@ class PendingOrderService {
             account,
             instrument,
             quote: quoteSnapshot,
+            exposure,
             side: order.side,
             volume: order.requestedVolume,
             stopLoss: order.stopLoss,

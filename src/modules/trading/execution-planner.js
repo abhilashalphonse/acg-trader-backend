@@ -16,7 +16,7 @@ const {
 const { normalizeSymbol } = require('../market-data/market.utils');
 const { assertInstrumentSessionOpen } = require('../instruments/session-calendar');
 
-function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now(), currencyConverter = null }) {
+function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now(), currencyConverter = null, exposure = null }) {
   validateAccountForOpen(account, instrument?.symbol);
   validateInstrumentForOpen(instrument);
   assertInstrumentSessionOpen(instrument, nowMs);
@@ -24,6 +24,7 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
 
   const normalizedSide = normalizeSide(side);
   const normalizedVolume = validateVolume(volume, instrument);
+  validateExposureLimits(account, normalizedVolume, exposure);
   const fillPrice = executablePrice(quote, normalizedSide, instrument);
   const normalizedStopLoss = optionalPrice(stopLoss, instrument);
   const normalizedTakeProfit = optionalPrice(takeProfit, instrument);
@@ -111,6 +112,35 @@ function validateAccountForOpen(account, symbol) {
   const canonical = normalizeSymbol(symbol);
   if (allowed.length && !allowed.map(normalizeSymbol).includes(canonical)) throw new AppError('Symbol is not allowed for this trading account', { statusCode: 403, code: 'SYMBOL_NOT_ALLOWED', details: { symbol: canonical } });
 }
+function validateExposureLimits(account, newVolume, exposure = null) {
+  if (!exposure) return;
+  const policy = account?.riskPolicy || {};
+  const currentOpenPositions = Number(exposure.currentOpenPositions || 0);
+  const currentTotalVolume = normalizeDecimal(exposure.currentTotalVolume ?? '0');
+
+  if (policy.maxOpenPositions != null) {
+    const limit = Number(policy.maxOpenPositions);
+    if (Number.isFinite(limit) && currentOpenPositions + 1 > limit) {
+      throw new AppError('Maximum number of open positions has been reached', {
+        statusCode: 409,
+        code: 'MAX_OPEN_POSITIONS_REACHED',
+        details: { currentOpenPositions, maxOpenPositions: limit },
+      });
+    }
+  }
+
+  if (policy.maxTotalVolume != null) {
+    const limit = normalizeDecimal(policy.maxTotalVolume);
+    if (compareDecimal(limit, '0') > 0 && compareDecimal(addDecimal(currentTotalVolume, newVolume), limit) > 0) {
+      throw new AppError('Maximum total open volume would be exceeded', {
+        statusCode: 409,
+        code: 'MAX_TOTAL_VOLUME_REACHED',
+        details: { currentTotalVolume, requestedVolume: newVolume, maxTotalVolume: limit },
+      });
+    }
+  }
+}
+
 function validateChallengeRiskForOpen(account) {
   const state = account.state || {};
   const policy = account.riskPolicy || {};
@@ -244,4 +274,4 @@ function validateOpenPosition(position, account) {
 function normalizeSide(side) { const value = String(side || '').toUpperCase(); if (!['BUY', 'SELL'].includes(value)) throw new AppError('Order side must be BUY or SELL', { statusCode: 400, code: 'INVALID_ORDER_SIDE' }); return value; }
 function calculateAdverseSlippage({ side, fillPrice, requestedPrice }) { if (requestedPrice == null || requestedPrice === '') return '0'; const requested = normalizeDecimal(requestedPrice); return side === 'BUY' ? subtractDecimal(fillPrice, requested) : subtractDecimal(requested, fillPrice); }
 
-module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, validateVolume, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose };
+module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, validateVolume, validateExposureLimits, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose };

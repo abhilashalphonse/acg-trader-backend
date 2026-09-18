@@ -35,6 +35,8 @@ class ValuationEngine {
     this.positionsByAccount = new Map();
     this.sequence = 0;
     this.started = false;
+    this.pendingAccountRevalues = new Set();
+    this.accountRevalueScheduled = false;
 
     this.onTick = quote => this.#safeEvent('market.tick', () => this.#handleQuote(quote));
     this.onStaleQuote = quote => { if (quote?.isStale) this.#safeEvent('market.quote', () => this.#handleQuote(quote)); };
@@ -74,6 +76,24 @@ class ValuationEngine {
     this.accountValuations.clear();
     this.positionsBySymbol.clear();
     this.positionsByAccount.clear();
+    this.pendingAccountRevalues.clear();
+    this.accountRevalueScheduled = false;
+  }
+
+  scheduleAccountRevalue(accountId) {
+    const key = String(accountId || '');
+    if (!key || !this.started) return;
+    this.pendingAccountRevalues.add(key);
+    if (this.accountRevalueScheduled) return;
+    this.accountRevalueScheduled = true;
+    queueMicrotask(() => {
+      this.accountRevalueScheduled = false;
+      const pending = [...this.pendingAccountRevalues];
+      this.pendingAccountRevalues.clear();
+      for (const id of pending) {
+        this.#safeEvent('valuation.account.revalue', () => this.#recalculateAccount(id, true));
+      }
+    });
   }
 
   health() {
@@ -162,12 +182,9 @@ class ValuationEngine {
       touchedAccounts.add(position.accountId);
       this.#revaluePosition(id, quote, true);
     }
-    // FX conversion quotes can change P&L for accounts that have open
-    // positions in other symbols. Flat accounts have nothing to revalue and
-    // must not emit valuation updates on every market tick.
-    for (const [accountId, positionIds] of this.positionsByAccount.entries()) {
-      if (positionIds?.size) touchedAccounts.add(accountId);
-    }
+    // Recalculate only accounts directly touched by this symbol. Cross-currency
+    // positions are re-aggregated on their own symbol ticks, avoiding an
+    // O(all-open-accounts) fan-out for every market tick.
     for (const accountId of touchedAccounts) this.#recalculateAccount(accountId, true);
   }
   #upsertPosition(position) {
@@ -175,7 +192,7 @@ class ValuationEngine {
     if (!normalized.id || normalized.status !== 'OPEN') { this.#removePosition(position); return; }
     this.#storePosition(position);
     this.#revaluePosition(normalized.id, this.quoteStore.get(normalized.symbol), true);
-    this.#recalculateAccount(normalized.accountId, true);
+    this.scheduleAccountRevalue(normalized.accountId);
   }
   #removePosition(position) {
     const id = String(position?.id || position?._id || '');
@@ -185,11 +202,11 @@ class ValuationEngine {
     if (existing) this.#unindexPosition(existing);
     this.positions.delete(id);
     this.positionValuations.delete(id);
-    if (accountId) this.#recalculateAccount(accountId, true);
+    if (accountId) this.scheduleAccountRevalue(accountId);
   }
   #upsertAccount(account) {
     const accountId = this.#storeAccountBase(account);
-    if (accountId) this.#recalculateAccount(accountId, true);
+    if (accountId) this.scheduleAccountRevalue(accountId);
   }
   #storeAccountBase(account) {
     const id = String(account?.id || account?._id || account?.accountId || '');

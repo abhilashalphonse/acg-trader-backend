@@ -11,6 +11,8 @@ const idempotencyRecordSchema = new Schema({
   key: { type: String, required: true, trim: true, maxlength: 128, immutable: true },
   requestHash: { type: String, required: true, minlength: 64, maxlength: 64, immutable: true },
   state: { type: String, enum: IDEMPOTENCY_STATES, default: 'IN_PROGRESS', index: true },
+  leaseExpiresAt: { type: Date, default: () => new Date(Date.now() + 60_000), index: true },
+  retryable: { type: Boolean, default: false, index: true },
   resourceType: { type: String, default: null },
   resourceId: { type: String, default: null },
   response: { type: Schema.Types.Mixed, default: null },
@@ -20,6 +22,7 @@ const idempotencyRecordSchema = new Schema({
 
 applyTenantScope(idempotencyRecordSchema);
 idempotencyRecordSchema.index({ tenantId: 1, accountId: 1, scope: 1, key: 1 }, { unique: true });
+idempotencyRecordSchema.index({ state: 1, leaseExpiresAt: 1 });
 idempotencyRecordSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 const IdempotencyRecord = mongoose.models.IdempotencyRecord || mongoose.model('IdempotencyRecord', idempotencyRecordSchema);
