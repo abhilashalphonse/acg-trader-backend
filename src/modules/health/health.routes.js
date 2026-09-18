@@ -36,13 +36,8 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
         && deliveryCurrentlyHealthy
       );
 
-    const symbols = Array.isArray(market.symbols) ? market.symbols : [];
-    const marketOperational = market.enabled !== true
-      || (
-        market.state === 'LIVE'
-        && symbols.length > 0
-        && symbols.every(symbol => symbol?.state === 'LIVE' && symbol?.isStale !== true)
-      );
+    const marketReadiness = evaluateMarketReadiness(market);
+    const marketOperational = marketReadiness.operational;
 
     const tradingReady = trading.enabled === false || (
       trading.started === true
@@ -61,6 +56,9 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
       checks: {
         databaseConnected: Boolean(database.connected),
         marketOperational,
+        marketGatewayLive: marketReadiness.gatewayLive,
+        marketSymbolsConfigured: marketReadiness.symbolsConfigured,
+        marketSubscriptionErrors: marketReadiness.subscriptionErrorCount,
         tradingRuntimeReady: tradingReady,
         reconciliationOperational,
         recoveryConsistent: trading.reconciliation?.recovery?.consistent ?? null,
@@ -73,4 +71,35 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
   return router;
 }
 
-module.exports = { createHealthRouter };
+function evaluateMarketReadiness(market) {
+  if (market?.enabled !== true) {
+    return {
+      operational: true,
+      gatewayLive: true,
+      symbolsConfigured: true,
+      symbolCount: 0,
+      subscriptionErrorCount: 0,
+    };
+  }
+
+  const symbols = Array.isArray(market.symbols) ? market.symbols : [];
+  const subscriptionErrorCount = symbols.filter(symbol => symbol?.state === 'SUBSCRIPTION_ERROR').length;
+  const gatewayLive = market.state === 'LIVE';
+  const symbolsConfigured = symbols.length > 0;
+  const allSubscriptionsFailed = symbolsConfigured && subscriptionErrorCount === symbols.length;
+
+  // Service readiness represents whether the centralized market gateway is
+  // available, not whether every market is currently trading. A 300-symbol
+  // universe spans different sessions, so WAITING/STALE symbols are expected
+  // outside their trading hours. Per-symbol session and quote freshness remain
+  // hard requirements in the execution planner.
+  return {
+    operational: gatewayLive && symbolsConfigured && !allSubscriptionsFailed,
+    gatewayLive,
+    symbolsConfigured,
+    symbolCount: symbols.length,
+    subscriptionErrorCount,
+  };
+}
+
+module.exports = { createHealthRouter, evaluateMarketReadiness };
