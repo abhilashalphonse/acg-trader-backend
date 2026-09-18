@@ -73,7 +73,9 @@ class CandleEngine {
   }
 
   processTick(tick) {
-    if (!tick || !Number.isFinite(tick.price) || !Number.isFinite(tick.timeMs)) return;
+    if (!tick || !Number.isFinite(tick.timeMs)) return;
+    const chartPrice = Number.isFinite(tick.bid) ? tick.bid : tick.price;
+    if (!Number.isFinite(chartPrice)) return;
     const symbol = normalizeSymbol(tick.symbol);
     const continuityBroken = this.continuityBroken.has(symbol);
     this.symbolFeedLive.set(symbol, true);
@@ -89,18 +91,18 @@ class CandleEngine {
       if (state.current && bucket === state.current.openTimeMs) {
         const candle = state.current;
         if (candle.synthetic && candle.tickCount === 0) {
-          candle.open = tick.price;
-          candle.high = tick.price;
-          candle.low = tick.price;
-          candle.close = tick.price;
+          candle.open = chartPrice;
+          candle.high = chartPrice;
+          candle.low = chartPrice;
+          candle.close = chartPrice;
           candle.tickCount = 1;
           candle.synthetic = false;
           candle.source = 'LIVE';
           candle.provider = tick.source || null;
         } else {
-          candle.high = Math.max(candle.high, tick.price);
-          candle.low = Math.min(candle.low, tick.price);
-          candle.close = tick.price;
+          candle.high = Math.max(candle.high, chartPrice);
+          candle.low = Math.min(candle.low, chartPrice);
+          candle.close = chartPrice;
           candle.tickCount += 1;
           candle.provider = tick.source || candle.provider;
         }
@@ -113,7 +115,7 @@ class CandleEngine {
       }
 
       if (!continuityBroken) this.#fillShortGap(state, symbol, timeframe, stepMs, bucket);
-      state.current = this.#fromTick(symbol, timeframe, stepMs, bucket, tick);
+      state.current = this.#fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice);
       this.#emitUpdate(state.current);
     }
 
@@ -164,16 +166,16 @@ class CandleEngine {
     return `${symbol}:${timeframe}`;
   }
 
-  #fromTick(symbol, timeframe, stepMs, bucket, tick) {
+  #fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice) {
     return {
       symbol,
       timeframe,
       openTimeMs: bucket,
       closeTimeMs: bucket + stepMs,
-      open: tick.price,
-      high: tick.price,
-      low: tick.price,
-      close: tick.price,
+      open: chartPrice,
+      high: chartPrice,
+      low: chartPrice,
+      close: chartPrice,
       tickCount: 1,
       providerVolume: null,
       complete: false,
