@@ -18,7 +18,7 @@ const instrumentSchema = new Schema({
   assetClass: {
     type: String,
     required: true,
-    enum: ['FOREX', 'METAL', 'INDEX', 'ENERGY', 'CRYPTO', 'OTHER'],
+    enum: ['FOREX', 'METAL', 'INDEX', 'ENERGY', 'EQUITY', 'CRYPTO', 'OTHER'],
     index: true,
   },
   baseCurrency: { type: String, uppercase: true, trim: true, default: null },

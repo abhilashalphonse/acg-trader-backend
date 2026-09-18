@@ -10,22 +10,26 @@ const { TwelveDataAdapter } = require('./adapters/twelve-data.adapter');
 const { MarketGateway } = require('./market-gateway');
 const { MarketHistoryService } = require('./history.service');
 const { createMarketWebSocketServer } = require('../../realtime/market-ws-server');
+const { ACG_INSTRUMENT_CATALOG } = require('../instruments/instrument-catalog');
 
 function createMarketRuntime() {
   const eventBus = new EventEmitter();
   eventBus.setMaxListeners(0);
-  const instrumentRegistry = new InstrumentRegistry({ symbols: env.market.symbols, defaultMaxQuoteAgeMs: env.market.defaultMaxQuoteAgeMs, logger });
+  const symbols = env.market.useCatalogUniverse
+    ? ACG_INSTRUMENT_CATALOG.filter(item => item.chartEnabled && item.status === 'ACTIVE').map(item => item.symbol)
+    : env.market.symbols;
+  const instrumentRegistry = new InstrumentRegistry({ symbols: symbols, defaultMaxQuoteAgeMs: env.market.defaultMaxQuoteAgeMs, logger });
   const quoteStore = new QuoteStore();
-  const adapter = new TwelveDataAdapter({ apiKey: env.twelveData.apiKey, wsUrl: env.twelveData.wsUrl, apiBase: env.twelveData.apiBase, heartbeatMs: env.twelveData.heartbeatMs, reconnectMinMs: env.twelveData.reconnectMinMs, reconnectMaxMs: env.twelveData.reconnectMaxMs, httpTimeoutMs: env.twelveData.httpTimeoutMs, logger });
+  const adapter = new TwelveDataAdapter({ apiKey: env.twelveData.apiKey, wsUrl: env.twelveData.wsUrl, apiBase: env.twelveData.apiBase, heartbeatMs: env.twelveData.heartbeatMs, reconnectMinMs: env.twelveData.reconnectMinMs, reconnectMaxMs: env.twelveData.reconnectMaxMs, httpTimeoutMs: env.twelveData.httpTimeoutMs, subscribeBatchSize: env.twelveData.subscribeBatchSize, logger });
   const candleEngine = new CandleEngine({ eventBus, timeframes: env.market.candleTimeframes, persistTimeframes: env.market.persistTimeframes, flushIntervalMs: env.market.candleFlushIntervalMs, maxSyntheticGapBars: env.market.maxSyntheticGapBars, logger });
-  const gateway = new MarketGateway({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols: env.market.symbols, staleCheckMs: env.market.staleCheckMs, logger });
+  const gateway = new MarketGateway({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols: symbols, staleCheckMs: env.market.staleCheckMs, logger });
   const historyService = new MarketHistoryService({ adapter, instrumentRegistry, logger });
   let wsServer = null;
   let started = false;
 
   return {
     enabled: env.market.enabled,
-    symbols: env.market.symbols,
+    symbols: symbols,
     timeframes: env.market.candleTimeframes,
     persistTimeframes: env.market.persistTimeframes,
     quoteStore,
@@ -42,7 +46,7 @@ function createMarketRuntime() {
       }
       await gateway.start();
       started = true;
-      logger.info({ symbols: env.market.symbols, timeframes: env.market.candleTimeframes }, 'ACG Market Gateway started');
+      logger.info({ symbols: symbols, timeframes: env.market.candleTimeframes }, 'ACG Market Gateway started');
     },
     attachWebSocket(server, authService, tradingRuntime) {
       if (wsServer) return wsServer;
@@ -56,7 +60,7 @@ function createMarketRuntime() {
     },
     health() {
       const websocket = wsServer?.health?.() || { clients: 0, accountSubscriptions: 0, path: env.market.wsPath };
-      if (!env.market.enabled) return { enabled: false, state: 'DISABLED', symbols: env.market.symbols, websocket };
+      if (!env.market.enabled) return { enabled: false, state: 'DISABLED', symbols: symbols, websocket };
       return { enabled: true, ...gateway.status(), websocket };
     },
   };

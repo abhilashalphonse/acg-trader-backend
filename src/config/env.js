@@ -38,6 +38,7 @@ const schema = z.object({
   PLATFORM_EVENT_MAX_ATTEMPTS: positiveInt(12),
   MARKET_GATEWAY_ENABLED: booleanFromEnv.default(true),
   MARKET_PROVIDER: z.enum(['twelve-data']).default('twelve-data'),
+  MARKET_UNIVERSE_MODE: z.enum(['catalog', 'explicit']).default('catalog'),
   MARKET_SYMBOLS: z.string().default('EURUSD,XAUUSD'),
   MARKET_CANDLE_TIMEFRAMES: z.string().default('1s,5s,15s,30s,1m,5m,15m,1h,4h,1d'),
   MARKET_PERSIST_TIMEFRAMES: z.string().default('5s,15s,30s,1m,5m,15m,1h,4h,1d'),
@@ -55,6 +56,7 @@ const schema = z.object({
   TWELVE_DATA_RECONNECT_MIN_MS: positiveInt(1000),
   TWELVE_DATA_RECONNECT_MAX_MS: positiveInt(30000),
   TWELVE_DATA_HTTP_TIMEOUT_MS: positiveInt(10000),
+  TWELVE_DATA_SUBSCRIBE_BATCH_SIZE: positiveInt(100),
 });
 
 const platformEventsExplicitlyConfigured = Object.prototype.hasOwnProperty.call(process.env, 'PLATFORM_EVENTS_ENABLED');
@@ -66,11 +68,12 @@ if (!parsed.success) {
 }
 const raw = parsed.data;
 const symbols = [...new Set(csv(raw.MARKET_SYMBOLS).map(value => value.replace('/', '').toUpperCase()))];
+const useCatalogUniverse = raw.MARKET_UNIVERSE_MODE === 'catalog';
 const candleTimeframes = [...new Set(csv(raw.MARKET_CANDLE_TIMEFRAMES).map(value => value.toLowerCase()))];
 const persistTimeframes = [...new Set(csv(raw.MARKET_PERSIST_TIMEFRAMES).map(value => value.toLowerCase()))];
 for (const timeframe of [...candleTimeframes, ...persistTimeframes]) if (!SUPPORTED_TIMEFRAMES.has(timeframe)) throw new Error(`Invalid market timeframe: ${timeframe}`);
 for (const timeframe of persistTimeframes) if (!candleTimeframes.includes(timeframe)) throw new Error(`Persist timeframe ${timeframe} must also be in MARKET_CANDLE_TIMEFRAMES`);
-if (raw.MARKET_GATEWAY_ENABLED && !symbols.length) throw new Error('MARKET_SYMBOLS must include at least one symbol');
+if (raw.MARKET_GATEWAY_ENABLED && !useCatalogUniverse && !symbols.length) throw new Error('MARKET_SYMBOLS must include at least one symbol when MARKET_UNIVERSE_MODE=explicit');
 if (
   raw.MARKET_GATEWAY_ENABLED
   && raw.MARKET_PROVIDER === 'twelve-data'
@@ -125,6 +128,8 @@ const env = Object.freeze({
   market: Object.freeze({
     enabled: raw.MARKET_GATEWAY_ENABLED,
     provider: raw.MARKET_PROVIDER,
+    universeMode: raw.MARKET_UNIVERSE_MODE,
+    useCatalogUniverse,
     symbols,
     candleTimeframes,
     persistTimeframes,
@@ -144,6 +149,7 @@ const env = Object.freeze({
     reconnectMinMs: raw.TWELVE_DATA_RECONNECT_MIN_MS,
     reconnectMaxMs: raw.TWELVE_DATA_RECONNECT_MAX_MS,
     httpTimeoutMs: raw.TWELVE_DATA_HTTP_TIMEOUT_MS,
+    subscribeBatchSize: raw.TWELVE_DATA_SUBSCRIBE_BATCH_SIZE,
   }),
 });
 

@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const { TWELVE_DATA_HISTORY_INTERVALS } = require('../market.constants');
 
 class TwelveDataAdapter extends EventEmitter {
-  constructor({ apiKey, wsUrl, apiBase, heartbeatMs, reconnectMinMs, reconnectMaxMs, httpTimeoutMs, logger }) {
+  constructor({ apiKey, wsUrl, apiBase, heartbeatMs, reconnectMinMs, reconnectMaxMs, httpTimeoutMs, subscribeBatchSize = 100, logger }) {
     super();
     this.apiKey = apiKey;
     this.wsUrl = wsUrl;
@@ -14,6 +14,7 @@ class TwelveDataAdapter extends EventEmitter {
     this.reconnectMinMs = reconnectMinMs;
     this.reconnectMaxMs = reconnectMaxMs;
     this.httpTimeoutMs = httpTimeoutMs;
+    this.subscribeBatchSize = Math.max(1, Number(subscribeBatchSize) || 100);
     this.logger = logger;
 
     this.socket = null;
@@ -100,11 +101,14 @@ class TwelveDataAdapter extends EventEmitter {
 
   #subscribeAll() {
     if (this.socket?.readyState !== WebSocket.OPEN || !this.subscriptions.length) return;
-    const providerSymbols = this.subscriptions.map(item => item.providerSymbol);
-    this.socket.send(JSON.stringify({
-      action: 'subscribe',
-      params: { symbols: providerSymbols.join(',') },
-    }));
+    const providerSymbols = [...new Set(this.subscriptions.map(item => item.providerSymbol).filter(Boolean))];
+    for (let offset = 0; offset < providerSymbols.length; offset += this.subscribeBatchSize) {
+      const batch = providerSymbols.slice(offset, offset + this.subscribeBatchSize);
+      this.socket.send(JSON.stringify({
+        action: 'subscribe',
+        params: { symbols: batch.join(',') },
+      }));
+    }
   }
 
   #sendHeartbeat() {
