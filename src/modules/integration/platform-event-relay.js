@@ -95,6 +95,8 @@ class PlatformEventRelay {
       marginFree: decimal(payload?.freeMargin ?? state.freeMargin),
       marginLevel: decimal(payload?.marginLevel),
       floatingProfit: decimal(payload?.floatingPnl ?? state.floatingPnl),
+      dailyStartEquity: decimal(account?.state?.dailyStartEquity),
+      riskDayKey: account?.riskDayKey || null,
       openPositions: numberOrNull(payload?.positionCount),
       valuationStatus: payload?.valuationStatus || null,
       complete: payload?.complete == null ? null : Boolean(payload.complete),
