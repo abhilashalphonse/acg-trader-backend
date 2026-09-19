@@ -336,7 +336,7 @@ function baseSpec({
   digits, tickSize, pipSize, contractSize, minVolume = '0.01', maxVolume = '100',
   volumeStep = '0.01', defaultLeverage = 100, marginRate = null,
   commissionPerLot = '0', fixedPoints = '10', tradingSessions = [],
-  timezone = 'UTC', providerSymbol, maxQuoteAgeMs = 10000,
+  timezone = 'UTC', providerSymbol, softQuoteAgeMs = 10000, maxQuoteAgeMs = 30000,
 }) {
   return Object.freeze({
     symbol, displaySymbol, name, assetClass, baseCurrency, quoteCurrency,
@@ -346,7 +346,7 @@ function baseSpec({
     spread: Object.freeze({ mode: 'SYNTHETIC', fixedPoints, markupPoints: '0' }),
     tradingSessions, tradingHolidays: Object.freeze([]), timezone,
     providerMappings: Object.freeze({ twelveData: providerSymbol }),
-    maxQuoteAgeMs, chartEnabled: true, executionEnabled: false, status: 'ACTIVE',
+    softQuoteAgeMs, maxQuoteAgeMs, chartEnabled: true, executionEnabled: false, status: 'ACTIVE',
   });
 }
 
@@ -362,6 +362,8 @@ function forexSpec(pair) {
     contractSize: '100000', defaultLeverage: 100,
     fixedPoints: exoticQuotes.has(quoteCurrency) ? '30' : '10',
     tradingSessions: FX_WEEK, providerSymbol: pair,
+    softQuoteAgeMs: exoticQuotes.has(quoteCurrency) ? 10000 : 7000,
+    maxQuoteAgeMs: exoticQuotes.has(quoteCurrency) ? 40000 : 25000,
   });
 }
 
@@ -374,6 +376,8 @@ function commoditySpec(spec) {
     pipSize: spec.pipSize, contractSize: spec.contractSize,
     defaultLeverage: spec.defaultLeverage, fixedPoints: spec.fixedPoints,
     providerSymbol: spec.providerSymbol, tradingSessions: FX_WEEK,
+    softQuoteAgeMs: spec.assetClass === 'OTHER' ? 15000 : 10000,
+    maxQuoteAgeMs: spec.assetClass === 'OTHER' ? 60000 : 35000,
   });
 }
 
@@ -385,6 +389,8 @@ function indexSpec(spec) {
     minVolume: '0.01', maxVolume: '1000', volumeStep: '0.01',
     defaultLeverage: 20, fixedPoints: '5',
     providerSymbol: spec.providerSymbol, tradingSessions: [],
+    softQuoteAgeMs: 10000,
+    maxQuoteAgeMs: 35000,
   });
 }
 
@@ -397,6 +403,8 @@ function equitySpec(symbol) {
     defaultLeverage: 5, fixedPoints: '2',
     tradingSessions: US_EQUITY_SESSION, timezone: 'America/New_York',
     providerSymbol: symbol,
+    softQuoteAgeMs: 12000,
+    maxQuoteAgeMs: 45000,
   });
 }
 
@@ -414,6 +422,8 @@ function cryptoSpec(pair) {
     volumeStep: '0.01', defaultLeverage: 2,
     fixedPoints: highPrice.has(baseCurrency) ? '10' : '20',
     tradingSessions: [], providerSymbol: pair,
+    softQuoteAgeMs: highPrice.has(baseCurrency) ? 10000 : 15000,
+    maxQuoteAgeMs: highPrice.has(baseCurrency) ? 35000 : 60000,
   });
 }
 
