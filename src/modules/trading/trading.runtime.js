@@ -43,8 +43,8 @@ function createTradingRuntime({ marketRuntime }) {
     maxAttempts: env.platformEvents.maxAttempts,
     logger,
   });
-  const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, logger });
-  const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, logger });
+  const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
+  const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
   const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
   const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger });
   const accountLedgerService = new AccountLedgerService({ eventBus, commandQueue, logger });
