@@ -16,6 +16,7 @@ class ValuationEngine {
     eventBus,
     quoteStore,
     currencyConverter = null,
+    marketPriority = null,
     logger,
     accountModel = TradingAccount,
     positionModel = Position,
@@ -23,6 +24,7 @@ class ValuationEngine {
     this.eventBus = eventBus;
     this.quoteStore = quoteStore;
     this.currencyConverter = currencyConverter;
+    this.marketPriority = marketPriority;
     this.logger = logger;
     this.accountModel = accountModel;
     this.positionModel = positionModel;
@@ -70,6 +72,7 @@ class ValuationEngine {
     if (!this.started) return;
     this.#detachListeners();
     this.started = false;
+    for (const position of this.positions.values()) this.marketPriority?.release?.(position.symbol);
     this.positions.clear();
     this.positionValuations.clear();
     this.accountBases.clear();
@@ -222,11 +225,13 @@ class ValuationEngine {
     const previous = this.positions.get(normalized.id);
     if (previous) this.#unindexPosition(previous);
     this.positions.set(normalized.id, normalized);
+    this.marketPriority?.retain?.(normalized.symbol);
     addIndex(this.positionsBySymbol, normalized.symbol, normalized.id);
     addIndex(this.positionsByAccount, normalized.accountId, normalized.id);
     return normalized.id;
   }
   #unindexPosition(position) {
+    this.marketPriority?.release?.(position.symbol);
     removeIndex(this.positionsBySymbol, position.symbol, position.id);
     removeIndex(this.positionsByAccount, position.accountId, position.id);
   }
