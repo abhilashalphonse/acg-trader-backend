@@ -95,6 +95,13 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       });
     });
     socket.on('error', error => logger.debug({ err: error }, 'Trader WebSocket client error'));
+    socket.on('close', () => {
+      const state = subscriptions.get(socket);
+      if (!state) return;
+      for (const symbol of state.quotes) runtime.releasePriority?.(symbol);
+      state.quotes.clear();
+    });
+
   });
 
   async function handleClientMessage(socket, message) {
@@ -135,8 +142,18 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       }
     }
     for (const symbol of requested.quotes) {
-      if (!runtime.symbols.includes(symbol)) rejected.push({ channel: 'quote', symbol, reason: 'SYMBOL_NOT_CONFIGURED' });
-      else { state.quotes[action === 'subscribe' ? 'add' : 'delete'](symbol); accepted.quotes.push(symbol); }
+      if (!runtime.symbols.includes(symbol)) {
+        rejected.push({ channel: 'quote', symbol, reason: 'SYMBOL_NOT_CONFIGURED' });
+      } else if (action === 'subscribe') {
+        if (!state.quotes.has(symbol)) {
+          state.quotes.add(symbol);
+          runtime.retainPriority?.(symbol);
+        }
+        accepted.quotes.push(symbol);
+      } else {
+        if (state.quotes.delete(symbol)) runtime.releasePriority?.(symbol);
+        accepted.quotes.push(symbol);
+      }
     }
     for (const symbol of requested.ticks) {
       if (!runtime.symbols.includes(symbol)) rejected.push({ channel: 'tick', symbol, reason: 'SYMBOL_NOT_CONFIGURED' });
