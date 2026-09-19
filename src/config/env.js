@@ -3,7 +3,9 @@
 const { z } = require('zod');
 require('dotenv').config();
 
-const SUPPORTED_TIMEFRAMES = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']);
+const REQUIRED_TIMEFRAMES = Object.freeze(['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']);
+const SUPPORTED_TIMEFRAMES = new Set(REQUIRED_TIMEFRAMES);
+const LEGACY_SUBMINUTE_TIMEFRAMES = new Set(['1s', '5s', '15s', '30s']);
 const booleanFromEnv = z.preprocess(value => {
   if (typeof value === 'boolean') return value;
   if (typeof value !== 'string') return value;
@@ -72,10 +74,18 @@ if (!parsed.success) {
 const raw = parsed.data;
 const symbols = [...new Set(csv(raw.MARKET_SYMBOLS).map(value => value.replace('/', '').toUpperCase()))];
 const useCatalogUniverse = raw.MARKET_UNIVERSE_MODE === 'catalog';
-const candleTimeframes = [...new Set(csv(raw.MARKET_CANDLE_TIMEFRAMES).map(value => value.toLowerCase()))];
-const persistTimeframes = [...new Set(csv(raw.MARKET_PERSIST_TIMEFRAMES).map(value => value.toLowerCase()))];
-for (const timeframe of [...candleTimeframes, ...persistTimeframes]) if (!SUPPORTED_TIMEFRAMES.has(timeframe)) throw new Error(`Invalid market timeframe: ${timeframe}`);
-for (const timeframe of persistTimeframes) if (!candleTimeframes.includes(timeframe)) throw new Error(`Persist timeframe ${timeframe} must also be in MARKET_CANDLE_TIMEFRAMES`);
+const configuredCandleTimeframes = [...new Set(csv(raw.MARKET_CANDLE_TIMEFRAMES).map(value => value.toLowerCase()))]
+  .filter(timeframe => !LEGACY_SUBMINUTE_TIMEFRAMES.has(timeframe));
+const configuredPersistTimeframes = [...new Set(csv(raw.MARKET_PERSIST_TIMEFRAMES).map(value => value.toLowerCase()))]
+  .filter(timeframe => !LEGACY_SUBMINUTE_TIMEFRAMES.has(timeframe));
+for (const timeframe of [...configuredCandleTimeframes, ...configuredPersistTimeframes]) {
+  if (!SUPPORTED_TIMEFRAMES.has(timeframe)) throw new Error(`Invalid market timeframe: ${timeframe}`);
+}
+// ACG Trader now exposes one canonical timeframe set. Unioning the required
+// values also upgrades Railway deployments that still carry the legacy
+// sub-minute environment strings, without requiring a coordinated env edit.
+const candleTimeframes = [...new Set([...configuredCandleTimeframes, ...REQUIRED_TIMEFRAMES])];
+const persistTimeframes = [...new Set([...configuredPersistTimeframes, ...REQUIRED_TIMEFRAMES])];
 if (raw.MARKET_GATEWAY_ENABLED && !useCatalogUniverse && !symbols.length) throw new Error('MARKET_SYMBOLS must include at least one symbol when MARKET_UNIVERSE_MODE=explicit');
 if (
   raw.MARKET_GATEWAY_ENABLED
@@ -159,4 +169,4 @@ const env = Object.freeze({
   }),
 });
 
-module.exports = { env, SUPPORTED_TIMEFRAMES };
+module.exports = { env, SUPPORTED_TIMEFRAMES, REQUIRED_TIMEFRAMES };
