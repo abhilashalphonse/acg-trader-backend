@@ -3,6 +3,8 @@
 const { Instrument } = require('./instrument.model');
 const { ACG_INSTRUMENT_CATALOG } = require('./instrument-catalog');
 
+const EXECUTION_PROVISION_VERSION = 1;
+
 async function ensureInstrumentCatalog({ logger } = {}) {
   const operations = ACG_INSTRUMENT_CATALOG.map(spec => ({
     updateOne: {
@@ -21,25 +23,47 @@ async function ensureInstrumentCatalog({ logger } = {}) {
 
 async function syncInstrumentCatalog({ logger } = {}) {
   const operations = ACG_INSTRUMENT_CATALOG.map(spec => {
-    const { executionEnabled, status, ...managedSpec } = spec;
+    const { executionEnabled: _catalogExecutionDefault, status, ...managedSpec } = spec;
     return {
       updateOne: {
         filter: { symbol: spec.symbol },
         update: {
           $set: managedSpec,
-          $setOnInsert: { executionEnabled, status },
+          $setOnInsert: { executionEnabled: true, status, executionProvisionVersion: EXECUTION_PROVISION_VERSION },
         },
         upsert: true,
       },
     };
   });
 
-  if (!operations.length) return { matched: 0, modified: 0, inserted: 0 };
+  if (!operations.length) return { matched: 0, modified: 0, inserted: 0, executionProvisioned: 0 };
   const result = await Instrument.bulkWrite(operations, { ordered: false });
+
+  // One-time launch migration: catalog instruments created before execution
+  // provisioning were intentionally seeded disabled. Enable each exactly once,
+  // then preserve any later operator disable/halt decision on future restarts.
+  const catalogSymbols = ACG_INSTRUMENT_CATALOG.map(spec => spec.symbol);
+  const provision = await Instrument.updateMany(
+    {
+      symbol: { $in: catalogSymbols },
+      $or: [
+        { executionProvisionVersion: { $exists: false } },
+        { executionProvisionVersion: { $lt: EXECUTION_PROVISION_VERSION } },
+      ],
+    },
+    {
+      $set: {
+        executionEnabled: true,
+        executionProvisionVersion: EXECUTION_PROVISION_VERSION,
+      },
+    },
+  );
+
   const summary = {
     matched: Number(result.matchedCount || 0),
     modified: Number(result.modifiedCount || 0),
     inserted: Number(result.upsertedCount || 0),
+    executionProvisioned: Number(provision.modifiedCount || 0),
   };
   logger?.info?.({ ...summary, catalogSize: ACG_INSTRUMENT_CATALOG.length }, 'Instrument catalog synchronized');
   return summary;
@@ -96,8 +120,9 @@ function serializeInstrument(document) {
     maxQuoteAgeMs: doc.maxQuoteAgeMs,
     chartEnabled: doc.chartEnabled,
     executionEnabled: doc.executionEnabled,
+    executionProvisionVersion: Number(doc.executionProvisionVersion || 0),
     status: doc.status,
   };
 }
 
-module.exports = { ensureInstrumentCatalog, syncInstrumentCatalog, serializeInstrument };
+module.exports = { ensureInstrumentCatalog, syncInstrumentCatalog, serializeInstrument, EXECUTION_PROVISION_VERSION };
