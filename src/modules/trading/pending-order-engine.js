@@ -8,12 +8,14 @@ class PendingOrderEngine {
     eventBus,
     pendingOrderService,
     logger,
+    marketPriority = null,
     orderModel = Order,
     expiryCheckMs = 1000,
   }) {
     this.eventBus = eventBus;
     this.pendingOrderService = pendingOrderService;
     this.logger = logger;
+    this.marketPriority = marketPriority;
     this.orderModel = orderModel;
     this.expiryCheckMs = expiryCheckMs;
 
@@ -58,6 +60,7 @@ class PendingOrderEngine {
     this.expiryTimer = null;
     await Promise.allSettled([...this.inFlight.values()]);
     this.inFlight.clear();
+    for (const order of this.orders.values()) this.marketPriority?.release?.(order.symbol);
     this.orders.clear();
     this.ordersBySymbol.clear();
     this.started = false;
@@ -179,8 +182,12 @@ class PendingOrderEngine {
     const normalized = normalizePendingOrder(order);
     if (!normalized.id || !['PENDING', 'TRIGGERED'].includes(normalized.status)) return;
     const previous = this.orders.get(normalized.id);
-    if (previous) removeIndex(this.ordersBySymbol, previous.symbol, normalized.id);
+    if (previous) {
+      removeIndex(this.ordersBySymbol, previous.symbol, normalized.id);
+      this.marketPriority?.release?.(previous.symbol);
+    }
     this.orders.set(normalized.id, normalized);
+    this.marketPriority?.retain?.(normalized.symbol);
     addIndex(this.ordersBySymbol, normalized.symbol, normalized.id);
   }
 
@@ -188,7 +195,10 @@ class PendingOrderEngine {
     const id = String(order?.id || order?._id || '');
     if (!id) return;
     const existing = this.orders.get(id);
-    if (existing) removeIndex(this.ordersBySymbol, existing.symbol, id);
+    if (existing) {
+      removeIndex(this.ordersBySymbol, existing.symbol, id);
+      this.marketPriority?.release?.(existing.symbol);
+    }
     this.orders.delete(id);
   }
 }
