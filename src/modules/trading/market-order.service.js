@@ -27,6 +27,7 @@ class MarketOrderService {
     logger,
     valuationEngine = null,
     platformEventRelay = null,
+    quoteRecovery = null,
     accountModel = TradingAccount,
     instrumentModel = Instrument,
     orderModel = Order,
@@ -43,6 +44,7 @@ class MarketOrderService {
       logger,
       valuationEngine,
       platformEventRelay,
+      quoteRecovery,
       accountModel,
       instrumentModel,
       orderModel,
@@ -63,8 +65,8 @@ class MarketOrderService {
 
     try {
       const result = await this.commandQueue.run(normalized.accountId, async () => {
+        const quoteSnapshot = await this.#resolveExecutableQuote(normalized.symbol, 'market-open');
         const nowMs = Date.now();
-        const quoteSnapshot = this.quoteStore.get(normalized.symbol);
         const transactionResult = await this.runTransaction(async session => {
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
@@ -105,8 +107,12 @@ class MarketOrderService {
 
     try {
       const result = await this.commandQueue.run(normalized.accountId, async () => {
-        const nowMs = Date.now();
         let quoteSnapshot = null;
+        const previewPosition = await this.positionModel.findById(normalized.positionId).lean();
+        if (previewPosition?.symbol) {
+          quoteSnapshot = await this.#resolveExecutableQuote(previewPosition.symbol, normalized.reason ? 'protective-close' : 'market-close');
+        }
+        const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
@@ -148,6 +154,15 @@ class MarketOrderService {
       await this.#recordFailure(reservation.record._id, error);
       throw translateTransactionError(error);
     }
+  }
+
+  async #resolveExecutableQuote(symbol, reason) {
+    try {
+      if (this.quoteRecovery) await this.quoteRecovery(symbol, { reason });
+    } catch (error) {
+      this.logger?.warn?.({ err: error, symbol, reason }, 'On-demand quote recovery failed before execution');
+    }
+    return this.quoteStore.get(symbol);
   }
 
   async #persistOpen({ normalized, reservation, account, plan, quoteSnapshot, session, nowMs }) {
