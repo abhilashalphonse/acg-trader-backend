@@ -2,9 +2,10 @@
 
 const express = require('express');
 const { AppError } = require('../../shared/errors/app-error');
+const { requireTraderSession } = require('../auth/auth.middleware');
 const { normalizeSymbol, clampInteger } = require('./market.utils');
 
-function createMarketRouter(runtime) {
+function createMarketRouter(runtime, authService = null) {
   const router = express.Router();
 
   router.get('/status', (_req, res) => {
@@ -29,7 +30,7 @@ function createMarketRouter(runtime) {
     });
   });
 
-  router.post('/quote/refresh', async (req, res) => {
+  router.post('/quote/refresh', authService ? requireTraderSession(authService) : (_req, _res, next) => next(), async (req, res) => {
     requireEnabled(runtime);
     const symbol = normalizeSymbol(req.body?.symbol);
     validateSymbols(runtime, [symbol]);
