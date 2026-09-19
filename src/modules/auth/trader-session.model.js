@@ -7,7 +7,7 @@ const { Schema } = mongoose;
 const traderSessionSchema = new Schema({
   tenantId: { type: Schema.Types.ObjectId, ref: 'Tenant', required: true, immutable: true, index: true },
   tokenHash: { type: String, required: true, unique: true, index: true },
-  refreshTokenHash: { type: String, default: null, unique: true, sparse: true, index: true },
+  refreshTokenHash: { type: String, unique: true, sparse: true, index: true },
   authMethod: { type: String, enum: ['PASSWORD', 'FEDERATED'], required: true, immutable: true },
   ownerExternalRef: { type: String, default: null, immutable: true, index: true },
   accountIds: [{ type: Schema.Types.ObjectId, ref: 'TradingAccount', required: true }],
