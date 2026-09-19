@@ -108,7 +108,10 @@ class MarketOrderService {
     try {
       const result = await this.commandQueue.run(normalized.accountId, async () => {
         let quoteSnapshot = null;
-        const previewPosition = await this.positionModel.findById(normalized.positionId).lean();
+        const previewPositionQuery = this.positionModel.findById(normalized.positionId);
+        const previewPosition = typeof previewPositionQuery?.lean === 'function'
+          ? await previewPositionQuery.lean()
+          : await previewPositionQuery;
         if (previewPosition?.symbol) {
           quoteSnapshot = await this.#resolveExecutableQuote(previewPosition.symbol, normalized.reason ? 'protective-close' : 'market-close');
         }
