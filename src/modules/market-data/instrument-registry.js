@@ -39,6 +39,8 @@ class InstrumentRegistry {
         configured: false,
         providerSymbol: defaultTwelveDataSymbol(symbol),
         tickSize: null,
+        assetClass: null,
+        softQuoteAgeMs: Math.max(1000, Math.round(this.defaultMaxQuoteAgeMs * 0.4)),
         maxQuoteAgeMs: this.defaultMaxQuoteAgeMs,
         spread: Object.freeze({ mode: 'MARKET', fixedPoints: null, markupPoints: 0 }),
         status: 'ACTIVE',
@@ -56,6 +58,11 @@ class InstrumentRegistry {
       configured: true,
       providerSymbol,
       tickSize: decimalToNumber(doc.tickSize),
+      assetClass: doc.assetClass || null,
+      softQuoteAgeMs: Math.min(
+        Number(doc.maxQuoteAgeMs) || this.defaultMaxQuoteAgeMs,
+        Number(doc.softQuoteAgeMs) || Math.max(1000, Math.round((Number(doc.maxQuoteAgeMs) || this.defaultMaxQuoteAgeMs) * 0.4)),
+      ),
       maxQuoteAgeMs: Number(doc.maxQuoteAgeMs) || this.defaultMaxQuoteAgeMs,
       spread: Object.freeze({
         mode: doc.spread?.mode || 'MARKET',
