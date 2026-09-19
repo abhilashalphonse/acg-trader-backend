@@ -64,7 +64,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   app.use('/v1/auth', createAuthRouter(authService));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
   app.use('/v1/instruments', createInstrumentRouter({ identityService }));
-  app.use('/v1/market', createMarketRouter(marketRuntime));
+  app.use('/v1/market', createMarketRouter(marketRuntime, authService));
   app.use('/v1/internal/operations', createOperationsRouter(tradingRuntime, authService));
   app.use('/v1/internal/trading/accounts/:accountId/ledger', createAccountLedgerRouter(tradingRuntime, authService));
   app.use('/v1/internal/trading/accounts', createAccountControlRouter(tradingRuntime, authService));
