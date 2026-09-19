@@ -1,6 +1,12 @@
 'use strict';
 
 const TIMEFRAME_MS = Object.freeze({
+  // Internal bucket support retained for deterministic candle-engine tests and
+  // legacy stored bars. These are not public/supported ACG Trader timeframes.
+  '1s': 1_000,
+  '5s': 5_000,
+  '15s': 15_000,
+  '30s': 30_000,
   '1m': 60_000,
   '5m': 5 * 60_000,
   '15m': 15 * 60_000,
