@@ -22,6 +22,9 @@ class AuthService {
     sessionModel = TraderSession,
     federationTicketModel = FederationTicket,
     sessionTtlSeconds = 3600,
+    accessTokenTtlSeconds = 900,
+    refreshSessionTtlSeconds = 30 * 24 * 60 * 60,
+    idleTimeoutSeconds = 24 * 60 * 60,
     federationTicketTtlSeconds = 60,
     maxFailedLogins = 5,
     lockoutSeconds = 900,
@@ -35,6 +38,9 @@ class AuthService {
       sessionModel,
       federationTicketModel,
       sessionTtlSeconds,
+      accessTokenTtlSeconds,
+      refreshSessionTtlSeconds,
+      idleTimeoutSeconds,
       federationTicketTtlSeconds,
       maxFailedLogins,
       lockoutSeconds,
@@ -213,26 +219,121 @@ class AuthService {
 
   async authenticateSessionToken(token) {
     const now = this.now();
-    const session = await this.sessionModel.findOne({
-      tokenHash: hashToken(requiredString(token, 'accessToken')),
-      revokedAt: null,
-    }).lean();
-    if (!session || !session.expiresAt || session.expiresAt <= now) {
-      throw new AppError('Trading session is invalid or expired', { statusCode: 401, code: 'TRADER_SESSION_INVALID' });
+    const tokenHash = hashToken(requiredString(token, 'accessToken'));
+    const session = await this.sessionModel.findOne({ tokenHash, revokedAt: null }).lean();
+    const accessExpiresAt = session?.accessExpiresAt || session?.expiresAt || null;
+    const idleExpiresAt = session?.idleExpiresAt || session?.expiresAt || null;
+    if (
+      !session
+      || !accessExpiresAt
+      || accessExpiresAt <= now
+      || !session.expiresAt
+      || session.expiresAt <= now
+      || !idleExpiresAt
+      || idleExpiresAt <= now
+    ) {
+      throw invalidTraderSession();
     }
-    await this.sessionModel.updateOne({ _id: session._id }, { $set: { lastSeenAt: now } });
-    return {
-      sessionId: String(session._id),
-      tenantId: String(session.tenantId),
-      ownerExternalRef: session.ownerExternalRef || null,
-      accountIds: session.accountIds.map(String),
-      authMethod: session.authMethod,
-      expiresAt: new Date(session.expiresAt).toISOString(),
-    };
+
+    const nextIdleExpiresAt = new Date(Math.min(
+      session.expiresAt.getTime(),
+      now.getTime() + this.idleTimeoutSeconds * 1000,
+    ));
+    await this.sessionModel.updateOne(
+      { _id: session._id, tokenHash, revokedAt: null },
+      { $set: { lastSeenAt: now, idleExpiresAt: nextIdleExpiresAt } },
+    );
+
+    return sessionPrincipal(session, accessExpiresAt, nextIdleExpiresAt);
   }
 
-  async revokeSession(token) {
-    await this.sessionModel.updateOne({ tokenHash: hashToken(requiredString(token, 'accessToken')), revokedAt: null }, { $set: { revokedAt: this.now() } });
+  async refreshSession({ refreshToken = null, legacyAccessToken = null } = {}) {
+    const now = this.now();
+
+    if (refreshToken) {
+      const refreshTokenHash = hashToken(requiredString(refreshToken, 'refreshToken'));
+      const current = await this.sessionModel.findOne({ refreshTokenHash, revokedAt: null }).lean();
+      if (
+        !current
+        || !current.expiresAt
+        || current.expiresAt <= now
+        || !current.idleExpiresAt
+        || current.idleExpiresAt <= now
+      ) {
+        throw invalidTraderRefreshSession();
+      }
+
+      const credentials = this.#nextCredentials(current.expiresAt);
+      const updated = await this.sessionModel.findOneAndUpdate(
+        { _id: current._id, refreshTokenHash, revokedAt: null },
+        {
+          $set: {
+            tokenHash: hashToken(credentials.accessToken),
+            refreshTokenHash: hashToken(credentials.refreshToken),
+            accessExpiresAt: credentials.accessExpiresAt,
+            idleExpiresAt: credentials.idleExpiresAt,
+            lastSeenAt: now,
+          },
+        },
+        { new: true },
+      );
+      if (!updated) throw invalidTraderRefreshSession();
+      return authResponse(updated, credentials);
+    }
+
+    if (legacyAccessToken) {
+      const legacyTokenHash = hashToken(requiredString(legacyAccessToken, 'legacyAccessToken'));
+      const current = await this.sessionModel.findOne({
+        tokenHash: legacyTokenHash,
+        revokedAt: null,
+        $or: [
+          { refreshTokenHash: { $exists: false } },
+          { refreshTokenHash: null },
+        ],
+      }).lean();
+      if (!current || !current.expiresAt || current.expiresAt <= now) throw invalidTraderRefreshSession();
+
+      const absoluteExpiresAt = new Date(now.getTime() + this.refreshSessionTtlSeconds * 1000);
+      const credentials = this.#nextCredentials(absoluteExpiresAt);
+      const updated = await this.sessionModel.findOneAndUpdate(
+        {
+          _id: current._id,
+          tokenHash: legacyTokenHash,
+          revokedAt: null,
+          $or: [
+            { refreshTokenHash: { $exists: false } },
+            { refreshTokenHash: null },
+          ],
+        },
+        {
+          $set: {
+            tokenHash: hashToken(credentials.accessToken),
+            refreshTokenHash: hashToken(credentials.refreshToken),
+            accessExpiresAt: credentials.accessExpiresAt,
+            idleExpiresAt: credentials.idleExpiresAt,
+            expiresAt: absoluteExpiresAt,
+            lastSeenAt: now,
+          },
+        },
+        { new: true },
+      );
+      if (!updated) throw invalidTraderRefreshSession();
+      return authResponse(updated, credentials);
+    }
+
+    throw invalidTraderRefreshSession();
+  }
+
+  async revokeSession({ accessToken = null, refreshToken = null } = {}) {
+    const hashes = [];
+    if (accessToken) hashes.push({ tokenHash: hashToken(requiredString(accessToken, 'accessToken')) });
+    if (refreshToken) hashes.push({ refreshTokenHash: hashToken(requiredString(refreshToken, 'refreshToken')) });
+    if (!hashes.length) return false;
+    const result = await this.sessionModel.updateOne(
+      { revokedAt: null, $or: hashes },
+      { $set: { revokedAt: this.now() } },
+    );
+    return Number(result.modifiedCount || 0) > 0;
   }
 
   async authenticateServiceKey({ clientId, apiKey, requiredScope = null }) {
@@ -255,28 +356,38 @@ class AuthService {
   }
 
   async #createSession({ tenantId, authMethod, ownerExternalRef, accountIds, credentialId = null }) {
-    const accessToken = `acg_ts_${randomToken(32)}`;
-    const expiresAt = new Date(this.now().getTime() + this.sessionTtlSeconds * 1000);
+    const now = this.now();
+    const absoluteExpiresAt = new Date(now.getTime() + this.refreshSessionTtlSeconds * 1000);
+    const credentials = this.#nextCredentials(absoluteExpiresAt);
     const session = await this.sessionModel.create({
       tenantId,
-      tokenHash: hashToken(accessToken),
+      tokenHash: hashToken(credentials.accessToken),
+      refreshTokenHash: hashToken(credentials.refreshToken),
       authMethod,
       ownerExternalRef,
       accountIds: uniqueIds(accountIds),
       credentialId,
-      expiresAt,
+      accessExpiresAt: credentials.accessExpiresAt,
+      idleExpiresAt: credentials.idleExpiresAt,
+      expiresAt: absoluteExpiresAt,
+      lastSeenAt: now,
     });
+    return authResponse(session, credentials);
+  }
+
+  #nextCredentials(absoluteExpiresAt) {
+    const now = this.now();
     return {
-      accessToken,
-      tokenType: 'Bearer',
-      expiresAt: expiresAt.toISOString(),
-      session: {
-        id: String(session._id),
-        tenantId: String(session.tenantId),
-        ownerExternalRef: session.ownerExternalRef || null,
-        accountIds: session.accountIds.map(String),
-        authMethod: session.authMethod,
-      },
+      accessToken: `acg_ts_${randomToken(32)}`,
+      refreshToken: `acg_tr_${randomToken(48)}`,
+      accessExpiresAt: new Date(Math.min(
+        absoluteExpiresAt.getTime(),
+        now.getTime() + this.accessTokenTtlSeconds * 1000,
+      )),
+      idleExpiresAt: new Date(Math.min(
+        absoluteExpiresAt.getTime(),
+        now.getTime() + this.idleTimeoutSeconds * 1000,
+      )),
     };
   }
 
@@ -312,6 +423,38 @@ function hashToken(token) { return crypto.createHash('sha256').update(String(tok
 function safeHashEquals(left, right) { const a = Buffer.from(String(left)); const b = Buffer.from(String(right)); return a.length === b.length && crypto.timingSafeEqual(a, b); }
 function requiredString(value, field) { const text = String(value ?? '').trim(); if (!text) throw new AppError(`${field} is required`, { statusCode: 400, code: 'INVALID_AUTH_REQUEST' }); return text; }
 function uniqueIds(values) { return [...new Set((Array.isArray(values) ? values : []).map(value => String(value).trim()).filter(Boolean))]; }
+function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null) {
+  return {
+    sessionId: String(session._id),
+    tenantId: String(session.tenantId),
+    ownerExternalRef: session.ownerExternalRef || null,
+    accountIds: (session.accountIds || []).map(String),
+    authMethod: session.authMethod,
+    expiresAt: new Date(accessExpiresAt).toISOString(),
+    refreshExpiresAt: session.expiresAt ? new Date(session.expiresAt).toISOString() : null,
+    idleExpiresAt: idleExpiresAt ? new Date(idleExpiresAt).toISOString() : session.idleExpiresAt ? new Date(session.idleExpiresAt).toISOString() : null,
+  };
+}
+
+function authResponse(session, credentials) {
+  return {
+    accessToken: credentials.accessToken,
+    refreshToken: credentials.refreshToken,
+    tokenType: 'Bearer',
+    expiresAt: credentials.accessExpiresAt.toISOString(),
+    refreshExpiresAt: session.expiresAt ? new Date(session.expiresAt).toISOString() : null,
+    session: {
+      id: String(session._id),
+      tenantId: String(session.tenantId),
+      ownerExternalRef: session.ownerExternalRef || null,
+      accountIds: (session.accountIds || []).map(String),
+      authMethod: session.authMethod,
+    },
+  };
+}
+
+function invalidTraderSession() { return new AppError('Trading session is invalid or expired', { statusCode: 401, code: 'TRADER_SESSION_INVALID' }); }
+function invalidTraderRefreshSession() { return new AppError('Trading session needs authentication', { statusCode: 401, code: 'TRADER_REFRESH_INVALID' }); }
 function invalidCredentials() { return new AppError('Invalid trading login or password', { statusCode: 401, code: 'INVALID_TRADING_CREDENTIALS' }); }
 function invalidServiceCredentials() { return new AppError('Invalid service credentials', { statusCode: 401, code: 'INVALID_SERVICE_CREDENTIALS' }); }
 
