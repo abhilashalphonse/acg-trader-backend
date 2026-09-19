@@ -22,25 +22,32 @@ async function ensureInstrumentCatalog({ logger } = {}) {
 }
 
 async function provisionCatalogExecution({ logger } = {}) {
-  const catalogSymbols = ACG_INSTRUMENT_CATALOG.map(spec => spec.symbol);
-  if (!catalogSymbols.length) return { matched: 0, modified: 0 };
+  if (!ACG_INSTRUMENT_CATALOG.length) return { matched: 0, modified: 0 };
 
-  const result = await Instrument.updateMany(
-    {
-      symbol: { $in: catalogSymbols },
-      $or: [
-        { executionProvisionVersion: { $exists: false } },
-        { executionProvisionVersion: { $lt: EXECUTION_PROVISION_VERSION } },
-      ],
-    },
-    {
-      $set: {
-        executionEnabled: true,
-        executionProvisionVersion: EXECUTION_PROVISION_VERSION,
+  // Do not use symbol: { $in: [...] } here. The symbol schema uses Mongoose's
+  // uppercase string setter, which attempts to cast the query-operator object
+  // itself as a string during updateMany(). Exact-string filters avoid that
+  // casting path while keeping schema normalization and operator safety intact.
+  const operations = ACG_INSTRUMENT_CATALOG.map(spec => ({
+    updateOne: {
+      filter: {
+        symbol: spec.symbol,
+        $or: [
+          { executionProvisionVersion: { $exists: false } },
+          { executionProvisionVersion: { $lt: EXECUTION_PROVISION_VERSION } },
+        ],
       },
+      update: {
+        $set: {
+          executionEnabled: true,
+          executionProvisionVersion: EXECUTION_PROVISION_VERSION,
+        },
+      },
+      upsert: false,
     },
-  );
+  }));
 
+  const result = await Instrument.bulkWrite(operations, { ordered: false });
   const summary = {
     matched: Number(result.matchedCount || 0),
     modified: Number(result.modifiedCount || 0),
