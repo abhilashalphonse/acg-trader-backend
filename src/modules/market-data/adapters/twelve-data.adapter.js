@@ -173,6 +173,42 @@ class TwelveDataAdapter extends EventEmitter {
     }
   }
 
+  async fetchLatestPrice({ providerSymbol }) {
+    const params = new URLSearchParams({
+      symbol: providerSymbol,
+      apikey: this.apiKey,
+    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
+    try {
+      const response = await fetch(`${this.apiBase}/price?${params}`, { signal: controller.signal });
+      const body = await response.json();
+      if (!response.ok || body?.status === 'error') {
+        const error = new Error(body?.message || `Twelve Data latest-price request failed (${response.status})`);
+        error.statusCode = response.status || 502;
+        throw error;
+      }
+      const price = Number(body?.price);
+      if (!Number.isFinite(price) || price <= 0) {
+        const error = new Error('Twelve Data latest-price response did not include a valid price');
+        error.statusCode = 502;
+        throw error;
+      }
+      return {
+        providerSymbol,
+        price,
+        bid: null,
+        ask: null,
+        providerTimestampMs: Date.now(),
+        dayVolume: null,
+        source: 'twelve-data-rest',
+        raw: body,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   supportsHistory(timeframe) {
     return Boolean(TWELVE_DATA_HISTORY_INTERVALS[timeframe]);
   }
