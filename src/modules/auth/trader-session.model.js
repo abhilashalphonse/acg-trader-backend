@@ -6,11 +6,14 @@ const { Schema } = mongoose;
 
 const traderSessionSchema = new Schema({
   tenantId: { type: Schema.Types.ObjectId, ref: 'Tenant', required: true, immutable: true, index: true },
-  tokenHash: { type: String, required: true, unique: true, immutable: true, index: true },
+  tokenHash: { type: String, required: true, unique: true, index: true },
+  refreshTokenHash: { type: String, default: null, unique: true, sparse: true, index: true },
   authMethod: { type: String, enum: ['PASSWORD', 'FEDERATED'], required: true, immutable: true },
   ownerExternalRef: { type: String, default: null, immutable: true, index: true },
   accountIds: [{ type: Schema.Types.ObjectId, ref: 'TradingAccount', required: true }],
   credentialId: { type: Schema.Types.ObjectId, ref: 'TraderCredential', default: null, immutable: true },
+  accessExpiresAt: { type: Date, default: null },
+  idleExpiresAt: { type: Date, default: null },
   expiresAt: { type: Date, required: true },
   revokedAt: { type: Date, default: null, index: true },
   lastSeenAt: { type: Date, default: Date.now },
