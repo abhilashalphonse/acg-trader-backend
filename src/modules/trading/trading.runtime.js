@@ -31,7 +31,8 @@ function createTradingRuntime({ marketRuntime }) {
   const currencyConversionEngine = new CurrencyConversionEngine({ quoteStore: marketRuntime.quoteStore, symbols: marketRuntime.symbols, maxQuoteAgeMs: env.market.defaultMaxQuoteAgeMs });
   setDefaultCurrencyConversionEngine(currencyConversionEngine);
 
-  const valuationEngine = new ValuationEngine({ quoteStore: marketRuntime.quoteStore, eventBus, currencyConverter: currencyConversionEngine, logger });
+  const marketPriority = { retain: marketRuntime.retainPriority, release: marketRuntime.releasePriority };
+  const valuationEngine = new ValuationEngine({ quoteStore: marketRuntime.quoteStore, eventBus, currencyConverter: currencyConversionEngine, marketPriority, logger });
   const platformEventRelay = new PlatformEventRelay({
     eventBus,
     enabled: env.platformEvents.enabled,
@@ -52,7 +53,7 @@ function createTradingRuntime({ marketRuntime }) {
   const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, logger });
   const pendingOrderAmendService = new PendingOrderAmendService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
   const tradingHistoryService = new TradingHistoryService();
-  const pendingOrderEngine = new PendingOrderEngine({ eventBus, pendingOrderService, logger });
+  const pendingOrderEngine = new PendingOrderEngine({ eventBus, pendingOrderService, marketPriority, logger });
   const positionProtectionService = new PositionProtectionService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
   const trailingStopService = new TrailingStopService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
   const trailingStopEngine = new TrailingStopEngine({ eventBus, trailingStopService, logger });
