@@ -29,6 +29,20 @@ function createMarketRouter(runtime) {
     });
   });
 
+  router.post('/quote/refresh', async (req, res) => {
+    requireEnabled(runtime);
+    const symbol = normalizeSymbol(req.body?.symbol);
+    validateSymbols(runtime, [symbol]);
+    const quote = await runtime.ensureFreshQuote(symbol, { reason: 'client-selected-refresh' });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      symbol,
+      quote,
+      recovered: Boolean(quote && quote.isStale !== true),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   router.get('/candles', async (req, res) => {
     requireEnabled(runtime);
     const symbol = normalizeSymbol(req.query.symbol);
