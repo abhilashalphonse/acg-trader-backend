@@ -92,6 +92,7 @@ function serializeInstrument(document) {
       quoteLogoUrl: doc.identity.quoteLogoUrl || null,
       checkedAt: doc.identity.checkedAt ? new Date(doc.identity.checkedAt).toISOString() : null,
     } : null,
+    softQuoteAgeMs: doc.softQuoteAgeMs,
     maxQuoteAgeMs: doc.maxQuoteAgeMs,
     chartEnabled: doc.chartEnabled,
     executionEnabled: doc.executionEnabled,
