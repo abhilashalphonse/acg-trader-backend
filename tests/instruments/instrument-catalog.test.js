@@ -52,3 +52,20 @@ test('core launch symbols preserve EURUSD and XAUUSD execution specifications', 
   assert.equal(xauusd.contractSize, '100');
   assert.equal(xauusd.volumeStep, '0.01');
 });
+
+
+test('catalog defines a soft recovery threshold below the hard execution cutoff', () => {
+  for (const item of ACG_INSTRUMENT_CATALOG) {
+    assert.ok(Number(item.softQuoteAgeMs) > 0, item.symbol);
+    assert.ok(Number(item.maxQuoteAgeMs) > Number(item.softQuoteAgeMs), item.symbol);
+  }
+});
+
+test('alt crypto receives a wider hard freshness window than major crypto', () => {
+  const btc = ACG_INSTRUMENT_CATALOG.find(item => item.symbol === 'BTCUSD');
+  const aave = ACG_INSTRUMENT_CATALOG.find(item => item.symbol === 'AAVEUSD');
+  assert.equal(btc.softQuoteAgeMs, 10000);
+  assert.equal(btc.maxQuoteAgeMs, 35000);
+  assert.equal(aave.softQuoteAgeMs, 15000);
+  assert.equal(aave.maxQuoteAgeMs, 60000);
+});
