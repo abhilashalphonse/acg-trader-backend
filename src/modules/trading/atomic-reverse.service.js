@@ -17,8 +17,8 @@ const { runMongoTransaction, applyOpenAccountMutation, applyCloseAccountAndPosit
 const { serializeOrder, serializeDeal, serializePosition, serializeAccount } = require('./trading.serializer');
 
 class AtomicReverseService {
-  constructor({ quoteStore, eventBus, valuationEngine, platformEventRelay = null, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, dealModel = Deal, positionModel = Position, ledgerModel = AccountLedger, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), runTransaction = runMongoTransaction }) {
-    Object.assign(this, { quoteStore, eventBus, valuationEngine, platformEventRelay, logger, accountModel, instrumentModel, orderModel, dealModel, positionModel, ledgerModel, commandQueue, idempotencyService, runTransaction });
+  constructor({ quoteStore, eventBus, valuationEngine, platformEventRelay = null, quoteRecovery = null, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, dealModel = Deal, positionModel = Position, ledgerModel = AccountLedger, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), runTransaction = runMongoTransaction }) {
+    Object.assign(this, { quoteStore, eventBus, valuationEngine, platformEventRelay, quoteRecovery, logger, accountModel, instrumentModel, orderModel, dealModel, positionModel, ledgerModel, commandQueue, idempotencyService, runTransaction });
   }
 
   async reversePosition(command) {
@@ -29,6 +29,9 @@ class AtomicReverseService {
 
     try {
       const result = await this.commandQueue.run(normalized.accountId, async () => {
+        let quoteSnapshot = null;
+        const previewPosition = await this.positionModel.findById(normalized.positionId).lean();
+        if (previewPosition?.symbol) quoteSnapshot = await this.#resolveExecutableQuote(previewPosition.symbol, 'atomic-reverse');
         const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
           const account = await this.accountModel.findById(normalized.accountId).session(session);
@@ -41,7 +44,7 @@ class AtomicReverseService {
 
           const symbol = normalizeSymbol(position.symbol);
           const instrument = await this.instrumentModel.findOne({ symbol }).session(session);
-          const quote = this.quoteStore.get(symbol);
+          const quote = quoteSnapshot || this.quoteStore.get(symbol);
           const originalVolume = String(position.openVolume);
           const oppositeSide = String(position.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
           const closePlan = planMarketClose({ account, instrument, quote, position, volume: null, nowMs });
@@ -65,6 +68,15 @@ class AtomicReverseService {
       await this.#recordFailure(reservation.record._id, translated);
       throw translated;
     }
+  }
+
+  async #resolveExecutableQuote(symbol, reason) {
+    try {
+      if (this.quoteRecovery) await this.quoteRecovery(symbol, { reason });
+    } catch (error) {
+      this.logger?.warn?.({ err: error, symbol, reason }, 'On-demand quote recovery failed before atomic reverse');
+    }
+    return this.quoteStore.get(symbol);
   }
 
   async #persistClose({ account, position, plan, quote, normalized, session, nowMs, valuationComplete }) {
