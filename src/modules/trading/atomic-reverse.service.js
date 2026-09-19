@@ -30,7 +30,10 @@ class AtomicReverseService {
     try {
       const result = await this.commandQueue.run(normalized.accountId, async () => {
         let quoteSnapshot = null;
-        const previewPosition = await this.positionModel.findById(normalized.positionId).lean();
+        const previewPositionQuery = this.positionModel.findById(normalized.positionId);
+        const previewPosition = typeof previewPositionQuery?.lean === 'function'
+          ? await previewPositionQuery.lean()
+          : await previewPositionQuery;
         if (previewPosition?.symbol) quoteSnapshot = await this.#resolveExecutableQuote(previewPosition.symbol, 'atomic-reverse');
         const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
