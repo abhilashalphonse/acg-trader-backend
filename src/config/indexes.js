@@ -37,6 +37,14 @@ const CRITICAL_MODELS = Object.freeze([
 ]);
 
 async function ensureCriticalIndexes({ logger = null } = {}) {
+  // Sessions created before rotating refresh tokens did not have this field.
+  // A very short migration window may also have persisted it as null. Sparse
+  // unique indexes must only see real token hashes, so normalize null first.
+  await TraderSession.updateMany(
+    { refreshTokenHash: null },
+    { $unset: { refreshTokenHash: '' } },
+  );
+
   const results = [];
   for (const model of CRITICAL_MODELS) {
     await model.createIndexes();
