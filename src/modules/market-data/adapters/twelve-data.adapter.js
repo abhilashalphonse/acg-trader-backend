@@ -199,7 +199,7 @@ class TwelveDataAdapter extends EventEmitter {
         price,
         bid: null,
         ask: null,
-        providerTimestampMs: Date.now(),
+        providerTimestampMs: null,
         dayVolume: null,
         source: 'twelve-data-rest',
         raw: body,
