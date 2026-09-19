@@ -19,6 +19,8 @@ const { createAccountLedgerRouter } = require('./modules/accounts/account-ledger
 const { createAuthRouter } = require('./modules/auth/auth.routes');
 const { createInternalAuthRouter } = require('./modules/auth/internal-auth.routes');
 const { createOperationsRouter } = require('./modules/operations/operations.routes');
+const { TraderProfileService } = require('./modules/profile/trader-profile.service');
+const { createTraderProfileRouter } = require('./modules/profile/trader-profile.routes');
 const { notFoundHandler, errorHandler } = require('./shared/http/error-middleware');
 
 function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
@@ -52,7 +54,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
     },
     credentials: true,
   }));
-  app.use(express.json({ limit: '64kb' }));
+  app.use(express.json({ limit: '512kb' }));
 
   app.use('/health', createHealthRouter({ marketRuntime, tradingRuntime }));
   app.use('/v1', rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: true, legacyHeaders: false }));
@@ -62,6 +64,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   });
 
   app.use('/v1/auth', createAuthRouter(authService));
+  app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
   app.use('/v1/instruments', createInstrumentRouter({ identityService }));
   app.use('/v1/market', createMarketRouter(marketRuntime, authService));
