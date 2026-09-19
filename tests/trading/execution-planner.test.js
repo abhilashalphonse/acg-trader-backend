@@ -221,3 +221,30 @@ test('market execution enforces maximum total volume', () => {
     error => error.code === 'MAX_TOTAL_VOLUME_REACHED',
   );
 });
+
+
+test('market execution accepts a quote past soft recovery age but inside the hard cutoff', () => {
+  const plan = planMarketOpen({
+    account: account(),
+    instrument: instrument({ softQuoteAgeMs: 1000, maxQuoteAgeMs: 5000 }),
+    quote: quote({ receivedAtMs: 7000, isStale: false }),
+    side: 'BUY',
+    volume: '1',
+    nowMs: 10_100,
+  });
+  assert.equal(plan.fillPrice, '1.10005');
+});
+
+test('market execution still blocks beyond the hard quote cutoff', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account(),
+      instrument: instrument({ softQuoteAgeMs: 1000, maxQuoteAgeMs: 5000 }),
+      quote: quote({ receivedAtMs: 4000, isStale: false }),
+      side: 'BUY',
+      volume: '1',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'QUOTE_STALE' && error.details.maxAgeMs === 5000,
+  );
+});
