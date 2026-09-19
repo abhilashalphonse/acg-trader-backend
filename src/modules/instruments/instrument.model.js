@@ -62,7 +62,8 @@ const instrumentSchema = new Schema({
 
   providerMappings: { type: Map, of: String, default: {} },
   identity: { type: identitySchema, default: undefined },
-  maxQuoteAgeMs: { type: Number, default: 5000, min: 100 },
+  softQuoteAgeMs: { type: Number, default: 5000, min: 100 },
+  maxQuoteAgeMs: { type: Number, default: 30000, min: 500 },
 
   chartEnabled: { type: Boolean, default: true, index: true },
   executionEnabled: { type: Boolean, default: false, index: true },
