@@ -37,6 +37,10 @@ function createMarketRuntime() {
     instrumentRegistry,
     eventBus,
     historyService,
+    retainPriority(symbol) { return gateway.retainPriority(symbol); },
+    releasePriority(symbol) { return gateway.releasePriority(symbol); },
+    priorityCount(symbol) { return gateway.priorityCount(symbol); },
+    ensureFreshQuote(symbol, options) { return gateway.ensureFreshQuote(symbol, options); },
     async start() {
       if (started) return;
       if (!env.market.enabled) {
