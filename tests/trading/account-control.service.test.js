@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { AccountControlService, normalizeProvisionCommand, buildInitialState } = require('../../src/modules/trading/account-control.service');
 const { dayKeyInTimezone } = require('../../src/modules/trading/risk-day-engine');
+const { challengeSyncSchema } = require('../../src/modules/trading/account-control.routes');
 
 const TENANT_ID = '64b000000000000000000001';
 
@@ -215,4 +216,27 @@ test('provisioning initializes risk day in the configured account timezone', () 
   ]);
   assert.equal(command.riskTimezone, 'America/New_York');
   assert.ok(validKeys.has(command.riskDayKey));
+});
+
+
+test('partial challenge policy sync preserves omitted optional limits', () => {
+  const parsed = challengeSyncSchema.parse({
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+    },
+  });
+
+  assert.equal(parsed.riskPolicy.dailyLoss.limit, '3000');
+  assert.equal(parsed.riskPolicy.maxTotalVolume, undefined);
+  assert.equal(parsed.riskPolicy.maxOpenPositions, undefined);
+  assert.equal(parsed.riskPolicy.allowedSymbols, undefined);
+});
+
+test('challenge policy sync can explicitly clear nullable total-volume limit', () => {
+  const parsed = challengeSyncSchema.parse({
+    riskPolicy: {
+      maxTotalVolume: null,
+    },
+  });
+  assert.equal(parsed.riskPolicy.maxTotalVolume, null);
 });
