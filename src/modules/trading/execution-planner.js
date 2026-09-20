@@ -15,9 +15,10 @@ const {
 } = require('../../shared/decimal/decimal');
 const { normalizeSymbol } = require('../market-data/market.utils');
 const { assertInstrumentSessionOpen } = require('../instruments/session-calendar');
+const { dayKeyInTimezone } = require('./risk-day-engine');
 
 function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now(), currencyConverter = null, exposure = null }) {
-  validateAccountForOpen(account, instrument?.symbol);
+  validateAccountForOpen(account, instrument?.symbol, nowMs);
   validateInstrumentForOpen(instrument);
   assertInstrumentSessionOpen(instrument, nowMs);
   validateQuote(quote, instrument, nowMs);
@@ -103,7 +104,7 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   });
 }
 
-function validateAccountForOpen(account, symbol) {
+function validateAccountForOpen(account, symbol, nowMs = Date.now()) {
   if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
   if (account.status !== 'ACTIVE') throw new AppError('Trading account is not active', { statusCode: 409, code: 'ACCOUNT_NOT_ACTIVE', details: { status: account.status } });
   if (account.tradingEnabled !== true) throw new AppError('Trading is disabled for this account', { statusCode: 409, code: 'ACCOUNT_TRADING_DISABLED' });
@@ -148,7 +149,7 @@ function validateChallengeRiskForOpen(account) {
   const balance = normalizeDecimal(state.balance ?? '0');
   const initial = normalizeDecimal(state.initialBalance ?? '0');
 
-  const currentRiskDay = new Date().toISOString().slice(0, 10);
+  const currentRiskDay = dayKeyInTimezone(new Date(nowMs), account.riskTimezone || 'UTC');
   // Only roll forward an explicitly known prior day. A missing riskDayKey must
   // never reset the baseline at order time because that could mask an existing
   // loss; the LIVE valuation RiskDayEngine will initialize it safely.
