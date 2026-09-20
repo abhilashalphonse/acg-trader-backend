@@ -108,7 +108,7 @@ function validateAccountForOpen(account, symbol, nowMs = Date.now()) {
   if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
   if (account.status !== 'ACTIVE') throw new AppError('Trading account is not active', { statusCode: 409, code: 'ACCOUNT_NOT_ACTIVE', details: { status: account.status } });
   if (account.tradingEnabled !== true) throw new AppError('Trading is disabled for this account', { statusCode: 409, code: 'ACCOUNT_TRADING_DISABLED' });
-  validateChallengeRiskForOpen(account);
+  validateChallengeRiskForOpen(account, nowMs);
   const allowed = account.riskPolicy?.allowedSymbols || [];
   const canonical = normalizeSymbol(symbol);
   if (allowed.length && !allowed.map(normalizeSymbol).includes(canonical)) throw new AppError('Symbol is not allowed for this trading account', { statusCode: 403, code: 'SYMBOL_NOT_ALLOWED', details: { symbol: canonical } });
@@ -142,7 +142,7 @@ function validateExposureLimits(account, newVolume, exposure = null) {
   }
 }
 
-function validateChallengeRiskForOpen(account) {
+function validateChallengeRiskForOpen(account, nowMs = Date.now()) {
   const state = account.state || {};
   const policy = account.riskPolicy || {};
   const equity = normalizeDecimal(state.equity ?? state.balance ?? '0');
