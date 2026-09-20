@@ -58,7 +58,6 @@ test('order-time risk-day rollover follows account timezone rather than UTC', ()
 
   validateChallengeRiskForOpen(
     lisbon,
-    null,
     new Date('2026-09-18T23:30:00.000Z').getTime(),
   );
 
@@ -74,7 +73,6 @@ test('order-time risk-day rollover follows account timezone rather than UTC', ()
 
   validateChallengeRiskForOpen(
     newYork,
-    null,
     new Date('2026-09-19T00:30:00.000Z').getTime(),
   );
 
