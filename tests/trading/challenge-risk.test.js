@@ -47,3 +47,38 @@ test('profit target alone does not locally block exposure because Funded owns mi
     () => validateChallengeRiskForOpen(account({ state: { balance: '110000', equity: '110000' } })),
   );
 });
+
+
+test('order-time risk-day rollover follows account timezone rather than UTC', () => {
+  const lisbon = account({
+    state: { equity: '99000', dailyStartEquity: '100000', realizedPnlToday: '-1000' },
+  });
+  lisbon.riskDayKey = '2026-09-18';
+  lisbon.riskTimezone = 'Europe/Lisbon';
+
+  validateChallengeRiskForOpen(
+    lisbon,
+    null,
+    new Date('2026-09-18T23:30:00.000Z').getTime(),
+  );
+
+  assert.equal(lisbon.riskDayKey, '2026-09-19');
+  assert.equal(lisbon.state.dailyStartEquity, '99000');
+  assert.equal(lisbon.state.realizedPnlToday, '0');
+
+  const newYork = account({
+    state: { equity: '99000', dailyStartEquity: '100000', realizedPnlToday: '-1000' },
+  });
+  newYork.riskDayKey = '2026-09-18';
+  newYork.riskTimezone = 'America/New_York';
+
+  validateChallengeRiskForOpen(
+    newYork,
+    null,
+    new Date('2026-09-19T00:30:00.000Z').getTime(),
+  );
+
+  assert.equal(newYork.riskDayKey, '2026-09-18');
+  assert.equal(newYork.state.dailyStartEquity, '100000');
+  assert.equal(newYork.state.realizedPnlToday, '-1000');
+});
