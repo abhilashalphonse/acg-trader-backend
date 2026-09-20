@@ -12,7 +12,7 @@ const {
 function calculatePositionValuation({ position, quote }) {
   const normalized = normalizePosition(position);
   const closePriceNumber = normalized.side === 'BUY' ? quote?.bid : quote?.ask;
-  const hasExecutablePrice = Number.isFinite(closePriceNumber);
+  const hasExecutablePrice = Number.isFinite(closePriceNumber) && closePriceNumber > 0;
   const status = !quote || !hasExecutablePrice ? 'WAITING' : quote.isStale ? 'STALE' : 'LIVE';
 
   if (!hasExecutablePrice) {
