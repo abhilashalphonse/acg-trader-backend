@@ -21,6 +21,26 @@ async function ensureInstrumentCatalog({ logger } = {}) {
   return { inserted };
 }
 
+async function enforceCatalogLeveragePolicy({ logger } = {}) {
+  if (!ACG_INSTRUMENT_CATALOG.length) return { matched: 0, modified: 0 };
+
+  const operations = ACG_INSTRUMENT_CATALOG.map(spec => ({
+    updateOne: {
+      filter: { symbol: spec.symbol },
+      update: { $set: { defaultLeverage: spec.defaultLeverage } },
+      upsert: false,
+    },
+  }));
+
+  const result = await Instrument.bulkWrite(operations, { ordered: false });
+  const summary = {
+    matched: Number(result.matchedCount || 0),
+    modified: Number(result.modifiedCount || 0),
+  };
+  logger?.info?.({ ...summary, leverage: 100 }, 'Catalog leverage policy enforced');
+  return summary;
+}
+
 async function provisionCatalogExecution({ logger } = {}) {
   if (!ACG_INSTRUMENT_CATALOG.length) return { matched: 0, modified: 0 };
 
@@ -149,6 +169,7 @@ module.exports = {
   ensureInstrumentCatalog,
   syncInstrumentCatalog,
   provisionCatalogExecution,
+  enforceCatalogLeveragePolicy,
   serializeInstrument,
   EXECUTION_PROVISION_VERSION,
 };
