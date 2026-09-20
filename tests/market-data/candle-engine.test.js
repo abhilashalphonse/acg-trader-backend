@@ -158,3 +158,56 @@ test('uses bid as the live chart price when bid is available', () => {
   assert.equal(current.low, 1.1);
   assert.equal(current.close, 1.1);
 });
+
+
+test('accumulates positive provider day-volume deltas into the live candle', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 1000, price: 1.1, dayVolume: 1000, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 2000, price: 1.11, dayVolume: 1007, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 3000, price: 1.12, dayVolume: 1012, source: 'test' });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.providerVolume, 12);
+  assert.equal(current.tickCount, 3);
+});
+
+test('starts a new candle with only the provider-volume delta belonging to that candle', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 1000, price: 1.1, dayVolume: 1000, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 4000, price: 1.11, dayVolume: 1006, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 6000, price: 1.12, dayVolume: 1010, source: 'test' });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.openTimeMs, 5000);
+  assert.equal(current.providerVolume, 4);
+  assert.equal(current.tickCount, 1);
+});
+
+test('does not create a false volume spike when provider day volume resets', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 1000, price: 1.1, dayVolume: 5000, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 2000, price: 1.11, dayVolume: 5010, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 3000, price: 1.12, dayVolume: 3, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 4000, price: 1.13, dayVolume: 8, source: 'test' });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.providerVolume, 15);
+});
+
+test('keeps provider volume unavailable when the feed does not supply day volume', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 1000, price: 1.1, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 2000, price: 1.11, source: 'test' });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.providerVolume, null);
+  assert.equal(current.tickCount, 2);
+});

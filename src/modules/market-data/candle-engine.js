@@ -85,6 +85,7 @@ class CandleEngine {
       if (!stepMs) continue;
       const bucket = Math.floor(tick.timeMs / stepMs) * stepMs;
       const state = this.#state(symbol, timeframe);
+      const providerVolumeDelta = this.#providerVolumeDelta(state, tick.dayVolume);
 
       if (state.current && bucket < state.current.openTimeMs) continue;
 
@@ -96,6 +97,7 @@ class CandleEngine {
           candle.low = chartPrice;
           candle.close = chartPrice;
           candle.tickCount = 1;
+          candle.providerVolume = providerVolumeDelta;
           candle.synthetic = false;
           candle.source = 'LIVE';
           candle.provider = tick.source || null;
@@ -104,6 +106,9 @@ class CandleEngine {
           candle.low = Math.min(candle.low, chartPrice);
           candle.close = chartPrice;
           candle.tickCount += 1;
+          if (providerVolumeDelta != null) {
+            candle.providerVolume = Number(candle.providerVolume || 0) + providerVolumeDelta;
+          }
           candle.provider = tick.source || candle.provider;
         }
         this.#emitUpdate(candle);
@@ -115,7 +120,7 @@ class CandleEngine {
       }
 
       if (!continuityBroken) this.#fillShortGap(state, symbol, timeframe, stepMs, bucket);
-      state.current = this.#fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice);
+      state.current = this.#fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice, providerVolumeDelta);
       this.#emitUpdate(state.current);
     }
 
@@ -157,6 +162,7 @@ class CandleEngine {
         lastClose: null,
         lastClosedOpenTimeMs: null,
         consecutiveSyntheticClosed: 0,
+        lastProviderDayVolume: null,
       });
     }
     return this.states.get(key);
@@ -166,7 +172,7 @@ class CandleEngine {
     return `${symbol}:${timeframe}`;
   }
 
-  #fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice) {
+  #fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice, providerVolume = null) {
     return {
       symbol,
       timeframe,
@@ -177,12 +183,29 @@ class CandleEngine {
       low: chartPrice,
       close: chartPrice,
       tickCount: 1,
-      providerVolume: null,
+      providerVolume,
       complete: false,
       synthetic: false,
       source: 'LIVE',
       provider: tick.source || null,
     };
+  }
+
+  #providerVolumeDelta(state, rawDayVolume) {
+    if (rawDayVolume === null || rawDayVolume === undefined || rawDayVolume === '') {
+      state.lastProviderDayVolume = null;
+      return null;
+    }
+    const dayVolume = Number(rawDayVolume);
+    if (!Number.isFinite(dayVolume) || dayVolume < 0) {
+      state.lastProviderDayVolume = null;
+      return null;
+    }
+
+    const previous = state.lastProviderDayVolume;
+    state.lastProviderDayVolume = dayVolume;
+    if (!Number.isFinite(previous) || dayVolume < previous) return null;
+    return dayVolume - previous;
   }
 
   #syntheticCurrent(symbol, timeframe, stepMs, openTimeMs, price) {
