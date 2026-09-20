@@ -582,10 +582,6 @@ function generateAccountCode() {
   return `ACG-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
 }
 
-function utcDayKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
-
 function accountNotFound() {
   return new AppError('Trading account was not found', {
     statusCode: 404,
