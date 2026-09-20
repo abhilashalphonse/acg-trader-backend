@@ -248,3 +248,24 @@ test('market execution still blocks beyond the hard quote cutoff', () => {
     error => error.code === 'QUOTE_STALE' && error.details.maxAgeMs === 5000,
   );
 });
+
+
+test('market execution rejects non-positive and crossed executable books', () => {
+  for (const badQuote of [
+    quote({ bid: 0, ask: 1.1 }),
+    quote({ bid: 1.1, ask: 0 }),
+    quote({ bid: 1.101, ask: 1.1 }),
+  ]) {
+    assert.throws(
+      () => planMarketOpen({
+        account: account(),
+        instrument: instrument(),
+        quote: badQuote,
+        side: 'BUY',
+        volume: '1',
+        nowMs: 10_100,
+      }),
+      error => error.code === 'EXECUTABLE_QUOTE_UNAVAILABLE',
+    );
+  }
+});
