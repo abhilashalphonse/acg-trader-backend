@@ -9,8 +9,10 @@ const { serializeAccount } = require('./trading.serializer');
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const decimalInput = z.union([z.string().min(1), z.number().finite()]).transform(value => String(value));
 const nullableDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value == null ? null : String(value));
+const patchNullableDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value === undefined ? undefined : value === null ? null : String(value));
 const limitRule = z.object({ limit: decimalInput, reference: z.string().trim().min(1).max(64).optional() }).strict();
 const riskPolicy = z.object({ dailyLoss: limitRule.optional(), maxLoss: limitRule.optional(), profitTarget: decimalInput.optional(), breachAction: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).optional(), maxOpenPositions: z.number().int().positive().nullable().optional(), maxTotalVolume: nullableDecimal, allowedSymbols: z.array(z.string().trim().min(1).max(32)).optional() }).strict().optional();
+const riskPolicyPatch = z.object({ dailyLoss: limitRule.optional(), maxLoss: limitRule.optional(), profitTarget: decimalInput.optional(), breachAction: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).optional(), maxOpenPositions: z.number().int().positive().nullable().optional(), maxTotalVolume: patchNullableDecimal, allowedSymbols: z.array(z.string().trim().min(1).max(32)).optional() }).strict().optional();
 const metadataValue = z.union([z.string(), z.number(), z.boolean()]);
 const provisionSchema = z.object({ externalRef: z.string().trim().min(1).max(256), ownerExternalRef: z.string().trim().min(1).max(256).nullable().optional(), userId: objectId.nullable().optional(), accountCode: z.string().trim().min(1).max(64).optional(), accountType: z.enum(['DEMO', 'CHALLENGE', 'FUNDED']).optional().default('CHALLENGE'), currency: z.string().trim().min(3).max(8).optional().default('USD'), leverage: z.number().int().positive().max(10000).optional().default(100), initialBalance: decimalInput, riskPolicy, riskDayKey: z.string().trim().min(1).max(32).optional(), riskTimezone: z.string().trim().min(1).max(64).optional().default('UTC'), metadata: z.record(metadataValue).optional() }).strict().superRefine((value, ctx) => { if (!value.ownerExternalRef && !value.userId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ownerExternalRef'], message: 'Either ownerExternalRef or userId is required' }); });
 const restrictSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), cancelPending: z.boolean().optional() }).strict();
@@ -19,7 +21,7 @@ const breachSchema = z.object({ reason: z.string().trim().min(1).max(256).option
 const closeSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), liquidate: z.boolean().optional() }).strict();
 const lifecycleQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(500).optional().default(100) }).strict();
 const challengeSyncSchema = z.object({
-  riskPolicy,
+  riskPolicy: riskPolicyPatch,
   dailyStartEquity: decimalInput.optional(),
   riskDayKey: z.string().trim().min(1).max(32).optional(),
   riskTimezone: z.string().trim().min(1).max(64).optional(),
