@@ -6,6 +6,8 @@
 // New instruments are intentionally inserted with execution disabled. Operators
 // can enable execution only after validating the provider feed and product terms.
 
+const ACG_STANDARD_LEVERAGE = 100;
+
 const FX_WEEK = Object.freeze([
   Object.freeze({ days: [0], open: '22:00', close: '23:59' }),
   Object.freeze({ days: [1, 2, 3, 4], open: '00:00', close: '23:59' }),
@@ -342,7 +344,7 @@ function baseSpec({
     symbol, displaySymbol, name, assetClass, baseCurrency, quoteCurrency,
     pnlCurrency: quoteCurrency, marginCurrency: quoteCurrency,
     digits, tickSize, pipSize, contractSize, minVolume, maxVolume, volumeStep,
-    defaultLeverage, marginRate, commissionPerLot, swapLong: '0', swapShort: '0',
+    defaultLeverage: ACG_STANDARD_LEVERAGE, marginRate, commissionPerLot, swapLong: '0', swapShort: '0',
     spread: Object.freeze({ mode: 'SYNTHETIC', fixedPoints, markupPoints: '0' }),
     tradingSessions, tradingHolidays: Object.freeze([]), timezone,
     providerMappings: Object.freeze({ twelveData: providerSymbol }),
@@ -454,4 +456,5 @@ function validateCatalog(catalog) {
 module.exports = {
   ACG_INSTRUMENT_CATALOG, FX_WEEK, US_EQUITY_SESSION,
   FOREX_PAIRS, COMMODITIES, INDICES, US_EQUITIES, CRYPTO_PAIRS,
+  ACG_STANDARD_LEVERAGE,
 };
