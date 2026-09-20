@@ -9,7 +9,7 @@ const { createApp } = require('./app');
 const { createMarketRuntime } = require('./modules/market-data/market.runtime');
 const { createTradingRuntime } = require('./modules/trading/trading.runtime');
 const { createAuthRuntime } = require('./modules/auth/auth.runtime');
-const { syncInstrumentCatalog, provisionCatalogExecution } = require('./modules/instruments/instrument-catalog.service');
+const { syncInstrumentCatalog, provisionCatalogExecution, enforceCatalogLeveragePolicy } = require('./modules/instruments/instrument-catalog.service');
 
 async function start() {
   await connectDatabase();
@@ -18,7 +18,10 @@ async function start() {
     await ensureCriticalIndexes({ logger });
   }
   if (env.instrumentCatalogAutoSeed) await syncInstrumentCatalog({ logger });
-  if (env.tradingApiEnabled) await provisionCatalogExecution({ logger });
+  if (env.tradingApiEnabled) {
+    await provisionCatalogExecution({ logger });
+    await enforceCatalogLeveragePolicy({ logger });
+  }
 
   const marketRuntime = createMarketRuntime();
   const tradingRuntime = createTradingRuntime({ marketRuntime });
