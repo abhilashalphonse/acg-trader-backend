@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { AccountControlService, normalizeProvisionCommand, buildInitialState } = require('../../src/modules/trading/account-control.service');
+const { dayKeyInTimezone } = require('../../src/modules/trading/risk-day-engine');
 
 const TENANT_ID = '64b000000000000000000001';
 
@@ -194,4 +195,24 @@ test('breached and disabled accounts cannot be resumed', async () => {
   const created = await service.provision({ tenantId: TENANT_ID, externalRef: 'challenge-789', ownerExternalRef: 'user-11', initialBalance: '25000' });
   await service.disable(created.account.id, { reason: 'ADMIN_LOCK' });
   await assert.rejects(() => service.resume(created.account.id), error => error.code === 'ACCOUNT_RESUME_FORBIDDEN');
+});
+
+
+test('provisioning initializes risk day in the configured account timezone', () => {
+  const before = new Date();
+  const command = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-timezone',
+    ownerExternalRef: 'user-timezone',
+    initialBalance: '100000',
+    riskTimezone: 'America/New_York',
+  });
+  const after = new Date();
+
+  const validKeys = new Set([
+    dayKeyInTimezone(before, 'America/New_York'),
+    dayKeyInTimezone(after, 'America/New_York'),
+  ]);
+  assert.equal(command.riskTimezone, 'America/New_York');
+  assert.ok(validKeys.has(command.riskDayKey));
 });
