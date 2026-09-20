@@ -38,6 +38,13 @@ test('every catalog instrument is chartable, mapped to Twelve Data, and safe-by-
   }
 });
 
+test('every ACG Funded instrument uses the advertised 1:100 leverage', () => {
+  for (const item of ACG_INSTRUMENT_CATALOG) {
+    assert.equal(item.defaultLeverage, 100, item.symbol);
+    assert.equal(item.marginRate, null, item.symbol);
+  }
+});
+
 test('core launch symbols preserve EURUSD and XAUUSD execution specifications', () => {
   const eurusd = ACG_INSTRUMENT_CATALOG.find(item => item.symbol === 'EURUSD');
   const xauusd = ACG_INSTRUMENT_CATALOG.find(item => item.symbol === 'XAUUSD');
