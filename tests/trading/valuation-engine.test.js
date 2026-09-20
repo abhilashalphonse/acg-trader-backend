@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const EventEmitter = require('events');
 const { ValuationEngine } = require('../../src/modules/trading/valuation-engine');
+const { CurrencyConversionEngine } = require('../../src/modules/trading/currency-conversion-engine');
 
 function query(value) {
   return { lean: async () => value };
@@ -202,5 +203,118 @@ test('startup recovery uses a trusted $in selector for account ids', async () =>
   await engine.start();
   assert.deepEqual(capturedFilter?._id?.$in, ['a1']);
   assert.equal(capturedFilter?._id?.$eq, undefined);
+  await engine.stop();
+});
+
+
+test('conversion-pair ticks revalue cross-currency accounts immediately', async () => {
+  const account = {
+    _id: 'a1',
+    accountCode: 'A1',
+    currency: 'EUR',
+    state: { balance: '10000', realizedPnlToday: '0', dailyStartEquity: '10000' },
+  };
+  const position = {
+    _id: 'p1',
+    positionId: 'pos-1',
+    accountId: 'a1',
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    status: 'OPEN',
+    openVolume: '1',
+    entryPrice: '2000',
+    contractSize: '100',
+    volumeStep: '0.01',
+    quoteCurrency: 'USD',
+    margin: '1500',
+  };
+  const now = Date.now();
+  const quotes = new Map([
+    ['XAUUSD', { symbol: 'XAUUSD', bid: 2001, ask: 2001.2, sequence: 1, receivedAtMs: now, source: 'test', isStale: false }],
+    ['EURUSD', { symbol: 'EURUSD', bid: 1.1, ask: 1.2, sequence: 1, receivedAtMs: now, source: 'test', isStale: false }],
+  ]);
+  const eventBus = new EventEmitter();
+  const converter = new CurrencyConversionEngine({
+    quoteStore: { get: symbol => quotes.get(symbol) || null },
+    symbols: [...quotes.keys()],
+    maxQuoteAgeMs: 5000,
+  });
+  const engine = new ValuationEngine({
+    eventBus,
+    quoteStore: { get: symbol => quotes.get(symbol) || null },
+    currencyConverter: converter,
+    logger: { info() {}, error() {} },
+    positionModel: { find: () => query([position]) },
+    accountModel: {
+      find: () => query([account]),
+      findById: () => query(account),
+    },
+  });
+
+  await engine.start();
+  assert.equal(engine.getAccountSnapshot('a1').floatingPnl, '83.333333333333');
+
+  const updated = { symbol: 'EURUSD', bid: 1.0, ask: 1.0, sequence: 2, receivedAtMs: Date.now(), source: 'test', isStale: false };
+  quotes.set('EURUSD', updated);
+  eventBus.emit('market.tick', updated);
+
+  assert.equal(engine.getAccountSnapshot('a1').floatingPnl, '100');
+  assert.equal(engine.getAccountSnapshot('a1').equity, '10100');
+  await engine.stop();
+});
+
+test('stale conversion quotes immediately make cross-currency account valuation incomplete', async () => {
+  const account = {
+    _id: 'a1',
+    accountCode: 'A1',
+    currency: 'EUR',
+    state: { balance: '10000', realizedPnlToday: '0', dailyStartEquity: '10000' },
+  };
+  const position = {
+    _id: 'p1',
+    positionId: 'pos-1',
+    accountId: 'a1',
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    status: 'OPEN',
+    openVolume: '1',
+    entryPrice: '2000',
+    contractSize: '100',
+    volumeStep: '0.01',
+    quoteCurrency: 'USD',
+    margin: '1500',
+  };
+  const now = Date.now();
+  const quotes = new Map([
+    ['XAUUSD', { symbol: 'XAUUSD', bid: 2001, ask: 2001.2, sequence: 1, receivedAtMs: now, source: 'test', isStale: false }],
+    ['EURUSD', { symbol: 'EURUSD', bid: 1.1, ask: 1.2, sequence: 1, receivedAtMs: now, source: 'test', isStale: false }],
+  ]);
+  const eventBus = new EventEmitter();
+  const converter = new CurrencyConversionEngine({
+    quoteStore: { get: symbol => quotes.get(symbol) || null },
+    symbols: [...quotes.keys()],
+    maxQuoteAgeMs: 5000,
+  });
+  const engine = new ValuationEngine({
+    eventBus,
+    quoteStore: { get: symbol => quotes.get(symbol) || null },
+    currencyConverter: converter,
+    logger: { info() {}, error() {} },
+    positionModel: { find: () => query([position]) },
+    accountModel: {
+      find: () => query([account]),
+      findById: () => query(account),
+    },
+  });
+
+  await engine.start();
+  const stale = { ...quotes.get('EURUSD'), isStale: true, receivedAtMs: Date.now() };
+  quotes.set('EURUSD', stale);
+  eventBus.emit('market.quote', stale);
+
+  const snapshot = engine.getAccountSnapshot('a1');
+  assert.equal(snapshot.valuationStatus, 'WAITING');
+  assert.equal(snapshot.complete, false);
+  assert.equal(snapshot.equity, null);
   await engine.stop();
 });
