@@ -204,7 +204,15 @@ function validateQuote(quote, instrument, nowMs) {
   const maxAgeMs = Number(instrument.maxQuoteAgeMs || 5000);
   const ageMs = Number.isFinite(receivedAtMs) ? Math.max(0, nowMs - receivedAtMs) : Number.POSITIVE_INFINITY;
   if (quote.isStale || ageMs > maxAgeMs) throw new AppError('Market quote is stale', { statusCode: 503, code: 'QUOTE_STALE', details: { ageMs: Number.isFinite(ageMs) ? ageMs : null, maxAgeMs } });
-  if (!Number.isFinite(Number(quote.bid)) || !Number.isFinite(Number(quote.ask))) throw new AppError('Executable bid/ask is unavailable', { statusCode: 503, code: 'EXECUTABLE_QUOTE_UNAVAILABLE' });
+  const bid = Number(quote.bid);
+  const ask = Number(quote.ask);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || ask < bid) {
+    throw new AppError('Executable bid/ask is unavailable', {
+      statusCode: 503,
+      code: 'EXECUTABLE_QUOTE_UNAVAILABLE',
+      details: { bid: Number.isFinite(bid) ? bid : null, ask: Number.isFinite(ask) ? ask : null },
+    });
+  }
 }
 
 function validateVolume(volume, instrument) {
