@@ -220,7 +220,13 @@ class MarketGateway {
     const instrument = this.instrumentRegistry.get(symbol);
     if (!instrument || !this.symbols.includes(symbol)) return;
 
-    const normalizedPrices = this.#normalizePrices(raw, instrument);
+    const lastPrice = Number(raw.price);
+    if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
+      this.logger?.warn?.({ symbol, price: raw.price }, 'Ignoring non-positive market price');
+      return;
+    }
+
+    const normalizedPrices = this.#normalizePrices({ ...raw, price: lastPrice }, instrument);
     const sequence = (this.sequences.get(symbol) || 0) + 1;
     this.sequences.set(symbol, sequence);
 
@@ -258,23 +264,27 @@ class MarketGateway {
   }
 
   #normalizePrices(raw, instrument) {
-    let bid = Number.isFinite(raw.bid) ? raw.bid : null;
-    let ask = Number.isFinite(raw.ask) ? raw.ask : null;
+    const rawBid = Number(raw.bid);
+    const rawAsk = Number(raw.ask);
+    let bid = Number.isFinite(rawBid) && rawBid > 0 ? rawBid : null;
+    let ask = Number.isFinite(rawAsk) && rawAsk > 0 ? rawAsk : null;
     let isSyntheticSpread = false;
-    const tickSize = instrument.tickSize;
-    const markup = Number.isFinite(tickSize) ? Math.max(0, instrument.spread.markupPoints || 0) * tickSize : 0;
+    const tickSize = Number(instrument.tickSize);
+    const markup = Number.isFinite(tickSize) && tickSize > 0 ? Math.max(0, Number(instrument.spread?.markupPoints) || 0) * tickSize : 0;
+    const validProviderBook = Number.isFinite(bid) && Number.isFinite(ask) && ask >= bid;
 
-    if (Number.isFinite(bid) && Number.isFinite(ask)) {
+    if (validProviderBook) {
       if (markup > 0) {
         bid -= markup / 2;
         ask += markup / 2;
       }
     } else if (
-      ['FIXED', 'SYNTHETIC'].includes(instrument.spread.mode)
+      ['FIXED', 'SYNTHETIC'].includes(String(instrument.spread?.mode || '').toUpperCase())
       && Number.isFinite(tickSize)
-      && Number.isFinite(instrument.spread.fixedPoints)
+      && tickSize > 0
+      && Number.isFinite(Number(instrument.spread?.fixedPoints))
     ) {
-      const spreadWidth = Math.max(0, instrument.spread.fixedPoints * tickSize + markup);
+      const spreadWidth = Math.max(0, Number(instrument.spread.fixedPoints) * tickSize + markup);
       bid = raw.price - spreadWidth / 2;
       ask = raw.price + spreadWidth / 2;
       isSyntheticSpread = true;
@@ -283,7 +293,13 @@ class MarketGateway {
       ask = null;
     }
 
-    const spread = Number.isFinite(bid) && Number.isFinite(ask) ? Math.max(0, ask - bid) : null;
+    if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || ask < bid) {
+      bid = null;
+      ask = null;
+      isSyntheticSpread = false;
+    }
+
+    const spread = Number.isFinite(bid) && Number.isFinite(ask) ? ask - bid : null;
     const mid = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : raw.price;
     return { bid, ask, mid, spread, isSyntheticSpread };
   }
