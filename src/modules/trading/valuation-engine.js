@@ -35,6 +35,8 @@ class ValuationEngine {
     this.accountValuations = new Map();
     this.positionsBySymbol = new Map();
     this.positionsByAccount = new Map();
+    this.accountsByConversionSymbol = new Map();
+    this.conversionSymbolsByAccount = new Map();
     this.sequence = 0;
     this.started = false;
     this.pendingAccountRevalues = new Set();
@@ -79,6 +81,8 @@ class ValuationEngine {
     this.accountValuations.clear();
     this.positionsBySymbol.clear();
     this.positionsByAccount.clear();
+    this.accountsByConversionSymbol.clear();
+    this.conversionSymbolsByAccount.clear();
     this.pendingAccountRevalues.clear();
     this.accountRevalueScheduled = false;
   }
@@ -177,17 +181,19 @@ class ValuationEngine {
   }
   #handleQuote(quote) {
     if (!quote?.symbol) return;
-    const ids = [...(this.positionsBySymbol.get(String(quote.symbol).toUpperCase()) || [])];
-    const touchedAccounts = new Set();
+    const symbol = String(quote.symbol).toUpperCase();
+    const ids = [...(this.positionsBySymbol.get(symbol) || [])];
+    const touchedAccounts = new Set(this.accountsByConversionSymbol.get(symbol) || []);
     for (const id of ids) {
       const position = this.positions.get(id);
       if (!position) continue;
       touchedAccounts.add(position.accountId);
       this.#revaluePosition(id, quote, true);
     }
-    // Recalculate only accounts directly touched by this symbol. Cross-currency
-    // positions are re-aggregated on their own symbol ticks, avoiding an
-    // O(all-open-accounts) fan-out for every market tick.
+    // Recalculate accounts whose position price changed and accounts whose
+    // account-currency conversion path depends on this quote. This keeps
+    // challenge equity/current free margin live without an O(all accounts)
+    // fan-out on every market tick.
     for (const accountId of touchedAccounts) this.#recalculateAccount(accountId, true);
   }
   #upsertPosition(position) {
@@ -205,11 +211,15 @@ class ValuationEngine {
     if (existing) this.#unindexPosition(existing);
     this.positions.delete(id);
     this.positionValuations.delete(id);
-    if (accountId) this.scheduleAccountRevalue(accountId);
+    if (accountId) {
+      this.#refreshConversionIndex(accountId);
+      this.scheduleAccountRevalue(accountId);
+    }
   }
   #upsertAccount(account) {
     const accountId = this.#storeAccountBase(account);
     if (!accountId) return;
+    this.#refreshConversionIndex(accountId);
     this.pendingAccountRevalues.delete(accountId);
     this.#recalculateAccount(accountId, true);
   }
@@ -228,6 +238,8 @@ class ValuationEngine {
     this.marketPriority?.retain?.(normalized.symbol);
     addIndex(this.positionsBySymbol, normalized.symbol, normalized.id);
     addIndex(this.positionsByAccount, normalized.accountId, normalized.id);
+    this.#refreshConversionIndex(normalized.accountId);
+    if (previous && previous.accountId !== normalized.accountId) this.#refreshConversionIndex(previous.accountId);
     return normalized.id;
   }
   #unindexPosition(position) {
@@ -235,6 +247,26 @@ class ValuationEngine {
     removeIndex(this.positionsBySymbol, position.symbol, position.id);
     removeIndex(this.positionsByAccount, position.accountId, position.id);
   }
+  #refreshConversionIndex(accountId) {
+    const key = String(accountId || '');
+    if (!key) return;
+
+    const previous = this.conversionSymbolsByAccount.get(key) || new Set();
+    for (const symbol of previous) removeIndex(this.accountsByConversionSymbol, symbol, key);
+
+    const next = new Set();
+    const accountCurrency = String(this.accountBases.get(key)?.currency || '').toUpperCase();
+    const positionIds = this.positionsByAccount.get(key) || new Set();
+    for (const id of positionIds) {
+      const pnlCurrency = String(this.positions.get(id)?.quoteCurrency || '').toUpperCase();
+      for (const symbol of conversionSymbols(pnlCurrency, accountCurrency)) next.add(symbol);
+    }
+
+    if (next.size) this.conversionSymbolsByAccount.set(key, next);
+    else this.conversionSymbolsByAccount.delete(key);
+    for (const symbol of next) addIndex(this.accountsByConversionSymbol, symbol, key);
+  }
+
   #revaluePosition(id, quote, emit) {
     const position = this.positions.get(id);
     if (!position) return null;
@@ -280,9 +312,24 @@ function normalizeAccount(account) {
     },
   };
 }
+function conversionSymbols(fromCurrency, toCurrency) {
+  const from = String(fromCurrency || '').trim().toUpperCase();
+  const to = String(toCurrency || '').trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to) || from === to) return [];
+
+  const symbols = new Set([`${from}${to}`, `${to}${from}`]);
+  if (from !== 'USD' && to !== 'USD') {
+    symbols.add(`${from}USD`);
+    symbols.add(`USD${from}`);
+    symbols.add(`USD${to}`);
+    symbols.add(`${to}USD`);
+  }
+  return [...symbols];
+}
+
 function valueString(value, fallback = null) { if (value === null || value === undefined) return fallback; return value.toString(); }
 function addIndex(map, key, value) { if (!key) return; let set = map.get(key); if (!set) { set = new Set(); map.set(key, set); } set.add(value); }
 function removeIndex(map, key, value) { const set = map.get(key); if (!set) return; set.delete(value); if (!set.size) map.delete(key); }
 function clone(value) { return value == null ? value : JSON.parse(JSON.stringify(value)); }
 
-module.exports = { ValuationEngine };
+module.exports = { ValuationEngine, conversionSymbols };
