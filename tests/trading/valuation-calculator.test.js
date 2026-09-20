@@ -104,3 +104,19 @@ test('cross-currency positions are not silently aggregated without a conversion 
   assert.equal(result.valuationStatus, 'WAITING');
   assert.equal(result.equity, null);
 });
+
+
+test('non-positive executable prices are treated as unavailable rather than valid PnL inputs', () => {
+  const zero = calculatePositionValuation({ position: position(), quote: quote({ bid: 0 }) });
+  assert.equal(zero.valuationStatus, 'WAITING');
+  assert.equal(zero.closePrice, null);
+  assert.equal(zero.floatingPnl, null);
+
+  const negative = calculatePositionValuation({
+    position: position({ side: 'SELL' }),
+    quote: quote({ ask: -1 }),
+  });
+  assert.equal(negative.valuationStatus, 'WAITING');
+  assert.equal(negative.closePrice, null);
+  assert.equal(negative.floatingPnl, null);
+});
