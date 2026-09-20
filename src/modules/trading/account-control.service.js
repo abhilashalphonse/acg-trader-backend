@@ -12,6 +12,7 @@ const { AccountLedger } = require('./account-ledger.model');
 const { serializeAccount } = require('./trading.serializer');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { runMongoTransaction } = require('./market-order.service');
+const { dayKeyInTimezone } = require('./risk-day-engine');
 
 const RESTRICTED_STATUSES = new Set(['BREACHED', 'DISABLED', 'CLOSED']);
 
@@ -443,6 +444,9 @@ function normalizeProvisionCommand(command) {
     throw new AppError('Invalid accountType', { statusCode: 400, code: 'INVALID_ACCOUNT_TYPE' });
   }
 
+  const riskTimezone = String(command?.riskTimezone || 'UTC').trim() || 'UTC';
+  const provisionDayKey = dayKeyInTimezone(new Date(), riskTimezone);
+
   return {
     tenantId,
     externalRef,
@@ -454,8 +458,8 @@ function normalizeProvisionCommand(command) {
     leverage,
     initialBalance,
     riskPolicy: normalizeRiskPolicy(command?.riskPolicy),
-    riskDayKey: String(command?.riskDayKey || utcDayKey()).trim(),
-    riskTimezone: String(command?.riskTimezone || 'UTC').trim(),
+    riskDayKey: String(command?.riskDayKey || provisionDayKey).trim(),
+    riskTimezone,
     metadata: normalizeMetadata(command?.metadata),
   };
 }
