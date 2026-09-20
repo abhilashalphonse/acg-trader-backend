@@ -33,7 +33,7 @@ function planPendingOrder({
   expiresAt = null,
   nowMs = Date.now(),
 }) {
-  validateAccountForOpen(account, instrument?.symbol);
+  validateAccountForOpen(account, instrument?.symbol, nowMs);
   validateInstrumentForOpen(instrument);
   validateLiveQuote(quote, instrument, nowMs);
 
