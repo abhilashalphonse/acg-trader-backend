@@ -166,3 +166,45 @@ test('priority reference counting is balanced for subscriptions and risk-critica
 
   await gateway.stop();
 });
+
+
+test('ignores non-positive provider prices instead of publishing executable quotes', async () => {
+  const { adapter, quoteStore, gateway } = createHarness();
+  await gateway.start();
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 0,
+    bid: 0,
+    ask: 0,
+    providerTimestampMs: null,
+    dayVolume: null,
+  });
+
+  assert.equal(quoteStore.get('EURUSD'), null);
+  await gateway.stop();
+});
+
+test('crossed provider bid/ask falls back to configured synthetic spread', async () => {
+  const { adapter, quoteStore, gateway } = createHarness();
+  await gateway.start();
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1,
+    bid: 1.1002,
+    ask: 1.0998,
+    providerTimestampMs: null,
+    dayVolume: null,
+  });
+
+  const quote = quoteStore.get('EURUSD');
+  assert.ok(quote);
+  assert.equal(quote.isSyntheticSpread, true);
+  assert.ok(quote.bid > 0);
+  assert.ok(quote.ask >= quote.bid);
+
+  await gateway.stop();
+});
