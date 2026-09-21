@@ -11,10 +11,16 @@ const BATCH_SIZE = 5000;
 const SYNTHETIC_HIGHER_TIMEFRAMES = ['1h', '4h', '1d', '1w'];
 const LEGACY_NATIVE_UTC_MISMATCH_TIMEFRAMES = ['1d', '1w'];
 const PROVIDER_BACKFILL_SOURCES = ['BACKFILL', 'CANONICAL_BACKFILL'];
+const REQUIRED_VOLUME_FALLBACK_PERSIST = ['1m', '5m', '15m', '30m'];
 
 function persistedTimeframes() {
   const raw = String(process.env.MARKET_PERSIST_TIMEFRAMES || DEFAULT_PERSIST.join(','));
-  return [...new Set(raw.split(',').map(value => value.trim().toLowerCase()).filter(value => DURABLE_PERSIST.has(value)))];
+  const configured = raw.split(',')
+    .map(value => value.trim().toLowerCase())
+    .filter(value => DURABLE_PERSIST.has(value));
+  // Match runtime env resolution: these short intraday timeframes are always
+  // persisted because tick-volume recovery depends on recent local history.
+  return [...new Set([...configured, ...REQUIRED_VOLUME_FALLBACK_PERSIST])];
 }
 
 async function deleteInBatches(filter, label = 'non-retained') {
@@ -52,6 +58,7 @@ async function backfillExpiry(timeframe) {
   while (true) {
     const rows = await Candle.find({
       timeframe,
+      source: 'LIVE',
       $or: [{ expiresAt: null }, { expiresAt: { $exists: false } }],
     })
       .select('_id openTime timeframe')
@@ -152,18 +159,22 @@ async function main() {
     // Synthetic rows are no longer durable market history at any timeframe.
     const deletedSynthetic = await deleteInBatches(syntheticFilter, 'synthetic');
 
-    // Remove already-expired rows immediately rather than waiting for MongoDB's
-    // asynchronous TTL monitor.
-    const deletedExpired = await deleteInBatches(expiredFilter, 'expired');
-
     // Remove any unsupported/legacy timeframe rows.
     const deletedNonRetained = await deleteInBatches(nonRetainedFilter, 'non-retained');
 
-    // Add expiry metadata only to retained LIVE rows that still lack it.
+    // Add expiry metadata to retained LIVE rows first. Some legacy rows predate
+    // expiresAt, so deleting expired rows before this step would miss them.
     const expiry = {};
     for (const timeframe of retained) {
       expiry[timeframe] = await backfillExpiry(timeframe);
     }
+
+    // Remove rows that are now known to be outside retention immediately rather
+    // than waiting for MongoDB's asynchronous TTL monitor.
+    const deletedExpired = await deleteInBatches(
+      { expiresAt: { $ne: null, $lte: new Date() } },
+      'expired',
+    );
 
     await Candle.createIndexes();
     console.log(JSON.stringify({
