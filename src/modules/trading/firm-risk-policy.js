@@ -59,7 +59,6 @@ function calculateStopRiskAmount({
   stopLoss,
   currencyConverter = null,
   nowMs = Date.now(),
-  checkPositionVolume = true,
 }) {
   if (stopLoss === null || stopLoss === undefined || stopLoss === '') return null;
   const normalizedSide = String(side || '').toUpperCase();
@@ -109,6 +108,7 @@ function validatePerOrderRiskPolicy({
   stopLoss,
   currencyConverter = null,
   nowMs = Date.now(),
+  checkPositionVolume = true,
 }) {
   const policy = account?.riskPolicy || {};
   const maxPositionVolume = enabledLimit(policy, 'maxPositionVolume');
