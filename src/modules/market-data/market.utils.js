@@ -17,15 +17,55 @@ function decimalToNumber(value, fallback = null) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+function nonNegativeNumber(value) {
+  const numeric = decimalToNumber(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
 function mapValue(mapLike, key) {
   if (!mapLike) return null;
   if (mapLike instanceof Map) return mapLike.get(key) ?? null;
   return mapLike[key] ?? null;
 }
 
+function resolveCandleVolume(candle, preferredSource = candle?.volumeMode || null) {
+  const providerVolume = nonNegativeNumber(candle?.providerVolume);
+  const tickCount = nonNegativeNumber(candle?.tickCount);
+  const baseline = nonNegativeNumber(candle?.providerVolumeBaseline);
+  const liveAnchor = nonNegativeNumber(candle?.providerVolumeLiveAnchor);
+  const providerDisplay = baseline != null && liveAnchor != null && providerVolume != null
+    ? baseline + Math.max(0, providerVolume - liveAnchor)
+    : providerVolume;
+
+  if (preferredSource === 'provider') {
+    return { displayVolume: providerDisplay, volumeSource: providerDisplay == null ? 'unavailable' : 'provider' };
+  }
+  if (preferredSource === 'tick') {
+    return { displayVolume: tickCount, volumeSource: tickCount == null ? 'unavailable' : 'tick' };
+  }
+  if (preferredSource === 'unavailable') {
+    return { displayVolume: null, volumeSource: 'unavailable' };
+  }
+  if (providerDisplay != null && providerDisplay > 0) {
+    return { displayVolume: providerDisplay, volumeSource: 'provider' };
+  }
+  if (tickCount != null && tickCount > 0) {
+    return { displayVolume: tickCount, volumeSource: 'tick' };
+  }
+  if (providerDisplay != null) {
+    return { displayVolume: providerDisplay, volumeSource: 'provider' };
+  }
+  if (tickCount != null) {
+    return { displayVolume: tickCount, volumeSource: 'tick' };
+  }
+  return { displayVolume: null, volumeSource: 'unavailable' };
+}
+
 function serializeCandle(candle) {
   const openTimeMs = candle.openTimeMs ?? new Date(candle.openTime).getTime();
   const closeTimeMs = candle.closeTimeMs ?? new Date(candle.closeTime).getTime();
+  const volumeMode = ['provider', 'tick', 'unavailable'].includes(candle.volumeMode) ? candle.volumeMode : null;
+  const resolvedVolume = resolveCandleVolume(candle, volumeMode);
   return {
     symbol: normalizeSymbol(candle.symbol),
     timeframe: candle.timeframe,
@@ -38,6 +78,9 @@ function serializeCandle(candle) {
     close: decimalToNumber(candle.close),
     tickCount: Number(candle.tickCount || 0),
     providerVolume: decimalToNumber(candle.providerVolume),
+    displayVolume: resolvedVolume.displayVolume,
+    volumeSource: resolvedVolume.volumeSource,
+    volumeMode,
     complete: Boolean(candle.complete),
     synthetic: Boolean(candle.synthetic),
     source: candle.source || 'LIVE',
@@ -56,6 +99,7 @@ module.exports = {
   defaultTwelveDataSymbol,
   decimalToNumber,
   mapValue,
+  resolveCandleVolume,
   serializeCandle,
   clampInteger,
 };

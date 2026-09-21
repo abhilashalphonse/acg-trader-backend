@@ -6,6 +6,28 @@ const { normalizeSymbol, serializeCandle, clampInteger } = require('./market.uti
 const { AppError } = require('../../shared/errors/app-error');
 const { candleExpiresAt } = require('./candle-retention');
 
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function chooseVolumeMode(bars) {
+  const usable = (Array.isArray(bars) ? bars : []).filter(bar => !bar.synthetic);
+  if (!usable.length) return 'unavailable';
+
+  const providerPositive = usable.filter(bar => positiveNumber(bar.providerVolume) != null).length;
+  const tickPositive = usable.filter(bar => positiveNumber(bar.tickCount) != null).length;
+  const providerCoverage = providerPositive / usable.length;
+
+  if (providerPositive >= 2 && providerCoverage >= 0.5) return 'provider';
+  if (tickPositive > 0) return 'tick';
+  return 'unavailable';
+}
+
+function applyVolumeMode(bars, mode) {
+  return bars.map(bar => serializeCandle({ ...bar, volumeMode: mode }));
+}
+
 class MarketHistoryService {
   constructor({ adapter, instrumentRegistry, persistTimeframes = [], logger }) {
     this.adapter = adapter;
@@ -18,6 +40,7 @@ class MarketHistoryService {
     const canonical = normalizeSymbol(symbol);
     const safeLimit = clampInteger(limit, 1, 1000, 160);
     const rows = await this.#loadLocal(canonical, timeframe, safeLimit);
+    const localByOpenTime = new Map(rows.map(row => [new Date(row.openTime).getTime(), row]));
 
     if (this.adapter.supportsHistory(timeframe)) {
       try {
@@ -27,7 +50,7 @@ class MarketHistoryService {
           if (this.persistTimeframes.has(timeframe)) {
             await this.#persistBackfill(canonical, timeframe, providerBars);
           }
-          return this.#serializeProviderBars(canonical, timeframe, providerBars, safeLimit);
+          return this.#serializeProviderBars(canonical, timeframe, providerBars, safeLimit, localByOpenTime);
         }
       } catch (error) {
         this.logger.warn({ err: error, symbol: canonical, timeframe }, 'Historical provider reconciliation failed');
@@ -40,28 +63,33 @@ class MarketHistoryService {
       }
     }
 
-    return rows.reverse().map(serializeCandle);
+    const localBars = rows.reverse();
+    return applyVolumeMode(localBars, chooseVolumeMode(localBars));
   }
 
-  #serializeProviderBars(symbol, timeframe, bars, limit) {
+  #serializeProviderBars(symbol, timeframe, bars, limit, localByOpenTime) {
     const stepMs = TIMEFRAME_MS[timeframe];
     const now = Date.now();
-    return bars.slice(-limit).map(bar => serializeCandle({
-      symbol,
-      timeframe,
-      openTimeMs: bar.openTimeMs,
-      closeTimeMs: bar.openTimeMs + stepMs,
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-      tickCount: 0,
-      providerVolume: bar.providerVolume,
-      complete: bar.openTimeMs + stepMs <= now,
-      synthetic: false,
-      source: 'BACKFILL',
-      provider: 'twelve-data',
-    }));
+    const merged = bars.slice(-limit).map(bar => {
+      const local = localByOpenTime.get(Number(bar.openTimeMs));
+      return {
+        symbol,
+        timeframe,
+        openTimeMs: bar.openTimeMs,
+        closeTimeMs: bar.openTimeMs + stepMs,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        tickCount: Number(local?.tickCount || 0),
+        providerVolume: bar.providerVolume,
+        complete: bar.openTimeMs + stepMs <= now,
+        synthetic: false,
+        source: 'BACKFILL',
+        provider: 'twelve-data',
+      };
+    });
+    return applyVolumeMode(merged, chooseVolumeMode(merged));
   }
 
   async #loadLocal(symbol, timeframe, limit) {
@@ -91,7 +119,6 @@ class MarketHistoryService {
               high: String(bar.high),
               low: String(bar.low),
               close: String(bar.close),
-              tickCount: 0,
               providerVolume: bar.providerVolume == null ? null : String(bar.providerVolume),
               complete: true,
               synthetic: false,
@@ -99,7 +126,7 @@ class MarketHistoryService {
               provider: 'twelve-data',
               expiresAt: candleExpiresAt(timeframe, bar.openTimeMs),
             },
-            $setOnInsert: { symbol, timeframe, openTime },
+            $setOnInsert: { symbol, timeframe, openTime, tickCount: 0 },
           },
           upsert: true,
         },
@@ -110,4 +137,4 @@ class MarketHistoryService {
   }
 }
 
-module.exports = { MarketHistoryService };
+module.exports = { MarketHistoryService, chooseVolumeMode };

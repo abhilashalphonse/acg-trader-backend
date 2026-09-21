@@ -2,7 +2,7 @@
 
 const { Candle } = require('./candle.model');
 const { TIMEFRAME_MS, candleBucketOpenTimeMs } = require('./market.constants');
-const { normalizeSymbol, serializeCandle } = require('./market.utils');
+const { normalizeSymbol, resolveCandleVolume, serializeCandle } = require('./market.utils');
 const { candleExpiresAt } = require('./candle-retention');
 
 async function persistCandleToMongo(candle) {
@@ -129,6 +129,7 @@ class CandleEngine {
 
       if (!continuityBroken) this.#fillShortGap(state, symbol, timeframe, stepMs, bucket);
       state.current = this.#fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice, providerVolumeDelta);
+      state.current.volumeMode = state.volumeMode;
       this.#emitUpdate(state.current);
     }
 
@@ -160,6 +161,30 @@ class CandleEngine {
     return state?.current ? serializeCandle(state.current) : null;
   }
 
+  reconcileCurrentVolume(symbol, timeframe, historyBar) {
+    const state = this.states.get(this.#key(normalizeSymbol(symbol), timeframe));
+    if (!state?.current || !historyBar || Number(historyBar.openTimeMs) !== Number(state.current.openTimeMs)) return;
+
+    const mode = ['provider', 'tick', 'unavailable'].includes(historyBar.volumeMode)
+      ? historyBar.volumeMode
+      : null;
+    state.volumeMode = mode;
+    state.current.volumeMode = mode;
+
+    if (mode !== 'provider') {
+      delete state.current.providerVolumeBaseline;
+      delete state.current.providerVolumeLiveAnchor;
+      return;
+    }
+
+    const baseline = Number(historyBar.displayVolume ?? historyBar.providerVolume);
+    const liveAnchor = Number(state.current.providerVolume);
+    if (Number.isFinite(baseline) && baseline >= 0 && Number.isFinite(liveAnchor) && liveAnchor >= 0) {
+      state.current.providerVolumeBaseline = baseline;
+      state.current.providerVolumeLiveAnchor = liveAnchor;
+    }
+  }
+
   #state(symbol, timeframe) {
     const key = this.#key(symbol, timeframe);
     if (!this.states.has(key)) {
@@ -171,6 +196,7 @@ class CandleEngine {
         lastClosedOpenTimeMs: null,
         consecutiveSyntheticClosed: 0,
         lastProviderDayVolume: null,
+        volumeMode: null,
       });
     }
     return this.states.get(key);
@@ -201,12 +227,10 @@ class CandleEngine {
 
   #providerVolumeDelta(state, rawDayVolume) {
     if (rawDayVolume === null || rawDayVolume === undefined || rawDayVolume === '') {
-      state.lastProviderDayVolume = null;
       return null;
     }
     const dayVolume = Number(rawDayVolume);
     if (!Number.isFinite(dayVolume) || dayVolume < 0) {
-      state.lastProviderDayVolume = null;
       return null;
     }
 
@@ -263,6 +287,12 @@ class CandleEngine {
   #closeCurrent(state) {
     if (!state.current) return;
     const candle = { ...state.current, complete: true };
+    const resolvedVolume = resolveCandleVolume(candle, candle.volumeMode || state.volumeMode);
+    if (resolvedVolume.volumeSource === 'provider' && resolvedVolume.displayVolume != null) {
+      candle.providerVolume = resolvedVolume.displayVolume;
+    }
+    delete candle.providerVolumeBaseline;
+    delete candle.providerVolumeLiveAnchor;
     state.current = null;
     this.#finalizeClosed(state, candle);
   }

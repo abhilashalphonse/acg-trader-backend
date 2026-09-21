@@ -4,6 +4,12 @@ const EventEmitter = require('events');
 const WebSocket = require('ws');
 const { TWELVE_DATA_HISTORY_INTERVALS } = require('../market.constants');
 
+function optionalNonNegativeNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
 class TwelveDataAdapter extends EventEmitter {
   constructor({ apiKey, wsUrl, apiBase, heartbeatMs, reconnectMinMs, reconnectMaxMs, httpTimeoutMs, subscribeBatchSize = 100, logger }) {
     super();
@@ -147,7 +153,7 @@ class TwelveDataAdapter extends EventEmitter {
       const bid = Number(data.bid);
       const ask = Number(data.ask);
       const providerTimestampSec = Number(data.timestamp);
-      const dayVolume = Number(data.day_volume);
+      const dayVolume = optionalNonNegativeNumber(data.day_volume);
 
       this.emit('price', {
         symbol: canonical,
@@ -156,7 +162,7 @@ class TwelveDataAdapter extends EventEmitter {
         bid: Number.isFinite(bid) ? bid : null,
         ask: Number.isFinite(ask) ? ask : null,
         providerTimestampMs: Number.isFinite(providerTimestampSec) ? Math.trunc(providerTimestampSec * 1000) : null,
-        dayVolume: Number.isFinite(dayVolume) ? dayVolume : null,
+        dayVolume,
         raw: data,
       });
       return;
@@ -244,7 +250,7 @@ class TwelveDataAdapter extends EventEmitter {
         const high = Number(item.high);
         const low = Number(item.low);
         const close = Number(item.close);
-        const providerVolume = Number(item.volume);
+        const providerVolume = optionalNonNegativeNumber(item.volume);
         if (![openTimeMs, open, high, low, close].every(Number.isFinite)) return null;
         return {
           openTimeMs,
@@ -252,7 +258,7 @@ class TwelveDataAdapter extends EventEmitter {
           high,
           low,
           close,
-          providerVolume: Number.isFinite(providerVolume) ? providerVolume : null,
+          providerVolume,
         };
       }).filter(Boolean);
     } finally {

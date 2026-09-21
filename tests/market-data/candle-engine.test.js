@@ -233,3 +233,45 @@ test('anchors weekly candles to Monday 00:00 UTC instead of Unix-epoch Thursday'
   const current = engine.getCurrent('EURUSD', '1w');
   assert.equal(current.openTimeMs, monday);
 });
+
+
+test('preserves the last valid provider day-volume anchor across missing samples', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 1000, price: 1.1, dayVolume: 1000, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 2000, price: 1.11, dayVolume: 1007, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 3000, price: 1.12, dayVolume: null, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 4000, price: 1.13, dayVolume: 1012, source: 'test' });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.providerVolume, 12);
+  assert.equal(current.tickCount, 4);
+});
+
+test('reconciles provider current-bar volume without changing OHLC', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 1000, price: 1.1, dayVolume: 1000, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 2000, price: 1.11, dayVolume: 1008, source: 'test' });
+  const before = engine.getCurrent('EURUSD', '5s');
+
+  engine.reconcileCurrentVolume('EURUSD', '5s', {
+    openTimeMs: 0,
+    providerVolume: 120,
+    displayVolume: 120,
+    volumeMode: 'provider',
+  });
+  const reconciled = engine.getCurrent('EURUSD', '5s');
+
+  assert.equal(reconciled.open, before.open);
+  assert.equal(reconciled.high, before.high);
+  assert.equal(reconciled.low, before.low);
+  assert.equal(reconciled.close, before.close);
+  assert.equal(reconciled.displayVolume, 120);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 3000, price: 1.12, dayVolume: 1013, source: 'test' });
+  const grown = engine.getCurrent('EURUSD', '5s');
+  assert.equal(grown.displayVolume, 125);
+});

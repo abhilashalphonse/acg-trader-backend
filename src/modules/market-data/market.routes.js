@@ -3,7 +3,7 @@
 const express = require('express');
 const { AppError } = require('../../shared/errors/app-error');
 const { requireTraderSession } = require('../auth/auth.middleware');
-const { normalizeSymbol, clampInteger } = require('./market.utils');
+const { normalizeSymbol, clampInteger, resolveCandleVolume } = require('./market.utils');
 
 function createMarketRouter(runtime, authService = null) {
   const router = express.Router();
@@ -60,20 +60,24 @@ function createMarketRouter(runtime, authService = null) {
     }
 
     const history = await runtime.historyService.getCandles({ symbol, timeframe, limit });
-    const current = runtime.candleEngine.getCurrent(symbol, timeframe);
+    let current = runtime.candleEngine.getCurrent(symbol, timeframe);
     let candles = history;
 
     if (current) {
       const last = history[history.length - 1];
       if (last?.openTimeMs === current.openTimeMs) {
+        runtime.candleEngine.reconcileCurrentVolume?.(symbol, timeframe, last);
+        current = runtime.candleEngine.getCurrent(symbol, timeframe) || current;
         candles = [...history.slice(0, -1), mergeCurrentCandle(last, current)];
       } else {
+        const inheritedMode = last?.volumeMode || null;
+        if (inheritedMode) current = applyVolumeMode(current, inheritedMode);
         candles = [...history, current];
       }
     }
 
     if (candles.length > limit) candles = candles.slice(candles.length - limit);
-    res.json({ symbol, timeframe, candles });
+    res.json({ symbol, timeframe, volumeMode: candles[0]?.volumeMode || null, candles });
   });
 
   return router;
@@ -99,6 +103,16 @@ function validateSymbols(runtime, symbols) {
   }
 }
 
+function applyVolumeMode(candle, volumeMode) {
+  const resolved = resolveCandleVolume({ ...candle, volumeMode }, volumeMode);
+  return {
+    ...candle,
+    volumeMode,
+    displayVolume: resolved.displayVolume,
+    volumeSource: resolved.volumeSource,
+  };
+}
+
 function mergeCurrentCandle(historyBar, currentBar) {
   if (!historyBar) return currentBar;
   if (!currentBar) return historyBar;
@@ -116,24 +130,26 @@ function mergeCurrentCandle(historyBar, currentBar) {
   const currentHigh = numeric(currentBar.high);
   const currentLow = numeric(currentBar.low);
   const currentClose = numeric(currentBar.close);
+  const volumeMode = currentBar.volumeMode || historyBar.volumeMode || null;
 
   const highs = [historyHigh, historyOpen, historyClose, currentHigh, currentOpen, currentClose].filter(Number.isFinite);
   const lows = [historyLow, historyOpen, historyClose, currentLow, currentOpen, currentClose].filter(Number.isFinite);
 
-  return {
+  const merged = {
     ...historyBar,
     ...currentBar,
     open: historyOpen ?? currentOpen,
     high: highs.length ? Math.max(...highs) : (currentHigh ?? historyHigh),
     low: lows.length ? Math.min(...lows) : (currentLow ?? historyLow),
     close: currentClose ?? historyClose,
-    tickCount: Number(currentBar.tickCount || 0),
-    providerVolume: historyBar.providerVolume ?? currentBar.providerVolume ?? null,
+    tickCount: Number(currentBar.tickCount || historyBar.tickCount || 0),
+    providerVolume: currentBar.providerVolume ?? historyBar.providerVolume ?? null,
     complete: false,
     synthetic: Boolean(currentBar.synthetic && historyBar.synthetic),
     source: 'LIVE_MERGED',
     provider: currentBar.provider || historyBar.provider || null,
   };
+  return applyVolumeMode(merged, volumeMode);
 }
 
-module.exports = { createMarketRouter, mergeCurrentCandle };
+module.exports = { createMarketRouter, mergeCurrentCandle, applyVolumeMode };
