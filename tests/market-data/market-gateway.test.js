@@ -33,10 +33,11 @@ function createHarness() {
   const quoteStore = new QuoteStore();
   const eventBus = new EventEmitter();
   const feedStates = [];
+  const processedTicks = [];
   const candleEngine = {
     start() {},
     async stop() {},
-    processTick() {},
+    processTick(tick) { processedTicks.push(tick); },
     setSymbolLive(symbol, live) { feedStates.push({ symbol, live }); },
   };
   const instrument = {
@@ -68,7 +69,7 @@ function createHarness() {
     staleCheckMs: 100000,
     logger,
   });
-  return { adapter, quoteStore, eventBus, feedStates, gateway, instrument };
+  return { adapter, quoteStore, eventBus, feedStates, processedTicks, gateway, instrument };
 }
 
 test('builds deterministic synthetic bid/ask from instrument policy', async () => {
@@ -205,6 +206,91 @@ test('crossed provider bid/ask falls back to configured synthetic spread', async
   assert.equal(quote.isSyntheticSpread, true);
   assert.ok(quote.bid > 0);
   assert.ok(quote.ask >= quote.bid);
+
+  await gateway.stop();
+});
+
+
+test('isolated provider spike never reaches quote state or candle engine', async () => {
+  const { adapter, quoteStore, processedTicks, gateway } = createHarness();
+  await gateway.start();
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1,
+    bid: null,
+    ask: null,
+    providerTimestampMs: 1_000,
+    dayVolume: null,
+  });
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.12,
+    bid: null,
+    ask: null,
+    providerTimestampMs: 1_100,
+    dayVolume: null,
+  });
+
+  assert.equal(quoteStore.get('EURUSD').price, 1.1);
+  assert.deepEqual(processedTicks.map(tick => tick.price), [1.1]);
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1001,
+    bid: null,
+    ask: null,
+    providerTimestampMs: 1_200,
+    dayVolume: null,
+  });
+
+  assert.equal(quoteStore.get('EURUSD').price, 1.1001);
+  assert.deepEqual(processedTicks.map(tick => tick.price), [1.1, 1.1001]);
+
+  await gateway.stop();
+});
+
+test('confirmed large provider move is released in original tick order', async () => {
+  const { adapter, quoteStore, processedTicks, gateway } = createHarness();
+  await gateway.start();
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1,
+    bid: null,
+    ask: null,
+    providerTimestampMs: 1_000,
+    dayVolume: null,
+  });
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.102,
+    bid: null,
+    ask: null,
+    providerTimestampMs: 1_100,
+    dayVolume: null,
+  });
+  assert.deepEqual(processedTicks.map(tick => tick.price), [1.1]);
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1022,
+    bid: null,
+    ask: null,
+    providerTimestampMs: 1_200,
+    dayVolume: null,
+  });
+
+  assert.deepEqual(processedTicks.map(tick => tick.price), [1.1, 1.102, 1.1022]);
+  assert.equal(quoteStore.get('EURUSD').price, 1.1022);
 
   await gateway.stop();
 });
