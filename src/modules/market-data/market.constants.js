@@ -51,7 +51,7 @@ const CANONICAL_UTC_HISTORY_SOURCE = Object.freeze({
 
 // Server-observed tick counts are only comparable across short intraday bars.
 // Higher timeframes must use trustworthy provider volume or show unavailable.
-const TICK_VOLUME_FALLBACK_TIMEFRAMES = Object.freeze(['1m', '5m', '15m', '30m']);
+const TICK_VOLUME_FALLBACK_TIMEFRAMES = Object.freeze(['1s', '5s', '15s', '30s', '1m', '5m', '15m', '30m']);
 
 const MARKET_CONNECTION_STATES = Object.freeze({
   DISABLED: 'DISABLED',
