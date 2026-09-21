@@ -60,6 +60,8 @@ function createMarketRouter(runtime, authService = null) {
     }
 
     const history = await runtime.historyService.getCandles({ symbol, timeframe, limit });
+    const historyVolumeMode = history[history.length - 1]?.volumeMode || null;
+    if (historyVolumeMode) runtime.candleEngine.setVolumeMode?.(symbol, timeframe, historyVolumeMode);
     let current = runtime.candleEngine.getCurrent(symbol, timeframe);
     let candles = history;
 

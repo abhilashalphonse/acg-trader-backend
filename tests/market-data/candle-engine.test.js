@@ -275,3 +275,67 @@ test('reconciles provider current-bar volume without changing OHLC', () => {
   const grown = engine.getCurrent('EURUSD', '5s');
   assert.equal(grown.displayVolume, 125);
 });
+
+
+test('applies a history-selected volume mode to a newer live candle state', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick(tick(6000, 1.2));
+  const before = engine.getCurrent('EURUSD', '5s');
+  assert.equal(before.volumeMode, null);
+
+  engine.setVolumeMode('EURUSD', '5s', 'tick');
+  const after = engine.getCurrent('EURUSD', '5s');
+
+  assert.equal(after.open, before.open);
+  assert.equal(after.high, before.high);
+  assert.equal(after.low, before.low);
+  assert.equal(after.close, before.close);
+  assert.equal(after.volumeMode, 'tick');
+  assert.equal(after.volumeSource, 'tick');
+  assert.equal(after.displayVolume, after.tickCount);
+});
+
+test('recovers unavailable volume to tick mode over websocket after three contiguous real closed candles', () => {
+  const bus = new EventEmitter();
+  const closed = [];
+  bus.on('market.candle.closed', candle => closed.push(candle));
+  const engine = createEngine(bus);
+
+  engine.processTick(tick(1000, 1.10));
+  engine.setVolumeMode('EURUSD', '5s', 'unavailable');
+
+  engine.processTick(tick(6000, 1.11));
+  engine.processTick(tick(11000, 1.12));
+  engine.processTick(tick(16000, 1.13));
+
+  assert.equal(closed.length, 3);
+  assert.equal(closed[0].volumeMode, 'unavailable');
+  assert.equal(closed[0].displayVolume, null);
+  assert.equal(closed[1].volumeMode, 'unavailable');
+  assert.equal(closed[1].displayVolume, null);
+  assert.equal(closed[2].volumeMode, 'tick');
+  assert.equal(closed[2].volumeSource, 'tick');
+  assert.equal(closed[2].displayVolume, 1);
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.volumeMode, 'tick');
+  assert.equal(current.volumeSource, 'tick');
+  assert.equal(current.displayVolume, 1);
+});
+
+test('synthetic gaps break unavailable-to-tick recovery continuity', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick(tick(1000, 1.10));
+  engine.setVolumeMode('EURUSD', '5s', 'unavailable');
+  engine.processTick(tick(6000, 1.11));
+  engine.flushExpired(15000); // closes the real 5s bar, then creates/closes a synthetic 10s bar
+  engine.processTick(tick(16000, 1.12));
+  engine.processTick(tick(21000, 1.13));
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.volumeMode, 'unavailable');
+});

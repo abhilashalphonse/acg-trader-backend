@@ -161,6 +161,21 @@ class CandleEngine {
     return state?.current ? serializeCandle(state.current) : null;
   }
 
+  setVolumeMode(symbol, timeframe, mode) {
+    const normalizedMode = ['provider', 'tick', 'unavailable'].includes(mode) ? mode : null;
+    const state = this.#state(normalizeSymbol(symbol), timeframe);
+    state.volumeMode = normalizedMode;
+    if (normalizedMode !== 'unavailable') state.consecutiveTickVolumeBars = 0;
+
+    if (state.current) {
+      state.current.volumeMode = normalizedMode;
+      if (normalizedMode !== 'provider') {
+        delete state.current.providerVolumeBaseline;
+        delete state.current.providerVolumeLiveAnchor;
+      }
+    }
+  }
+
   reconcileCurrentVolume(symbol, timeframe, historyBar) {
     const state = this.states.get(this.#key(normalizeSymbol(symbol), timeframe));
     if (!state?.current || !historyBar || Number(historyBar.openTimeMs) !== Number(state.current.openTimeMs)) return;
@@ -168,14 +183,9 @@ class CandleEngine {
     const mode = ['provider', 'tick', 'unavailable'].includes(historyBar.volumeMode)
       ? historyBar.volumeMode
       : null;
-    state.volumeMode = mode;
-    state.current.volumeMode = mode;
+    this.setVolumeMode(symbol, timeframe, mode);
 
-    if (mode !== 'provider') {
-      delete state.current.providerVolumeBaseline;
-      delete state.current.providerVolumeLiveAnchor;
-      return;
-    }
+    if (mode !== 'provider') return;
 
     const baseline = Number(historyBar.displayVolume ?? historyBar.providerVolume);
     const liveAnchor = Number(state.current.providerVolume);
@@ -197,6 +207,7 @@ class CandleEngine {
         consecutiveSyntheticClosed: 0,
         lastProviderDayVolume: null,
         volumeMode: null,
+        consecutiveTickVolumeBars: 0,
       });
     }
     return this.states.get(key);
@@ -298,6 +309,7 @@ class CandleEngine {
   }
 
   #finalizeClosed(state, candle) {
+    this.#observeClosedVolume(state, candle);
     state.lastClose = candle.close;
     state.lastClosedOpenTimeMs = candle.openTimeMs;
     state.consecutiveSyntheticClosed = candle.synthetic ? state.consecutiveSyntheticClosed + 1 : 0;
@@ -310,6 +322,24 @@ class CandleEngine {
         .finally(() => this.pendingWrites.delete(write));
       this.pendingWrites.add(write);
     }
+  }
+
+  #observeClosedVolume(state, candle) {
+    const hasTickActivity = !candle.synthetic && Number(candle.tickCount) > 0;
+    state.consecutiveTickVolumeBars = hasTickActivity
+      ? state.consecutiveTickVolumeBars + 1
+      : 0;
+
+    // When REST history could not establish a trustworthy provider/tick series,
+    // recover on the existing websocket path after three contiguous real
+    // completed candles. Tick count is the safest live fallback because it is
+    // generated from the same canonical ticks that built the candles.
+    if ((state.volumeMode == null || state.volumeMode === 'unavailable')
+      && state.consecutiveTickVolumeBars >= 3) {
+      state.volumeMode = 'tick';
+    }
+
+    candle.volumeMode = state.volumeMode;
   }
 
   #emitUpdate(candle) {
