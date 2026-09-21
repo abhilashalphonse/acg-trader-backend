@@ -18,6 +18,10 @@ const { AccountLedger } = require('./account-ledger.model');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('./execution-planner');
+const {
+  calculatePositionStopRiskAmount,
+  hasActiveExposurePolicy,
+} = require('./firm-risk-policy');
 const { serializeOrder, serializeDeal, serializePosition, serializeAccount } = require('./trading.serializer');
 
 class MarketOrderService {
@@ -72,7 +76,11 @@ class MarketOrderService {
           if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
           const instrument = await this.instrumentModel.findOne({ symbol: normalized.symbol }).session(session);
           const exposure = hasExposureLimits(account)
-            ? await loadOpenExposure(this.positionModel, normalized.accountId, session)
+            ? await loadOpenExposure(this.positionModel, normalized.accountId, session, {
+              account,
+              symbol: normalized.symbol,
+              nowMs,
+            })
             : null;
           const plan = planMarketOpen({
             account,
@@ -570,17 +578,53 @@ function normalizeCloseReason(reason) {
 }
 
 function hasExposureLimits(account) {
-  return account?.riskPolicy?.maxOpenPositions != null
-    || account?.riskPolicy?.maxTotalVolume != null;
+  return hasActiveExposurePolicy(account);
 }
 
-async function loadOpenExposure(positionModel, accountId, session = null) {
-  let query = positionModel.find({ accountId: String(accountId), status: 'OPEN' }).select('openVolume').lean();
+async function loadOpenExposure(positionModel, accountId, session = null, {
+  account = null,
+  symbol = null,
+  currencyConverter = null,
+  nowMs = Date.now(),
+} = {}) {
+  let query = positionModel.find({ accountId: String(accountId), status: 'OPEN' })
+    .select('symbol side openVolume entryPrice stopLoss contractSize quoteCurrency')
+    .lean();
   if (session) query = query.session(session);
   const positions = await query;
+  const targetSymbol = normalizeSymbol(symbol);
   let currentTotalVolume = '0';
-  for (const position of positions) currentTotalVolume = addDecimal(currentTotalVolume, position.openVolume?.toString?.() ?? String(position.openVolume || '0'));
-  return { currentOpenPositions: positions.length, currentTotalVolume };
+  let currentSymbolVolume = '0';
+  let currentOpenRisk = '0';
+  let unmeasuredRiskPositions = 0;
+  const aggregateRiskEnabled = account?.riskPolicy?.maxAggregateRiskPercent != null
+    && compareDecimal(account.riskPolicy.maxAggregateRiskPercent?.toString?.() ?? String(account.riskPolicy.maxAggregateRiskPercent), '0') > 0;
+
+  for (const position of positions) {
+    const openVolume = position.openVolume?.toString?.() ?? String(position.openVolume || '0');
+    currentTotalVolume = addDecimal(currentTotalVolume, openVolume);
+    if (targetSymbol && normalizeSymbol(position.symbol) === targetSymbol) {
+      currentSymbolVolume = addDecimal(currentSymbolVolume, openVolume);
+    }
+    if (aggregateRiskEnabled) {
+      const risk = calculatePositionStopRiskAmount({
+        account,
+        position,
+        currencyConverter,
+        nowMs,
+      });
+      if (risk == null) unmeasuredRiskPositions += 1;
+      else currentOpenRisk = addDecimal(currentOpenRisk, risk);
+    }
+  }
+
+  return {
+    currentOpenPositions: positions.length,
+    currentTotalVolume,
+    currentSymbolVolume,
+    currentOpenRisk,
+    unmeasuredRiskPositions,
+  };
 }
 
 async function runMongoTransaction(work) {
