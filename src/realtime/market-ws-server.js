@@ -8,7 +8,7 @@ const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024;
 const MAX_SYNC_BUFFER_EVENTS = 1000;
 const AUTH_REVALIDATE_MS = 60_000;
 
-function createMarketWebSocketServer({ server, runtime, tradingRuntime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, logger }) {
+function createMarketWebSocketServer({ server, runtime, tradingRuntime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, quoteCoalesceMs = 250, valuationCoalesceMs = 250, logger }) {
   if (!tradingRuntime?.valuationEngine) throw new Error('tradingRuntime with valuationEngine is required');
   const traderStateService = new TraderStateService({ valuationEngine: tradingRuntime.valuationEngine });
   const wss = new WebSocketServer({
@@ -20,13 +20,36 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
   const subscriptions = new WeakMap();
   let outboundSequence = 0;
   let closed = false;
+  const egress = {
+    messages: 0,
+    bytes: 0,
+    droppedLossy: 0,
+    closedSlowClients: 0,
+    byType: new Map(),
+  };
 
   const envelope = (type, data) => ({ type, sequence: ++outboundSequence, timestamp: new Date().toISOString(), data });
   const send = (socket, type, data, { lossy = false } = {}) => {
     if (socket.readyState !== WebSocket.OPEN) return false;
-    if (lossy && socket.bufferedAmount > maxBufferBytes) return false;
-    if (!lossy && socket.bufferedAmount > maxBufferBytes * 4) { socket.close(1013, 'Client is too slow'); return false; }
-    socket.send(JSON.stringify(envelope(type, data)));
+    if (lossy && socket.bufferedAmount > maxBufferBytes) {
+      egress.droppedLossy += 1;
+      return false;
+    }
+    if (!lossy && socket.bufferedAmount > maxBufferBytes * 4) {
+      egress.closedSlowClients += 1;
+      socket.close(1013, 'Client is too slow');
+      return false;
+    }
+
+    const serialized = JSON.stringify(envelope(type, data));
+    const bytes = Buffer.byteLength(serialized);
+    socket.send(serialized);
+    egress.messages += 1;
+    egress.bytes += bytes;
+    const current = egress.byType.get(type) || { messages: 0, bytes: 0 };
+    current.messages += 1;
+    current.bytes += bytes;
+    egress.byType.set(type, current);
     return true;
   };
 
@@ -62,6 +85,10 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       accounts: new Set(grantedAccounts),
       syncingAccounts: new Set(grantedAccounts),
       pendingAccountEvents: [],
+      quotePending: new Map(),
+      quoteTimers: new Map(),
+      valuationPending: new Map(),
+      valuationTimers: new Map(),
     });
     socket.on('pong', () => { socket.isAlive = true; });
     send(socket, 'connection.ready', {
@@ -100,6 +127,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       if (!state) return;
       for (const symbol of state.quotes) runtime.releasePriority?.(symbol);
       state.quotes.clear();
+      clearCoalescedTimers(state);
     });
 
   });
@@ -228,7 +256,29 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     return Array.isArray(value) ? [...new Set(value.map(item => String(item || '').trim()).filter(Boolean))] : [];
   }
 
-  function routeAccountEvent(type, payload) {
+  function clearCoalescedTimers(state) {
+    for (const timer of state.quoteTimers.values()) clearTimeout(timer);
+    for (const timer of state.valuationTimers.values()) clearTimeout(timer);
+    state.quoteTimers.clear();
+    state.valuationTimers.clear();
+    state.quotePending.clear();
+    state.valuationPending.clear();
+  }
+
+  function scheduleLatest(state, pendingMap, timerMap, key, delayMs, callback) {
+    pendingMap.set(key, callback);
+    if (timerMap.has(key)) return;
+    const timer = setTimeout(() => {
+      timerMap.delete(key);
+      const latest = pendingMap.get(key);
+      pendingMap.delete(key);
+      latest?.();
+    }, Math.max(1, delayMs));
+    timer.unref?.();
+    timerMap.set(key, timer);
+  }
+
+  function routeAccountEvent(type, payload, { coalesceMs = 0 } = {}) {
     const accountId = accountIdFromPayload(payload);
     if (!accountId) return;
     for (const socket of wss.clients) {
@@ -237,6 +287,17 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       if (state.syncingAccounts.has(accountId)) {
         if (state.pendingAccountEvents.length >= MAX_SYNC_BUFFER_EVENTS) { socket.close(1013, 'State synchronization overflow'); continue; }
         state.pendingAccountEvents.push({ accountId, type, data: payload });
+        continue;
+      }
+      if (coalesceMs > 0) {
+        scheduleLatest(
+          state,
+          state.valuationPending,
+          state.valuationTimers,
+          accountId,
+          coalesceMs,
+          () => send(socket, type, payload, { lossy: true }),
+        );
         continue;
       }
       send(socket, type, payload);
@@ -254,7 +315,26 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     state.pendingAccountEvents = remaining;
   }
 
-  const broadcastQuote = quote => { for (const socket of wss.clients) if (subscriptions.get(socket)?.quotes.has(quote.symbol)) send(socket, 'market.quote', quote, { lossy: true }); };
+  const broadcastQuote = quote => {
+    for (const socket of wss.clients) {
+      const state = subscriptions.get(socket);
+      if (!state?.quotes.has(quote.symbol)) continue;
+
+      // If the client already receives full-frequency ticks for this symbol,
+      // the tick contains the same bid/ask/last fields. Suppress the duplicate
+      // quote stream and let the frontend mirror the tick into quote state.
+      if (state.ticks.has(quote.symbol)) continue;
+
+      scheduleLatest(
+        state,
+        state.quotePending,
+        state.quoteTimers,
+        quote.symbol,
+        quoteCoalesceMs,
+        () => send(socket, 'market.quote', quote, { lossy: true }),
+      );
+    }
+  };
   const broadcastTick = tick => { for (const socket of wss.clients) if (subscriptions.get(socket)?.ticks.has(tick.symbol)) send(socket, 'market.tick', tick, { lossy: true }); };
   const broadcastCandleUpdate = candle => { const key = `${candle.symbol}:${candle.timeframe}`; for (const socket of wss.clients) if (subscriptions.get(socket)?.candles.has(key)) send(socket, 'market.candle.update', candle, { lossy: true }); };
   const broadcastCandleClosed = candle => { const key = `${candle.symbol}:${candle.timeframe}`; for (const socket of wss.clients) if (subscriptions.get(socket)?.candles.has(key)) send(socket, 'market.candle.closed', candle); };
@@ -273,7 +353,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     ['trading.position.updated', ['trading.position', payload => ({ event: 'updated', position: payload })]],
     ['trading.position.closed', ['trading.position', payload => ({ event: 'closed', position: payload })]],
     ['trading.account.updated', ['trading.account', payload => ({ event: 'updated', account: payload })]],
-    ['valuation.account.updated', ['trading.account.valuation', payload => payload]],
+    ['valuation.account.updated', ['trading.account.valuation', payload => payload, { coalesceMs: valuationCoalesceMs }]],
     ['trading.account.balance.updated', ['trading.account.balance', payload => payload]],
     ['trading.account.paused', ['trading.account.control', payload => ({ event: 'paused', account: payload })]],
     ['trading.account.resumed', ['trading.account.control', payload => ({ event: 'resumed', account: payload })]],
@@ -283,8 +363,8 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     ['trading.account.closed', ['trading.account.control', payload => ({ event: 'closed', account: payload })]],
   ]);
   const tradingListeners = [];
-  for (const [sourceEvent, [targetType, transform]] of eventRoutes) {
-    const listener = payload => routeAccountEvent(targetType, transform(payload));
+  for (const [sourceEvent, [targetType, transform, routeOptions]] of eventRoutes) {
+    const listener = payload => routeAccountEvent(targetType, transform(payload), routeOptions);
     runtime.eventBus.on(sourceEvent, listener);
     tradingListeners.push([sourceEvent, listener]);
   }
@@ -314,8 +394,45 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
   return {
     health() {
       let accountSubscriptions = 0;
-      for (const socket of wss.clients) accountSubscriptions += subscriptions.get(socket)?.accounts.size || 0;
-      return { clients: wss.clients.size, accountSubscriptions, path };
+      let quoteSubscriptions = 0;
+      let tickSubscriptions = 0;
+      let candleSubscriptions = 0;
+      for (const socket of wss.clients) {
+        const state = subscriptions.get(socket);
+        accountSubscriptions += state?.accounts.size || 0;
+        quoteSubscriptions += state?.quotes.size || 0;
+        tickSubscriptions += state?.ticks.size || 0;
+        candleSubscriptions += state?.candles.size || 0;
+      }
+      return {
+        clients: wss.clients.size,
+        accountSubscriptions,
+        quoteSubscriptions,
+        tickSubscriptions,
+        candleSubscriptions,
+        path,
+        coalescing: {
+          quoteMs: quoteCoalesceMs,
+          valuationMs: valuationCoalesceMs,
+        },
+        egress: {
+          messages: egress.messages,
+          bytes: egress.bytes,
+          megabytes: Number((egress.bytes / (1024 * 1024)).toFixed(3)),
+          droppedLossy: egress.droppedLossy,
+          closedSlowClients: egress.closedSlowClients,
+          byType: Object.fromEntries(
+            [...egress.byType.entries()].map(([type, value]) => [
+              type,
+              {
+                messages: value.messages,
+                bytes: value.bytes,
+                megabytes: Number((value.bytes / (1024 * 1024)).toFixed(3)),
+              },
+            ]),
+          ),
+        },
+      };
     },
     async close() {
       if (closed) return;
