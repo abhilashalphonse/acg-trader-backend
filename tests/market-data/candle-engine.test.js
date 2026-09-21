@@ -488,3 +488,27 @@ test('refuses synthetic candles when session metadata is not configured', () => 
 
   assert.equal(engine.getCurrent('EURUSD', '1m'), null);
 });
+
+
+test('daily candles never auto-switch to local tick-volume mode', () => {
+  const bus = new EventEmitter();
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['1d'],
+    persistTimeframes: [],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 12,
+    logger,
+    persistCandle: async () => {},
+  });
+
+  engine.processTick(tick(Date.UTC(2026, 8, 14, 12), 4300));
+  engine.setVolumeMode('EURUSD', '1d', 'unavailable');
+  engine.processTick(tick(Date.UTC(2026, 8, 15, 12), 4310));
+  engine.processTick(tick(Date.UTC(2026, 8, 16, 12), 4320));
+  engine.processTick(tick(Date.UTC(2026, 8, 17, 12), 4330));
+
+  const current = engine.getCurrent('EURUSD', '1d');
+  assert.equal(current.volumeMode, 'unavailable');
+  assert.equal(current.displayVolume, null);
+});

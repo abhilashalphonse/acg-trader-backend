@@ -2,12 +2,25 @@
 
 const EventEmitter = require('events');
 const WebSocket = require('ws');
-const { TWELVE_DATA_HISTORY_INTERVALS } = require('../market.constants');
+const {
+  TWELVE_DATA_HISTORY_INTERVALS,
+  CANONICAL_UTC_HISTORY_SOURCE,
+} = require('../market.constants');
+const {
+  aggregateCanonicalUtcBars,
+  canonicalSourceBarsPerTarget,
+} = require('../canonical-history');
 
 function optionalNonNegativeNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function formatUtcApiDateTime(timeMs) {
+  const date = new Date(Number(timeMs));
+  if (!Number.isFinite(date.getTime())) return '';
+  return date.toISOString().slice(0, 19);
 }
 
 class TwelveDataAdapter extends EventEmitter {
@@ -220,6 +233,54 @@ class TwelveDataAdapter extends EventEmitter {
   }
 
   async fetchHistorical({ providerSymbol, timeframe, limit = 160 }) {
+    const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 160));
+    const canonicalSource = CANONICAL_UTC_HISTORY_SOURCE[timeframe];
+    if (canonicalSource) {
+      return this.#fetchCanonicalUtcHistorical({
+        providerSymbol,
+        timeframe,
+        sourceTimeframe: canonicalSource,
+        limit: safeLimit,
+      });
+    }
+    return this.#fetchTimeSeries({ providerSymbol, timeframe, limit: safeLimit });
+  }
+
+  async #fetchCanonicalUtcHistorical({ providerSymbol, timeframe, sourceTimeframe, limit }) {
+    const barsPerTarget = canonicalSourceBarsPerTarget(timeframe);
+    if (!barsPerTarget) return [];
+
+    const desiredSourceBars = Math.max(barsPerTarget * 2, (limit + 2) * barsPerTarget);
+    const maxPages = 12;
+    const sourceByTime = new Map();
+    let endDateMs = null;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const remaining = Math.max(1, desiredSourceBars - sourceByTime.size);
+      const pageSize = Math.min(5000, remaining);
+      const chunk = await this.#fetchTimeSeries({
+        providerSymbol,
+        timeframe: sourceTimeframe,
+        limit: pageSize,
+        endDateMs,
+      });
+      if (!chunk.length) break;
+
+      for (const bar of chunk) sourceByTime.set(Number(bar.openTimeMs), bar);
+
+      const aggregated = aggregateCanonicalUtcBars([...sourceByTime.values()], timeframe);
+      if (aggregated.length >= limit + 1) break;
+      if (chunk.length < pageSize) break;
+
+      const earliest = Math.min(...chunk.map(bar => Number(bar.openTimeMs)).filter(Number.isFinite));
+      if (!Number.isFinite(earliest)) break;
+      endDateMs = earliest - 1000;
+    }
+
+    return aggregateCanonicalUtcBars([...sourceByTime.values()], timeframe).slice(-limit);
+  }
+
+  async #fetchTimeSeries({ providerSymbol, timeframe, limit, endDateMs = null }) {
     const interval = TWELVE_DATA_HISTORY_INTERVALS[timeframe];
     if (!interval) return [];
 
@@ -231,6 +292,7 @@ class TwelveDataAdapter extends EventEmitter {
       order: 'asc',
       apikey: this.apiKey,
     });
+    if (Number.isFinite(endDateMs)) params.set('end_date', formatUtcApiDateTime(endDateMs));
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
@@ -252,14 +314,7 @@ class TwelveDataAdapter extends EventEmitter {
         const close = Number(item.close);
         const providerVolume = optionalNonNegativeNumber(item.volume);
         if (![openTimeMs, open, high, low, close].every(Number.isFinite)) return null;
-        return {
-          openTimeMs,
-          open,
-          high,
-          low,
-          close,
-          providerVolume,
-        };
+        return { openTimeMs, open, high, low, close, providerVolume };
       }).filter(Boolean);
     } finally {
       clearTimeout(timeout);

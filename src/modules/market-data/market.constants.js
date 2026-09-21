@@ -41,6 +41,18 @@ const TWELVE_DATA_HISTORY_INTERVALS = Object.freeze({
   '1w': '1week',
 });
 
+// Twelve Data ignores timezone for native daily/weekly bars. Build those ACG
+// timeframes from UTC 4h provider bars so history and live aggregation share
+// the exact same UTC boundaries (including a real partial Sunday D1 bar).
+const CANONICAL_UTC_HISTORY_SOURCE = Object.freeze({
+  '1d': '4h',
+  '1w': '4h',
+});
+
+// Server-observed tick counts are only comparable across short intraday bars.
+// Higher timeframes must use trustworthy provider volume or show unavailable.
+const TICK_VOLUME_FALLBACK_TIMEFRAMES = Object.freeze(['1m', '5m', '15m', '30m']);
+
 const MARKET_CONNECTION_STATES = Object.freeze({
   DISABLED: 'DISABLED',
   CONNECTING: 'CONNECTING',
@@ -54,5 +66,7 @@ module.exports = {
   TIMEFRAME_MS,
   candleBucketOpenTimeMs,
   TWELVE_DATA_HISTORY_INTERVALS,
+  CANONICAL_UTC_HISTORY_SOURCE,
+  TICK_VOLUME_FALLBACK_TIMEFRAMES,
   MARKET_CONNECTION_STATES,
 };

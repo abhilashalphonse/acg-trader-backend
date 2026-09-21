@@ -86,3 +86,24 @@ test('a single isolated recent tick bar after a gap is not enough to enable tick
 
   assert.equal(chooseVolumeMode(bars), 'unavailable');
 });
+
+
+test('daily history never substitutes server tick counts for missing provider volume', () => {
+  const bars = [
+    ...Array.from({ length: 20 }, () => bar(0, 0)),
+    bar(0, 1200),
+    bar(0, 1400),
+    bar(0, 1300),
+  ];
+  assert.equal(chooseVolumeMode(bars, '1d'), 'unavailable');
+});
+
+test('short intraday history may still recover to tick volume', () => {
+  const bars = [
+    ...Array.from({ length: 20 }, () => bar(0, 0)),
+    bar(0, 120),
+    bar(0, 140),
+    bar(0, 130),
+  ];
+  assert.equal(chooseVolumeMode(bars, '5m'), 'tick');
+});

@@ -2,7 +2,11 @@
 
 const mongoose = require('mongoose');
 const { Candle } = require('./candle.model');
-const { TIMEFRAME_MS } = require('./market.constants');
+const {
+  TIMEFRAME_MS,
+  CANONICAL_UTC_HISTORY_SOURCE,
+  TICK_VOLUME_FALLBACK_TIMEFRAMES,
+} = require('./market.constants');
 const { normalizeSymbol, serializeCandle, clampInteger } = require('./market.utils');
 const { AppError } = require('../../shared/errors/app-error');
 const { candleExpiresAt } = require('./candle-retention');
@@ -30,7 +34,7 @@ function trailingMissingRun(bars, selector) {
   return count;
 }
 
-function chooseVolumeMode(bars) {
+function chooseVolumeMode(bars, timeframe = null) {
   const usable = (Array.isArray(bars) ? bars : [])
     .filter(bar => !bar.synthetic && bar?.complete !== false);
   if (!usable.length) return 'unavailable';
@@ -54,6 +58,8 @@ function chooseVolumeMode(bars) {
     && recentProviderGap <= 2;
 
   if (providerHealthy) return 'provider';
+
+  if (timeframe && !TICK_VOLUME_FALLBACK_TIMEFRAMES.includes(timeframe)) return 'unavailable';
 
   // Tick volume is only trustworthy when it is recent too. Persisted tick
   // history can contain an old healthy block followed by a long server/feed
@@ -113,7 +119,7 @@ class MarketHistoryService {
     }
 
     const localBars = rows.reverse();
-    return applyVolumeMode(localBars, chooseVolumeMode(localBars));
+    return applyVolumeMode(localBars, chooseVolumeMode(localBars, timeframe));
   }
 
   #serializeProviderBars(symbol, timeframe, bars, limit, localByOpenTime) {
@@ -134,18 +140,19 @@ class MarketHistoryService {
         providerVolume: bar.providerVolume,
         complete: bar.openTimeMs + stepMs <= now,
         synthetic: false,
-        source: 'BACKFILL',
+        source: bar.canonicalUtc ? 'CANONICAL_BACKFILL' : 'BACKFILL',
         provider: 'twelve-data',
       };
     });
-    return applyVolumeMode(merged, chooseVolumeMode(merged));
+    return applyVolumeMode(merged, chooseVolumeMode(merged, timeframe));
   }
 
   async #loadLocal(symbol, timeframe, limit) {
-    return Candle.find({ symbol, timeframe, synthetic: mongoose.trusted({ $ne: true }) })
-      .sort({ openTime: -1 })
-      .limit(limit)
-      .lean();
+    const filter = { symbol, timeframe, synthetic: mongoose.trusted({ $ne: true }) };
+    if (CANONICAL_UTC_HISTORY_SOURCE[timeframe]) {
+      filter.source = mongoose.trusted({ $in: ['LIVE', 'CANONICAL_BACKFILL'] });
+    }
+    return Candle.find(filter).sort({ openTime: -1 }).limit(limit).lean();
   }
 
   async #persistBackfill(symbol, timeframe, bars) {
@@ -171,7 +178,7 @@ class MarketHistoryService {
               providerVolume: bar.providerVolume == null ? null : String(bar.providerVolume),
               complete: true,
               synthetic: false,
-              source: 'BACKFILL',
+              source: bar.canonicalUtc ? 'CANONICAL_BACKFILL' : 'BACKFILL',
               provider: 'twelve-data',
               expiresAt: candleExpiresAt(timeframe, bar.openTimeMs),
             },

@@ -18,7 +18,7 @@ const candleSchema = new Schema({
   providerVolume: { type: Decimal128, default: null },
   complete: { type: Boolean, default: true },
   synthetic: { type: Boolean, default: false },
-  source: { type: String, enum: ['LIVE', 'SYNTHETIC', 'BACKFILL'], default: 'LIVE' },
+  source: { type: String, enum: ['LIVE', 'SYNTHETIC', 'BACKFILL', 'CANONICAL_BACKFILL'], default: 'LIVE' },
   provider: { type: String, default: null },
   expiresAt: { type: Date, default: null },
 }, {

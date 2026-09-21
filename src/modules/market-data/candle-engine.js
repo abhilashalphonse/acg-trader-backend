@@ -1,7 +1,11 @@
 'use strict';
 
 const { Candle } = require('./candle.model');
-const { TIMEFRAME_MS, candleBucketOpenTimeMs } = require('./market.constants');
+const {
+  TIMEFRAME_MS,
+  candleBucketOpenTimeMs,
+  TICK_VOLUME_FALLBACK_TIMEFRAMES,
+} = require('./market.constants');
 const { normalizeSymbol, resolveCandleVolume, serializeCandle } = require('./market.utils');
 const { candleExpiresAt } = require('./candle-retention');
 const { isInstrumentSessionOpen } = require('../instruments/session-calendar');
@@ -367,7 +371,8 @@ class CandleEngine {
     // recover on the existing websocket path after three contiguous real
     // completed candles. Tick count is the safest live fallback because it is
     // generated from the same canonical ticks that built the candles.
-    if ((state.volumeMode == null || state.volumeMode === 'unavailable')
+    if (TICK_VOLUME_FALLBACK_TIMEFRAMES.includes(candle.timeframe)
+      && (state.volumeMode == null || state.volumeMode === 'unavailable')
       && state.consecutiveTickVolumeBars >= 3) {
       state.volumeMode = 'tick';
     }
