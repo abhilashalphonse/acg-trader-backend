@@ -10,6 +10,7 @@ const DURABLE_PERSIST = new Set(DEFAULT_PERSIST);
 const BATCH_SIZE = 5000;
 const SYNTHETIC_HIGHER_TIMEFRAMES = ['1h', '4h', '1d', '1w'];
 const LEGACY_NATIVE_UTC_MISMATCH_TIMEFRAMES = ['1d', '1w'];
+const PROVIDER_BACKFILL_SOURCES = ['BACKFILL', 'CANONICAL_BACKFILL'];
 
 function persistedTimeframes() {
   const raw = String(process.env.MARKET_PERSIST_TIMEFRAMES || DEFAULT_PERSIST.join(','));
@@ -28,6 +29,21 @@ async function deleteInBatches(filter, label = 'non-retained') {
   }
   if (deleted) process.stdout.write('\n');
   return deleted;
+}
+
+async function groupCounts(pipelineMatch = {}) {
+  return Candle.aggregate([
+    { $match: pipelineMatch },
+    {
+      $group: {
+        _id: { source: '$source', timeframe: '$timeframe' },
+        count: { $sum: 1 },
+        earliestOpenTime: { $min: '$openTime' },
+        latestOpenTime: { $max: '$openTime' },
+      },
+    },
+    { $sort: { '_id.source': 1, '_id.timeframe': 1 } },
+  ]);
 }
 
 async function backfillExpiry(timeframe) {
@@ -67,23 +83,52 @@ async function main() {
   try {
     const retained = persistedTimeframes();
     const nonRetainedFilter = { timeframe: { $nin: retained } };
+    const syntheticFilter = { synthetic: true };
     const syntheticHigherFilter = { synthetic: true, timeframe: { $in: SYNTHETIC_HIGHER_TIMEFRAMES } };
     const legacyNativeHigherFilter = {
       source: 'BACKFILL',
       timeframe: { $in: LEGACY_NATIVE_UTC_MISMATCH_TIMEFRAMES },
     };
-    const nonRetained = await Candle.countDocuments(nonRetainedFilter);
-    const syntheticHigherTimeframeCandles = await Candle.countDocuments(syntheticHigherFilter);
-    const legacyNativeHigherTimeframeCandles = await Candle.countDocuments(legacyNativeHigherFilter);
-    const total = await Candle.estimatedDocumentCount();
+    const providerBackfillFilter = { source: { $in: PROVIDER_BACKFILL_SOURCES } };
+    const expiredFilter = { expiresAt: { $ne: null, $lte: new Date() } };
+
+    const [
+      nonRetained,
+      syntheticCandles,
+      syntheticHigherTimeframeCandles,
+      legacyNativeHigherTimeframeCandles,
+      providerBackfillCandles,
+      expiredCandles,
+      total,
+      bySourceAndTimeframe,
+    ] = await Promise.all([
+      Candle.countDocuments(nonRetainedFilter),
+      Candle.countDocuments(syntheticFilter),
+      Candle.countDocuments(syntheticHigherFilter),
+      Candle.countDocuments(legacyNativeHigherFilter),
+      Candle.countDocuments(providerBackfillFilter),
+      Candle.countDocuments(expiredFilter),
+      Candle.estimatedDocumentCount(),
+      groupCounts(),
+    ]);
 
     console.log(JSON.stringify({
       mode: apply ? 'APPLY' : 'DRY_RUN',
       totalCandles: total,
       retainedTimeframes: retained,
       nonRetainedCandles: nonRetained,
+      syntheticCandles,
       syntheticHigherTimeframeCandles,
       legacyNativeHigherTimeframeCandles,
+      providerBackfillCandles,
+      expiredCandles,
+      bySourceAndTimeframe: bySourceAndTimeframe.map(row => ({
+        source: row._id.source || null,
+        timeframe: row._id.timeframe || null,
+        count: row.count,
+        earliestOpenTime: row.earliestOpenTime || null,
+        latestOpenTime: row.latestOpenTime || null,
+      })),
       retentionDays: Object.fromEntries(
         retained.map(timeframe => [
           timeframe,
@@ -95,20 +140,39 @@ async function main() {
     }, null, 2));
 
     if (!apply) {
-      console.log('Dry run only. Re-run with --apply to delete legacy native D1/W1 backfills, synthetic H1/H4/D1/W1 candles, delete non-retained candles, and backfill TTL expiry.');
+      console.log('Dry run only. Re-run with --apply to delete all provider backfills, all synthetic candles, expired candles, delete non-retained candles, and backfill TTL expiry for retained LIVE rows.');
       return;
     }
 
-    const deletedLegacyNativeHigherTimeframes = await deleteInBatches(legacyNativeHigherFilter, 'legacy native D1/W1');
-    const deletedSyntheticHigherTimeframes = await deleteInBatches(syntheticHigherFilter, 'synthetic higher-timeframe');
-    const deleted = await deleteInBatches(nonRetainedFilter, 'non-retained');
+    // Historical provider OHLC now lives in the bounded RAM cache / provider
+    // path and must not consume MongoDB. Delete these first because they were
+    // the dominant source of collection growth.
+    const deletedProviderBackfills = await deleteInBatches(providerBackfillFilter, 'provider backfill');
+
+    // Synthetic rows are no longer durable market history at any timeframe.
+    const deletedSynthetic = await deleteInBatches(syntheticFilter, 'synthetic');
+
+    // Remove already-expired rows immediately rather than waiting for MongoDB's
+    // asynchronous TTL monitor.
+    const deletedExpired = await deleteInBatches(expiredFilter, 'expired');
+
+    // Remove any unsupported/legacy timeframe rows.
+    const deletedNonRetained = await deleteInBatches(nonRetainedFilter, 'non-retained');
+
+    // Add expiry metadata only to retained LIVE rows that still lack it.
     const expiry = {};
     for (const timeframe of retained) {
       expiry[timeframe] = await backfillExpiry(timeframe);
     }
 
     await Candle.createIndexes();
-    console.log(JSON.stringify({ deletedLegacyNativeHigherTimeframes, deletedSyntheticHigherTimeframes, deleted, expiryBackfilled: expiry }, null, 2));
+    console.log(JSON.stringify({
+      deletedProviderBackfills,
+      deletedSynthetic,
+      deletedExpired,
+      deletedNonRetained,
+      expiryBackfilled: expiry,
+    }, null, 2));
     console.log('MongoDB TTL cleanup is asynchronous; expired retained candles may take a short time to disappear.');
   } finally {
     await mongoose.disconnect();
