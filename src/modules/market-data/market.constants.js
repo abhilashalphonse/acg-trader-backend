@@ -17,6 +17,19 @@ const TIMEFRAME_MS = Object.freeze({
   '1w': 7 * 24 * 60 * 60_000,
 });
 
+const WEEK_MS = TIMEFRAME_MS['1w'];
+const WEEK_ANCHOR_UTC_MS = Date.UTC(1970, 0, 5); // Monday 00:00:00 UTC.
+
+function candleBucketOpenTimeMs(timeMs, timeframe) {
+  const numericTime = Number(timeMs);
+  const stepMs = TIMEFRAME_MS[timeframe];
+  if (!Number.isFinite(numericTime) || !stepMs) return null;
+  if (timeframe === '1w') {
+    return WEEK_ANCHOR_UTC_MS + Math.floor((numericTime - WEEK_ANCHOR_UTC_MS) / WEEK_MS) * WEEK_MS;
+  }
+  return Math.floor(numericTime / stepMs) * stepMs;
+}
+
 const TWELVE_DATA_HISTORY_INTERVALS = Object.freeze({
   '1m': '1min',
   '5m': '5min',
@@ -39,6 +52,7 @@ const MARKET_CONNECTION_STATES = Object.freeze({
 
 module.exports = {
   TIMEFRAME_MS,
+  candleBucketOpenTimeMs,
   TWELVE_DATA_HISTORY_INTERVALS,
   MARKET_CONNECTION_STATES,
 };
