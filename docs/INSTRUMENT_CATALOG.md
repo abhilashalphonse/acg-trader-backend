@@ -31,8 +31,8 @@ maxVolume         100
 volumeStep        0.01
 defaultLeverage   100
 provider          Twelve Data: EUR/USD
-spreadMode        SYNTHETIC
-spreadWidth       10 points = 0.00010
+spreadMode        DYNAMIC
+normalSpread      2 points = 0.00002 (0.2 pip)
 maxQuoteAgeMs     10000
 executionEnabled  false
 ```
@@ -50,13 +50,13 @@ maxVolume         100
 volumeStep        0.01
 defaultLeverage   100
 provider          Twelve Data: XAU/USD
-spreadMode        SYNTHETIC
-spreadWidth       30 points = 0.30
+spreadMode        DYNAMIC
+normalSpread      10 points = 0.10
 maxQuoteAgeMs     10000
 executionEnabled  false
 ```
 
-The current Twelve Data WebSocket price stream is treated as the center/reference price. For instruments configured with `SYNTHETIC` spread, the Market Gateway deterministically constructs:
+The current Twelve Data WebSocket price stream is treated as the center/reference price. For instruments configured with ACG's `DYNAMIC` spread profile, the Market Gateway constructs executable bid/ask around that reference price. Normal profiles are intentionally tight for prop-style simulated execution, while controlled widening can still occur for volatility, rollover windows and large trade-size liquidity bands:
 
 ```text
 bid = price - spread / 2
