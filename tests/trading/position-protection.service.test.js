@@ -39,6 +39,12 @@ function fixture(overrides = {}) {
     },
     ...overrides.position,
   };
+  const account = {
+    _id: doc.accountId,
+    currency: 'USD',
+    riskPolicy: { allowedSymbols: [], ...(overrides.riskPolicy || {}) },
+    state: { balance: '100000', equity: '100000', freeMargin: '98900', usedMargin: '1100' },
+  };
 
   const eventBus = new EventEmitter();
   const events = [];
@@ -56,7 +62,7 @@ function fixture(overrides = {}) {
   const instrumentModel = {
     findOne() {
       return {
-        session: async () => ({ symbol: 'EURUSD', tickSize: '0.00001', maxQuoteAgeMs: 5000 }),
+        session: async () => ({ symbol: 'EURUSD', tickSize: '0.00001', maxQuoteAgeMs: 5000, contractSize: '100000', quoteCurrency: 'USD', pnlCurrency: 'USD' }),
       };
     },
   };
@@ -72,11 +78,12 @@ function fixture(overrides = {}) {
     logger: { error() {} },
     positionModel,
     instrumentModel,
+    accountModel: { findById: () => ({ session: async () => account }) },
     idempotencyService,
     commandQueue,
     runTransaction: async work => work({}),
   });
-  return { service, doc, events, idempotencyService };
+  return { service, doc, account, events, idempotencyService };
 }
 
 test('updates SL transactionally and emits the shared position update event', async () => {
@@ -135,4 +142,35 @@ test('manual SL mutation disables an active trailing configuration', async () =>
   assert.equal(result.position.trailing.enabled, false);
   assert.equal(result.position.trailing.distancePoints, null);
   assert.equal(result.position.trailing.bestPrice, null);
+});
+
+
+test('firm mandatory-stop policy prevents removing SL from an open position', async () => {
+  const { service, doc } = fixture({ riskPolicy: { requireStopLoss: true } });
+  await assert.rejects(
+    () => service.updateProtection({
+      accountId: String(doc.accountId),
+      positionId: String(doc._id),
+      clientRequestId: 'protect-hard-stop',
+      stopLoss: null,
+      source: 'WEB',
+    }),
+    error => error.code === 'STOP_LOSS_REQUIRED_BY_POLICY',
+  );
+  assert.equal(doc.stopLoss, '1.09');
+});
+
+test('firm per-trade risk cap prevents widening an existing stop beyond the limit', async () => {
+  const { service, doc } = fixture({ riskPolicy: { maxRiskPerTradePercent: '1' } });
+  await assert.rejects(
+    () => service.updateProtection({
+      accountId: String(doc.accountId),
+      positionId: String(doc._id),
+      clientRequestId: 'protect-risk-cap',
+      stopLoss: '1.08',
+      source: 'WEB',
+    }),
+    error => error.code === 'MAX_RISK_PER_TRADE_REACHED',
+  );
+  assert.equal(doc.stopLoss, '1.09');
 });
