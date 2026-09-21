@@ -55,6 +55,13 @@ const PERMANENT_TRIGGER_REJECTIONS = new Set([
   'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
   'MAX_OPEN_POSITIONS_REACHED',
   'MAX_TOTAL_VOLUME_REACHED',
+  'MAX_POSITION_VOLUME_REACHED',
+  'MAX_SYMBOL_VOLUME_REACHED',
+  'STOP_LOSS_REQUIRED_BY_POLICY',
+  'MAX_RISK_PER_TRADE_REACHED',
+  'MAX_AGGREGATE_RISK_REACHED',
+  'AGGREGATE_RISK_UNMEASURABLE',
+  'RISK_POLICY_EQUITY_UNAVAILABLE',
 ]);
 
 class PendingOrderService {
@@ -109,6 +116,12 @@ class PendingOrderService {
         const quoteSnapshot = this.quoteStore.get(normalized.symbol);
         return this.runTransaction(async session => {
           const account = await this.accountModel.findById(normalized.accountId).session(session);
+          await assertPendingOrderLimit({
+            account,
+            orderModel: this.orderModel,
+            accountId: normalized.accountId,
+            session,
+          });
           const instrument = await this.instrumentModel.findOne({ symbol: normalized.symbol }).session(session);
           const plan = planPendingOrder({
             account,
@@ -257,7 +270,11 @@ class PendingOrderService {
         if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
         const instrument = await this.instrumentModel.findOne({ symbol: normalizeSymbol(order.symbol) }).session(session);
         const exposure = hasExposureLimits(account)
-          ? await loadOpenExposure(this.positionModel, accountId, session)
+          ? await loadOpenExposure(this.positionModel, accountId, session, {
+            account,
+            symbol: order.symbol,
+            nowMs: executionNowMs,
+          })
           : null;
 
         let plan;
@@ -465,6 +482,25 @@ function resolveReservation(reservation) {
 function pendingRequestedPrice(order) {
   if (order.type === 'STOP') return order.stopPrice;
   return order.limitPrice;
+}
+
+async function assertPendingOrderLimit({ account, orderModel, accountId, session = null }) {
+  const limit = Number(account?.riskPolicy?.maxPendingOrders);
+  if (!Number.isInteger(limit) || limit <= 0) return;
+
+  let query = orderModel.countDocuments({
+    accountId: String(accountId),
+    status: mongoose.trusted({ $in: ACTIVE_PENDING_STATUSES }),
+  });
+  if (session && typeof query?.session === 'function') query = query.session(session);
+  const currentPendingOrders = Number(await query) || 0;
+  if (currentPendingOrders >= limit) {
+    throw new AppError('Maximum number of pending orders has been reached', {
+      statusCode: 409,
+      code: 'MAX_PENDING_ORDERS_REACHED',
+      details: { currentPendingOrders, maxPendingOrders: limit },
+    });
+  }
 }
 
 function pendingFillRespectsLimit(order, fillPrice) {
