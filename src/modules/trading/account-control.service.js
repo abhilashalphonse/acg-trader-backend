@@ -473,6 +473,9 @@ function normalizeRiskPolicy(policy = {}) {
   const maxTotalVolume = policy?.maxTotalVolume == null ? null : normalizeDecimal(policy.maxTotalVolume);
   const maxRiskPerTradePercent = policy?.maxRiskPerTradePercent == null ? null : normalizeDecimal(policy.maxRiskPerTradePercent);
   const maxAggregateRiskPercent = policy?.maxAggregateRiskPercent == null ? null : normalizeDecimal(policy.maxAggregateRiskPercent);
+  const maxMarginUsagePercent = policy?.maxMarginUsagePercent == null ? null : normalizeDecimal(policy.maxMarginUsagePercent);
+  const maxSingleOrderMarginPercentOfFree = policy?.maxSingleOrderMarginPercentOfFree == null ? null : normalizeDecimal(policy.maxSingleOrderMarginPercentOfFree);
+  const maxSymbolMarginPercentOfPermitted = policy?.maxSymbolMarginPercentOfPermitted == null ? null : normalizeDecimal(policy.maxSymbolMarginPercentOfPermitted);
 
   for (const [field, value] of [
     ['dailyLoss.limit', dailyLimit],
@@ -483,6 +486,9 @@ function normalizeRiskPolicy(policy = {}) {
     ['maxTotalVolume', maxTotalVolume],
     ['maxRiskPerTradePercent', maxRiskPerTradePercent],
     ['maxAggregateRiskPercent', maxAggregateRiskPercent],
+    ['maxMarginUsagePercent', maxMarginUsagePercent],
+    ['maxSingleOrderMarginPercentOfFree', maxSingleOrderMarginPercentOfFree],
+    ['maxSymbolMarginPercentOfPermitted', maxSymbolMarginPercentOfPermitted],
   ]) {
     if (value != null && compareDecimal(value, '0') < 0) {
       throw new AppError(`${field} cannot be negative`, {
@@ -504,13 +510,17 @@ function normalizeRiskPolicy(policy = {}) {
     profitTarget,
     breachAction: String(policy?.breachAction || 'LIQUIDATE_AND_LOCK').toUpperCase(),
     maxOpenPositions: policy?.maxOpenPositions ?? null,
+    maxPositionsPerSymbol: policy?.maxPositionsPerSymbol ?? null,
     maxPendingOrders: policy?.maxPendingOrders ?? null,
+    maxPendingOrdersPerSymbol: policy?.maxPendingOrdersPerSymbol ?? null,
     maxPositionVolume,
     maxSymbolVolume,
     maxTotalVolume,
-    requireStopLoss: policy?.requireStopLoss === true,
     maxRiskPerTradePercent,
     maxAggregateRiskPercent,
+    maxMarginUsagePercent,
+    maxSingleOrderMarginPercentOfFree,
+    maxSymbolMarginPercentOfPermitted,
     allowedSymbols: Array.isArray(policy?.allowedSymbols)
       ? policy.allowedSymbols.map(value => String(value).replace('/', '').toUpperCase())
       : [],

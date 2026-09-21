@@ -314,7 +314,7 @@ test('market execution rejects non-positive and crossed executable books', () =>
 
 test('standard risk policy never forces a stop loss', () => {
   assert.doesNotThrow(() => planMarketOpen({
-    account: account({ riskPolicy: { allowedSymbols: [], requireStopLoss: true } }),
+    account: account({ riskPolicy: { allowedSymbols: [] } }),
     instrument: instrument(),
     quote: quote(),
     side: 'BUY',
@@ -432,4 +432,38 @@ test('1% trade risk is enforced only when the trader supplies a stop loss', () =
     volume: '1',
     nowMs: 10_100,
   }));
+});
+
+
+test('single-order exposure uses remaining capacity inside the 50% margin ceiling', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({
+        state: { ...account().state, usedMargin: '25000', freeMargin: '75000' },
+        riskPolicy: {
+          allowedSymbols: [],
+          maxMarginUsagePercent: '50',
+          maxSingleOrderMarginPercentOfFree: '20',
+          maxSymbolMarginPercentOfPermitted: '100',
+        },
+      }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '5',
+      exposure: {
+        currentOpenPositions: 1,
+        currentSymbolPositions: 0,
+        currentTotalVolume: '1',
+        currentSymbolVolume: '0',
+        currentSymbolMargin: '0',
+        currentOpenRisk: '0',
+        unmeasuredRiskPositions: 1,
+      },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_SINGLE_ORDER_EXPOSURE'
+      && error.details.remainingPermittedMargin === '25000'
+      && Number(error.details.singleOrderMarginPercentOfAvailableCapacity) > 20,
+  );
 });

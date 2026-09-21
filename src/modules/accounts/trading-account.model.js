@@ -22,7 +22,6 @@ const riskPolicySchema = new Schema({
   maxPositionVolume: { type: Decimal128, default: null },
   maxSymbolVolume: { type: Decimal128, default: null },
   maxTotalVolume: { type: Decimal128, default: null },
-  requireStopLoss: { type: Boolean, default: false },
   maxRiskPerTradePercent: { type: Decimal128, default: '1' },
   maxAggregateRiskPercent: { type: Decimal128, default: '2' },
   maxMarginUsagePercent: { type: Decimal128, default: '50' },

@@ -151,7 +151,7 @@ test('expiry wins over a market trigger and stale ticks never fill', () => {
 
 test('pending orders do not force a stop loss and still honor per-position limits', () => {
   assert.doesNotThrow(() => planPendingOrder({
-    account: account({ riskPolicy: { allowedSymbols: [], requireStopLoss: true, maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
+    account: account({ riskPolicy: { allowedSymbols: [], maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
     instrument: instrument(),
     quote: quote(),
     type: 'LIMIT',

@@ -300,6 +300,12 @@ function validateMarginExposure({
   const projectedUsedMargin = addDecimal(usedMargin, margin);
 
   const maxMarginUsagePercent = enabledLimit(account, 'maxMarginUsagePercent');
+  const permittedAccountMargin = maxMarginUsagePercent
+    ? divideDecimal(multiplyDecimal(equity, maxMarginUsagePercent), '100', { scale: 8, rounding: ROUNDING.HALF_UP })
+    : freeMargin;
+  const remainingPermittedMargin = compareDecimal(permittedAccountMargin, usedMargin) > 0
+    ? subtractDecimal(permittedAccountMargin, usedMargin)
+    : '0';
   const projectedMarginUsagePercent = divideDecimal(multiplyDecimal(projectedUsedMargin, '100'), equity, { scale: 8, rounding: ROUNDING.HALF_UP });
   if (maxMarginUsagePercent && compareDecimal(projectedMarginUsagePercent, maxMarginUsagePercent) > 0) {
     throwLimit(`This order would increase margin usage above the ${maxMarginUsagePercent}% ACG limit`, PRE_TRADE_REJECTION_CODES.MAX_MARGIN_USAGE, {
@@ -313,21 +319,27 @@ function validateMarginExposure({
   }
 
   const maxSingleOrderMarginPercentOfFree = enabledLimit(account, 'maxSingleOrderMarginPercentOfFree');
-  let singleOrderMarginPercentOfFree = null;
+  let singleOrderMarginPercentOfAvailableCapacity = null;
   if (maxSingleOrderMarginPercentOfFree) {
-    if (compareDecimal(freeMargin, '0') <= 0) {
-      throwLimit('No available margin capacity remains for new exposure', PRE_TRADE_REJECTION_CODES.MAX_SINGLE_ORDER_EXPOSURE, {
+    if (compareDecimal(remainingPermittedMargin, '0') <= 0) {
+      throwLimit('No permitted margin capacity remains for new exposure', PRE_TRADE_REJECTION_CODES.MAX_SINGLE_ORDER_EXPOSURE, {
         freeMargin,
+        permittedAccountMargin,
+        usedMargin,
+        remainingPermittedMargin,
         requiredMargin: margin,
         maxSingleOrderMarginPercentOfFree,
       });
     }
-    singleOrderMarginPercentOfFree = divideDecimal(multiplyDecimal(margin, '100'), freeMargin, { scale: 8, rounding: ROUNDING.HALF_UP });
-    if (compareDecimal(singleOrderMarginPercentOfFree, maxSingleOrderMarginPercentOfFree) > 0) {
-      throwLimit(`This order exceeds ${maxSingleOrderMarginPercentOfFree}% of available margin capacity`, PRE_TRADE_REJECTION_CODES.MAX_SINGLE_ORDER_EXPOSURE, {
+    singleOrderMarginPercentOfAvailableCapacity = divideDecimal(multiplyDecimal(margin, '100'), remainingPermittedMargin, { scale: 8, rounding: ROUNDING.HALF_UP });
+    if (compareDecimal(singleOrderMarginPercentOfAvailableCapacity, maxSingleOrderMarginPercentOfFree) > 0) {
+      throwLimit(`This order exceeds ${maxSingleOrderMarginPercentOfFree}% of remaining permitted margin capacity`, PRE_TRADE_REJECTION_CODES.MAX_SINGLE_ORDER_EXPOSURE, {
         freeMargin,
+        permittedAccountMargin,
+        usedMargin,
+        remainingPermittedMargin,
         requiredMargin: margin,
-        singleOrderMarginPercentOfFree,
+        singleOrderMarginPercentOfAvailableCapacity,
         maxSingleOrderMarginPercentOfFree,
         accountCurrency: account?.currency || null,
       });
@@ -337,18 +349,17 @@ function validateMarginExposure({
   const maxSymbolMarginPercentOfPermitted = enabledLimit(account, 'maxSymbolMarginPercentOfPermitted');
   let projectedSymbolMarginPercentOfPermitted = null;
   if (maxMarginUsagePercent && maxSymbolMarginPercentOfPermitted && exposure) {
-    const permittedAccountExposure = divideDecimal(multiplyDecimal(equity, maxMarginUsagePercent), '100', { scale: 8, rounding: ROUNDING.HALF_UP });
     const currentSymbolMargin = normalizeDecimal(exposure.currentSymbolMargin ?? '0');
     const projectedSymbolMargin = addDecimal(currentSymbolMargin, margin);
-    if (compareDecimal(permittedAccountExposure, '0') > 0) {
-      projectedSymbolMarginPercentOfPermitted = divideDecimal(multiplyDecimal(projectedSymbolMargin, '100'), permittedAccountExposure, { scale: 8, rounding: ROUNDING.HALF_UP });
+    if (compareDecimal(permittedAccountMargin, '0') > 0) {
+      projectedSymbolMarginPercentOfPermitted = divideDecimal(multiplyDecimal(projectedSymbolMargin, '100'), permittedAccountMargin, { scale: 8, rounding: ROUNDING.HALF_UP });
       if (compareDecimal(projectedSymbolMarginPercentOfPermitted, maxSymbolMarginPercentOfPermitted) > 0) {
-        throwLimit(`This order would exceed the ${maxSymbolMarginPercentOfPermitted}% per-symbol gross exposure limit`, PRE_TRADE_REJECTION_CODES.MAX_SYMBOL_EXPOSURE, {
+        throwLimit(`This order would exceed the ${maxSymbolMarginPercentOfPermitted}% per-symbol margin exposure limit`, PRE_TRADE_REJECTION_CODES.MAX_SYMBOL_EXPOSURE, {
           symbol: normalizeSymbol(symbol),
           currentSymbolMargin,
           requiredMargin: margin,
           projectedSymbolMargin,
-          permittedAccountExposure,
+          permittedAccountMargin,
           projectedSymbolMarginPercentOfPermitted,
           maxSymbolMarginPercentOfPermitted,
           accountCurrency: account?.currency || null,
@@ -359,7 +370,7 @@ function validateMarginExposure({
 
   return Object.freeze({
     projectedMarginUsagePercent,
-    singleOrderMarginPercentOfFree,
+    singleOrderMarginPercentOfAvailableCapacity,
     projectedSymbolMarginPercentOfPermitted,
   });
 }

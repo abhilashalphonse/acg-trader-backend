@@ -245,19 +245,29 @@ test('challenge policy sync can explicitly clear nullable total-volume limit', (
 test('challenge policy sync accepts authoritative execution risk controls', () => {
   const parsed = challengeSyncSchema.parse({
     riskPolicy: {
-      requireStopLoss: true,
       maxRiskPerTradePercent: '1',
       maxAggregateRiskPercent: '2',
+      maxMarginUsagePercent: '50',
+      maxSingleOrderMarginPercentOfFree: '20',
+      maxSymbolMarginPercentOfPermitted: '30',
       maxPositionVolume: '5',
       maxSymbolVolume: '10',
-      maxPendingOrders: 4,
+      maxOpenPositions: 10,
+      maxPositionsPerSymbol: 3,
+      maxPendingOrders: 10,
+      maxPendingOrdersPerSymbol: 3,
     },
   });
 
-  assert.equal(parsed.riskPolicy.requireStopLoss, true);
   assert.equal(parsed.riskPolicy.maxRiskPerTradePercent, '1');
   assert.equal(parsed.riskPolicy.maxAggregateRiskPercent, '2');
+  assert.equal(parsed.riskPolicy.maxMarginUsagePercent, '50');
+  assert.equal(parsed.riskPolicy.maxSingleOrderMarginPercentOfFree, '20');
+  assert.equal(parsed.riskPolicy.maxSymbolMarginPercentOfPermitted, '30');
   assert.equal(parsed.riskPolicy.maxPositionVolume, '5');
   assert.equal(parsed.riskPolicy.maxSymbolVolume, '10');
-  assert.equal(parsed.riskPolicy.maxPendingOrders, 4);
+  assert.equal(parsed.riskPolicy.maxOpenPositions, 10);
+  assert.equal(parsed.riskPolicy.maxPositionsPerSymbol, 3);
+  assert.equal(parsed.riskPolicy.maxPendingOrders, 10);
+  assert.equal(parsed.riskPolicy.maxPendingOrdersPerSymbol, 3);
 });
