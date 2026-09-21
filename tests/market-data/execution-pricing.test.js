@@ -75,5 +75,7 @@ test('volume bands apply deterministic adverse liquidity adjustment without rand
   assert.equal(small.liquidityAdjustmentPoints, 0);
   assert.equal(larger.liquidityAdjustmentPoints, 2);
   assert.ok(larger.price > small.price);
+  assert.equal(larger.executionAsk, larger.price);
+  assert.equal(larger.executionBid, 1.09999);
   assert.equal(larger.volumeBand, 'UP_TO_15');
 });

@@ -133,9 +133,14 @@ function executionPriceForVolume({ quote, instrument, side, volume } = {}) {
 
   const band = volumeBandFor(instrument?.spread?.volumeBands, volume);
   const extraPoints = Math.max(0, numberValue(band?.extraPoints, 0));
+  const adjustedPrice = normalizedSide === 'BUY'
+    ? basePrice + extraPoints * tickSize
+    : basePrice - extraPoints * tickSize;
   return {
     ...baseResult,
-    price: normalizedSide === 'BUY' ? basePrice + extraPoints * tickSize : basePrice - extraPoints * tickSize,
+    price: adjustedPrice,
+    executionBid: normalizedSide === 'SELL' ? adjustedPrice : baseResult.executionBid,
+    executionAsk: normalizedSide === 'BUY' ? adjustedPrice : baseResult.executionAsk,
     liquidityAdjustmentPoints: extraPoints,
     volumeBand: bandLabel(band),
   };
