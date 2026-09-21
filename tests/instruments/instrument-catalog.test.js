@@ -62,7 +62,7 @@ test('core launch symbols preserve EURUSD and XAUUSD execution specifications', 
   assert.equal(xauusd.contractSize, '100');
   assert.equal(xauusd.volumeStep, '0.01');
   assert.equal(xauusd.spread.mode, 'DYNAMIC');
-  assert.equal(xauusd.spread.normalPoints, '20');
+  assert.equal(xauusd.spread.normalPoints, '10');
   assert.equal(xauusd.commissionPerLotPerSide, '2.5');
 });
 
@@ -81,4 +81,25 @@ test('alt crypto receives a wider hard freshness window than major crypto', () =
   assert.equal(btc.maxQuoteAgeMs, 35000);
   assert.equal(aave.softQuoteAgeMs, 15000);
   assert.equal(aave.maxQuoteAgeMs, 60000);
+});
+
+
+test('tight spread policy is applied across non-FX asset classes', () => {
+  const expected = {
+    XAUUSD: '10',
+    WTIUSD: '10',
+    US500: '10',
+    US100: '40',
+    US30: '80',
+    AAPL: '1',
+    BTCUSD: '200',
+    ETHUSD: '20',
+  };
+
+  for (const [symbol, normalPoints] of Object.entries(expected)) {
+    const instrument = ACG_INSTRUMENT_CATALOG.find(item => item.symbol === symbol);
+    assert.ok(instrument, symbol);
+    assert.equal(instrument.spread.mode, 'DYNAMIC', symbol);
+    assert.equal(instrument.spread.normalPoints, normalPoints, symbol);
+  }
 });
