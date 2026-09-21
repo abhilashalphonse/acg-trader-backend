@@ -11,10 +11,19 @@ function positiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
-function trailingProviderGap(bars) {
+function trailingPositiveRun(bars, selector) {
   let count = 0;
   for (let index = bars.length - 1; index >= 0; index -= 1) {
-    if (positiveNumber(bars[index]?.providerVolume) != null) break;
+    if (positiveNumber(selector(bars[index])) == null) break;
+    count += 1;
+  }
+  return count;
+}
+
+function trailingMissingRun(bars, selector) {
+  let count = 0;
+  for (let index = bars.length - 1; index >= 0; index -= 1) {
+    if (positiveNumber(selector(bars[index])) != null) break;
     count += 1;
   }
   return count;
@@ -36,15 +45,31 @@ function chooseVolumeMode(bars) {
   const recent = usable.slice(-24);
   const recentProviderPositive = recent.filter(bar => positiveNumber(bar.providerVolume) != null).length;
   const recentProviderCoverage = recentProviderPositive / recent.length;
-  const recentTrailingGap = trailingProviderGap(recent);
+  const recentProviderGap = trailingMissingRun(recent, bar => bar.providerVolume);
   const providerHealthy = providerPositive >= 2
     && providerCoverage >= 0.5
     && recentProviderPositive >= Math.min(2, recent.length)
     && recentProviderCoverage >= 0.65
-    && recentTrailingGap <= 2;
+    && recentProviderGap <= 2;
 
   if (providerHealthy) return 'provider';
-  if (tickPositive > 0) return 'tick';
+
+  // Tick volume is only trustworthy when it is recent too. Persisted tick
+  // history can contain an old healthy block followed by a long server/feed
+  // gap; selecting tick mode from any historical positive value produces the
+  // same misleading "old bars + one live spike" pattern as broken provider
+  // volume. Allow tick mode after a small, contiguous recent run so it can
+  // recover quickly after a restart without waiting for the entire window.
+  const recentTickWindow = usable.slice(-8);
+  const recentTickPositive = recentTickWindow.filter(bar => positiveNumber(bar.tickCount) != null).length;
+  const recentTickCoverage = recentTickPositive / recentTickWindow.length;
+  const trailingTickRun = trailingPositiveRun(recentTickWindow, bar => bar.tickCount);
+  const tickHealthy = tickPositive >= 3
+    && recentTickPositive >= Math.min(3, recentTickWindow.length)
+    && recentTickCoverage >= 0.5
+    && trailingTickRun >= Math.min(3, recentTickWindow.length);
+
+  if (tickHealthy) return 'tick';
   return 'unavailable';
 }
 

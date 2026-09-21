@@ -55,3 +55,34 @@ test('ignores an incomplete current bar when assessing provider-volume continuit
 
   assert.equal(chooseVolumeMode(bars), 'provider');
 });
+
+
+test('does not select stale tick history followed by a long recent gap', () => {
+  const bars = [
+    ...Array.from({ length: 40 }, (_, index) => bar(0, 20 + index)),
+    ...Array.from({ length: 40 }, () => bar(0, 0)),
+  ];
+
+  assert.equal(chooseVolumeMode(bars), 'unavailable');
+});
+
+test('tick volume recovers after three contiguous recent completed bars', () => {
+  const bars = [
+    ...Array.from({ length: 40 }, () => bar(0, 0)),
+    bar(0, 12),
+    bar(0, 14),
+    bar(0, 11),
+  ];
+
+  assert.equal(chooseVolumeMode(bars), 'tick');
+});
+
+test('a single isolated recent tick bar after a gap is not enough to enable tick mode', () => {
+  const bars = [
+    ...Array.from({ length: 30 }, (_, index) => bar(0, 30 + index)),
+    ...Array.from({ length: 10 }, () => bar(0, 0)),
+    bar(0, 9),
+  ];
+
+  assert.equal(chooseVolumeMode(bars), 'unavailable');
+});
