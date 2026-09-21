@@ -180,12 +180,17 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
         accepted.quotes.push(symbol);
       } else {
         if (state.quotes.delete(symbol)) runtime.releasePriority?.(symbol);
+        cancelScheduled(state.quotePending, state.quoteTimers, symbol);
         accepted.quotes.push(symbol);
       }
     }
     for (const symbol of requested.ticks) {
       if (!runtime.symbols.includes(symbol)) rejected.push({ channel: 'tick', symbol, reason: 'SYMBOL_NOT_CONFIGURED' });
-      else { state.ticks[action === 'subscribe' ? 'add' : 'delete'](symbol); accepted.ticks.push(symbol); }
+      else {
+        state.ticks[action === 'subscribe' ? 'add' : 'delete'](symbol);
+        if (action === 'subscribe') cancelScheduled(state.quotePending, state.quoteTimers, symbol);
+        accepted.ticks.push(symbol);
+      }
     }
     for (const item of requested.candles) {
       if (!runtime.symbols.includes(item.symbol)) rejected.push({ channel: 'candle', ...item, reason: 'SYMBOL_NOT_CONFIGURED' });
@@ -202,6 +207,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       for (const accountId of accepted.accounts) {
         state.syncingAccounts.delete(accountId);
         state.pendingAccountEvents = state.pendingAccountEvents.filter(item => item.accountId !== accountId);
+        cancelScheduled(state.valuationPending, state.valuationTimers, accountId);
       }
     }
   }
@@ -263,6 +269,13 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     state.valuationTimers.clear();
     state.quotePending.clear();
     state.valuationPending.clear();
+  }
+
+  function cancelScheduled(pendingMap, timerMap, key) {
+    const timer = timerMap.get(key);
+    if (timer) clearTimeout(timer);
+    timerMap.delete(key);
+    pendingMap.delete(key);
   }
 
   function scheduleLatest(state, pendingMap, timerMap, key, delayMs, callback) {
