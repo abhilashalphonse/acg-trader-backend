@@ -26,6 +26,7 @@ class ProviderHistoryCache {
     this.entries = new Map();
     this.inFlight = new Map();
     this.totalBars = 0;
+    this.generation = 0;
     this.counters = {
       hits: 0,
       misses: 0,
@@ -56,6 +57,7 @@ class ProviderHistoryCache {
         continue;
       }
 
+      const loadGeneration = this.generation;
       let promise;
       promise = Promise.resolve()
         .then(() => {
@@ -64,7 +66,12 @@ class ProviderHistoryCache {
         })
         .then(result => {
           const bars = Array.isArray(result) ? result : [];
-          if (bars.length) this.#set(cacheKey, timeframe, requestedLimit, bars);
+          // A provider disconnect clears the cache while old REST requests may
+          // still be resolving. Never let a pre-outage response repopulate the
+          // post-recovery cache after that invalidation.
+          if (bars.length && loadGeneration === this.generation) {
+            this.#set(cacheKey, timeframe, requestedLimit, bars);
+          }
           return bars;
         })
         .finally(() => {
@@ -91,6 +98,7 @@ class ProviderHistoryCache {
   }
 
   clear() {
+    this.generation += 1;
     this.entries.clear();
     this.inFlight.clear();
     this.totalBars = 0;

@@ -141,3 +141,48 @@ test('does not cache failed provider requests', async () => {
   assert.equal(attempts, 2);
   assert.equal(cache.stats().entries, 1);
 });
+
+
+test('cache clear prevents pre-outage in-flight history from repopulating cache', async () => {
+  let release;
+  let loads = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const cache = new ProviderHistoryCache();
+
+  const first = cache.getOrLoad({
+    key: 'XAU/USD:5m',
+    timeframe: '5m',
+    limit: 160,
+    load: async () => {
+      loads += 1;
+      await gate;
+      return bars(160);
+    },
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cache.stats().inFlight, 1);
+
+  cache.clear();
+  assert.equal(cache.stats().entries, 0);
+  assert.equal(cache.stats().inFlight, 0);
+
+  release();
+  const staleResult = await first;
+  assert.equal(staleResult.length, 160);
+  assert.equal(cache.stats().entries, 0);
+
+  const refreshed = await cache.getOrLoad({
+    key: 'XAU/USD:5m',
+    timeframe: '5m',
+    limit: 160,
+    load: async () => {
+      loads += 1;
+      return bars(160, 50_000_000);
+    },
+  });
+
+  assert.equal(refreshed.length, 160);
+  assert.equal(loads, 2);
+  assert.equal(cache.stats().entries, 1);
+});
