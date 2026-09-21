@@ -44,6 +44,7 @@ function createHarness() {
     symbol: 'EURUSD',
     configured: true,
     providerSymbol: 'EUR/USD',
+    assetClass: 'FOREX',
     tickSize: 0.00001,
     softQuoteAgeMs: 5000,
     maxQuoteAgeMs: 30000,
