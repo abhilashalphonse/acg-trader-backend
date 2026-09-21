@@ -55,6 +55,8 @@ const schema = z.object({
   MARKET_WS_PATH: z.string().min(1).default('/v1/ws'),
   MARKET_WS_PING_INTERVAL_MS: positiveInt(30000),
   MARKET_WS_MAX_BUFFER_BYTES: positiveInt(1048576),
+  MARKET_WS_QUOTE_COALESCE_MS: positiveInt(250),
+  MARKET_WS_VALUATION_COALESCE_MS: positiveInt(250),
   TWELVE_DATA_API_KEY: z.string().optional(),
   TWELVE_DATA_WS_URL: z.string().url().default('wss://ws.twelvedata.com/v1/quotes/price'),
   TWELVE_DATA_API_BASE: z.string().url().default('https://api.twelvedata.com'),
@@ -158,6 +160,8 @@ const env = Object.freeze({
     wsPath: raw.MARKET_WS_PATH,
     wsPingIntervalMs: raw.MARKET_WS_PING_INTERVAL_MS,
     wsMaxBufferBytes: raw.MARKET_WS_MAX_BUFFER_BYTES,
+    wsQuoteCoalesceMs: raw.MARKET_WS_QUOTE_COALESCE_MS,
+    wsValuationCoalesceMs: raw.MARKET_WS_VALUATION_COALESCE_MS,
   }),
   twelveData: Object.freeze({
     apiKey: raw.TWELVE_DATA_API_KEY || null,
