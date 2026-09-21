@@ -13,6 +13,7 @@ const {
   validateInstrumentForOpen,
   validateVolume,
 } = require('./execution-planner');
+const { validatePerOrderRiskPolicy } = require('./firm-risk-policy');
 
 const PENDING_TYPES = Object.freeze(['LIMIT', 'STOP', 'STOP_LIMIT']);
 const PENDING_STATUSES = Object.freeze(['PENDING', 'TRIGGERED']);
@@ -32,6 +33,7 @@ function planPendingOrder({
   timeInForce = 'GTC',
   expiresAt = null,
   nowMs = Date.now(),
+  currencyConverter = null,
 }) {
   validateAccountForOpen(account, instrument?.symbol, nowMs);
   validateInstrumentForOpen(instrument);
@@ -60,6 +62,16 @@ function planPendingOrder({
     referencePrice: protectionReference,
     stopLoss: normalizedStopLoss,
     takeProfit: normalizedTakeProfit,
+  });
+  validatePerOrderRiskPolicy({
+    account,
+    instrument,
+    side: normalizedSide,
+    entryPrice: protectionReference,
+    volume: normalizedVolume,
+    stopLoss: normalizedStopLoss,
+    currencyConverter,
+    nowMs,
   });
 
   const expiry = resolveExpiry({
