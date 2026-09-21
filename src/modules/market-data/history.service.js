@@ -141,7 +141,7 @@ class MarketHistoryService {
   }
 
   async #loadLocal(symbol, timeframe, limit) {
-    return Candle.find({ symbol, timeframe })
+    return Candle.find({ symbol, timeframe, synthetic: { $ne: true } })
       .sort({ openTime: -1 })
       .limit(limit)
       .lean();

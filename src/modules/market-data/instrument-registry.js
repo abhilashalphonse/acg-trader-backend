@@ -3,6 +3,18 @@
 const { Instrument } = require('../instruments/instrument.model');
 const { normalizeSymbol, defaultTwelveDataSymbol, decimalToNumber, mapValue } = require('./market.utils');
 
+function freezeSessions(value) {
+  return Object.freeze((Array.isArray(value) ? value : []).map(session => Object.freeze({
+    days: Object.freeze((Array.isArray(session?.days) ? session.days : []).map(Number).filter(Number.isInteger)),
+    open: String(session?.open || ''),
+    close: String(session?.close || ''),
+  })));
+}
+
+function freezeHolidays(value) {
+  return Object.freeze((Array.isArray(value) ? value : []).map(String));
+}
+
 class InstrumentRegistry {
   constructor({ symbols, defaultMaxQuoteAgeMs, logger }) {
     this.symbols = symbols.map(normalizeSymbol);
@@ -40,6 +52,9 @@ class InstrumentRegistry {
         providerSymbol: defaultTwelveDataSymbol(symbol),
         tickSize: null,
         assetClass: null,
+        tradingSessions: Object.freeze([]),
+        tradingHolidays: Object.freeze([]),
+        timezone: 'UTC',
         softQuoteAgeMs: Math.max(1000, Math.round(this.defaultMaxQuoteAgeMs * 0.4)),
         maxQuoteAgeMs: this.defaultMaxQuoteAgeMs,
         spread: Object.freeze({
@@ -70,6 +85,9 @@ class InstrumentRegistry {
       providerSymbol,
       tickSize: decimalToNumber(doc.tickSize),
       assetClass: doc.assetClass || null,
+      tradingSessions: freezeSessions(doc.tradingSessions),
+      tradingHolidays: freezeHolidays(doc.tradingHolidays),
+      timezone: String(doc.timezone || 'UTC'),
       softQuoteAgeMs: Math.min(
         Number(doc.maxQuoteAgeMs) || this.defaultMaxQuoteAgeMs,
         Number(doc.softQuoteAgeMs) || Math.max(1000, Math.round((Number(doc.maxQuoteAgeMs) || this.defaultMaxQuoteAgeMs) * 0.4)),

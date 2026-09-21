@@ -4,6 +4,11 @@ const { Candle } = require('./candle.model');
 const { TIMEFRAME_MS, candleBucketOpenTimeMs } = require('./market.constants');
 const { normalizeSymbol, resolveCandleVolume, serializeCandle } = require('./market.utils');
 const { candleExpiresAt } = require('./candle-retention');
+const { isInstrumentSessionOpen } = require('../instruments/session-calendar');
+
+// Synthetic continuity is intentionally limited to short intraday charts.
+// H1/H4/D1/W1 must represent real provider/tick OHLC only.
+const DEFAULT_SYNTHETIC_TIMEFRAMES = Object.freeze(['1s', '5s', '15s', '30s', '1m', '5m', '15m', '30m']);
 
 async function persistCandleToMongo(candle) {
   const openTime = new Date(candle.openTimeMs);
@@ -38,6 +43,8 @@ class CandleEngine {
     flushIntervalMs,
     maxSyntheticGapBars,
     logger,
+    instrumentRegistry = null,
+    syntheticTimeframes = DEFAULT_SYNTHETIC_TIMEFRAMES,
     persistCandle = persistCandleToMongo,
   }) {
     this.eventBus = eventBus;
@@ -46,6 +53,8 @@ class CandleEngine {
     this.flushIntervalMs = flushIntervalMs;
     this.maxSyntheticGapBars = maxSyntheticGapBars;
     this.logger = logger;
+    this.instrumentRegistry = instrumentRegistry;
+    this.syntheticTimeframes = new Set(syntheticTimeframes || []);
     this.persistCandle = persistCandle;
     this.states = new Map();
     this.pendingWrites = new Set();
@@ -148,9 +157,9 @@ class CandleEngine {
         this.#closeCurrent(state);
         safety += 1;
 
-        if (!this.#canCreateLiveSynthetic(state.symbol, state)) break;
         const nextOpenTimeMs = state.lastClosedOpenTimeMs + stepMs;
         if (nextOpenTimeMs > nowMs) break;
+        if (!this.#canCreateLiveSynthetic(state.symbol, state, nextOpenTimeMs)) break;
 
         state.current = this.#syntheticCurrent(state.symbol, state.timeframe, stepMs, nextOpenTimeMs, state.lastClose);
         this.#emitUpdate(state.current);
@@ -273,6 +282,7 @@ class CandleEngine {
   }
 
   #fillShortGap(state, symbol, timeframe, stepMs, targetBucket) {
+    if (!this.syntheticTimeframes.has(timeframe)) return;
     if (state.lastClosedOpenTimeMs == null || state.lastClose == null) return;
     const firstMissing = state.lastClosedOpenTimeMs + stepMs;
     if (targetBucket <= firstMissing) return;
@@ -281,6 +291,7 @@ class CandleEngine {
 
     for (let index = 0; index < missingBars; index += 1) {
       const openTimeMs = firstMissing + index * stepMs;
+      if (!this.#syntheticSessionOpen(symbol, timeframe, openTimeMs)) continue;
       const synthetic = {
         ...this.#syntheticCurrent(symbol, timeframe, stepMs, openTimeMs, state.lastClose),
         complete: true,
@@ -289,12 +300,30 @@ class CandleEngine {
     }
   }
 
-  #canCreateLiveSynthetic(symbol, state) {
+  #canCreateLiveSynthetic(symbol, state, openTimeMs) {
     return this.symbolFeedLive.get(symbol) === true
       && !this.continuityBroken.has(symbol)
       && state.lastClose != null
       && state.lastClosedOpenTimeMs != null
-      && state.consecutiveSyntheticClosed < this.maxSyntheticGapBars;
+      && state.consecutiveSyntheticClosed < this.maxSyntheticGapBars
+      && this.#syntheticSessionOpen(symbol, state.timeframe, openTimeMs);
+  }
+
+  #syntheticSessionOpen(symbol, timeframe, openTimeMs) {
+    if (!this.syntheticTimeframes.has(timeframe) || this.maxSyntheticGapBars <= 0) return false;
+
+    // Never fabricate continuity for an unconfigured instrument because there
+    // is no authoritative session calendar to distinguish quiet trading from
+    // a closed market.
+    const instrument = this.instrumentRegistry?.get?.(symbol);
+    if (!instrument?.configured) return false;
+
+    try {
+      return isInstrumentSessionOpen(instrument, openTimeMs);
+    } catch (error) {
+      this.logger?.warn?.({ err: error, symbol, timeframe, openTimeMs }, 'Synthetic candle session check failed');
+      return false;
+    }
   }
 
   #closeCurrent(state) {
@@ -318,7 +347,9 @@ class CandleEngine {
     const publicCandle = serializeCandle(candle);
     this.eventBus.emit('market.candle.closed', publicCandle);
 
-    if (this.persistTimeframes.has(candle.timeframe)) {
+    // Synthetic carry-forward bars are display continuity only. Persisting
+    // them turns a temporary no-tick interval into fake durable market history.
+    if (!candle.synthetic && this.persistTimeframes.has(candle.timeframe)) {
       const write = Promise.resolve(this.persistCandle(candle))
         .catch(error => this.logger.error({ err: error, symbol: candle.symbol, timeframe: candle.timeframe }, 'Failed to persist closed market candle'))
         .finally(() => this.pendingWrites.delete(write));

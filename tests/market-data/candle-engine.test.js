@@ -5,7 +5,22 @@ const assert = require('node:assert/strict');
 const EventEmitter = require('events');
 const { CandleEngine } = require('../../src/modules/market-data/candle-engine');
 
-const logger = { error() {} };
+const logger = { error() {}, warn() {} };
+
+function alwaysOpenRegistry(overrides = {}) {
+  const instrument = {
+    symbol: 'EURUSD',
+    configured: true,
+    status: 'ACTIVE',
+    timezone: 'UTC',
+    tradingSessions: [],
+    tradingHolidays: [],
+    ...overrides,
+  };
+  return {
+    get(symbol) { return symbol === 'EURUSD' ? instrument : null; },
+  };
+}
 
 function tick(timeMs, price) {
   return { symbol: 'EURUSD', timeMs, price, source: 'test' };
@@ -18,6 +33,7 @@ function createEngine(bus) {
     persistTimeframes: [],
     flushIntervalMs: 100000,
     maxSyntheticGapBars: 12,
+    instrumentRegistry: alwaysOpenRegistry(),
     logger,
     persistCandle: async () => {},
   });
@@ -242,6 +258,7 @@ test('anchors weekly candles to Monday 00:00 UTC instead of Unix-epoch Thursday'
     persistTimeframes: [],
     flushIntervalMs: 100000,
     maxSyntheticGapBars: 12,
+    instrumentRegistry: alwaysOpenRegistry(),
     logger,
     persistCandle: async () => {},
   });
@@ -358,4 +375,116 @@ test('synthetic gaps break unavailable-to-tick recovery continuity', () => {
 
   const current = engine.getCurrent('EURUSD', '5s');
   assert.equal(current.volumeMode, 'unavailable');
+});
+
+
+test('does not manufacture synthetic H4 candles when a higher-timeframe boundary passes', () => {
+  const bus = new EventEmitter();
+  const closed = [];
+  bus.on('market.candle.closed', candle => closed.push(candle));
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['4h'],
+    persistTimeframes: [],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 12,
+    instrumentRegistry: alwaysOpenRegistry(),
+    logger,
+    persistCandle: async () => {},
+  });
+
+  const firstTick = Date.UTC(2026, 8, 18, 0, 10, 0);
+  engine.processTick(tick(firstTick, 4345));
+  engine.flushExpired(Date.UTC(2026, 8, 18, 4, 0, 0));
+
+  assert.equal(closed.length, 1);
+  assert.equal(closed[0].synthetic, false);
+  assert.equal(engine.getCurrent('EURUSD', '4h'), null);
+});
+
+test('does not create intraday synthetic candles after the configured market session closes', () => {
+  const bus = new EventEmitter();
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['1m'],
+    persistTimeframes: [],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 12,
+    instrumentRegistry: alwaysOpenRegistry({
+      tradingSessions: [{ days: [5], open: '00:00', close: '22:00' }],
+    }),
+    logger,
+    persistCandle: async () => {},
+  });
+
+  engine.processTick(tick(Date.UTC(2026, 8, 18, 21, 59, 30), 4345));
+  engine.flushExpired(Date.UTC(2026, 8, 18, 22, 0, 0));
+
+  assert.equal(engine.getCurrent('EURUSD', '1m'), null);
+});
+
+test('keeps short intraday synthetic continuity while the configured session is open', () => {
+  const bus = new EventEmitter();
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['1m'],
+    persistTimeframes: [],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 12,
+    instrumentRegistry: alwaysOpenRegistry({
+      tradingSessions: [{ days: [5], open: '00:00', close: '22:00' }],
+    }),
+    logger,
+    persistCandle: async () => {},
+  });
+
+  engine.processTick(tick(Date.UTC(2026, 8, 18, 12, 0, 30), 4345));
+  engine.flushExpired(Date.UTC(2026, 8, 18, 12, 1, 0));
+
+  const current = engine.getCurrent('EURUSD', '1m');
+  assert.ok(current);
+  assert.equal(current.openTimeMs, Date.UTC(2026, 8, 18, 12, 1, 0));
+  assert.equal(current.synthetic, true);
+  assert.equal(current.tickCount, 0);
+});
+
+test('never persists synthetic carry-forward candles', () => {
+  const bus = new EventEmitter();
+  const persisted = [];
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['5s'],
+    persistTimeframes: ['5s'],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 12,
+    instrumentRegistry: alwaysOpenRegistry(),
+    logger,
+    persistCandle: async candle => { persisted.push(candle); },
+  });
+
+  engine.processTick(tick(1000, 1.1));
+  engine.flushExpired(10000);
+
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].synthetic, false);
+  assert.equal(persisted[0].openTimeMs, 0);
+});
+
+test('refuses synthetic candles when session metadata is not configured', () => {
+  const bus = new EventEmitter();
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['1m'],
+    persistTimeframes: [],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 12,
+    instrumentRegistry: alwaysOpenRegistry({ configured: false }),
+    logger,
+    persistCandle: async () => {},
+  });
+
+  engine.processTick(tick(Date.UTC(2026, 8, 18, 12, 0, 30), 4345));
+  engine.flushExpired(Date.UTC(2026, 8, 18, 12, 1, 0));
+
+  assert.equal(engine.getCurrent('EURUSD', '1m'), null);
 });
