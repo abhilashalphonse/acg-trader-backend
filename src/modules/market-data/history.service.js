@@ -9,7 +9,6 @@ const {
 } = require('./market.constants');
 const { normalizeSymbol, serializeCandle, clampInteger } = require('./market.utils');
 const { AppError } = require('../../shared/errors/app-error');
-const { candleExpiresAt } = require('./candle-retention');
 
 function positiveNumber(value) {
   const number = Number(value);
@@ -84,10 +83,9 @@ function applyVolumeMode(bars, mode) {
 }
 
 class MarketHistoryService {
-  constructor({ adapter, instrumentRegistry, persistTimeframes = [], logger }) {
+  constructor({ adapter, instrumentRegistry, persistTimeframes: _persistTimeframes = [], logger }) {
     this.adapter = adapter;
     this.instrumentRegistry = instrumentRegistry;
-    this.persistTimeframes = new Set(persistTimeframes);
     this.logger = logger;
   }
 
@@ -102,9 +100,10 @@ class MarketHistoryService {
         const providerSymbol = this.instrumentRegistry.providerSymbol(canonical);
         const providerBars = await this.adapter.fetchHistorical({ providerSymbol, timeframe, limit: safeLimit });
         if (providerBars.length) {
-          if (this.persistTimeframes.has(timeframe)) {
-            await this.#persistBackfill(canonical, timeframe, providerBars);
-          }
+          // Provider history is authoritative chart data, not durable ACG state.
+          // Return it directly and keep MongoDB reserved for locally observed
+          // live candles/tick metadata. This prevents chart reads from growing
+          // the candle collection while preserving identical chart output.
           return this.#serializeProviderBars(canonical, timeframe, providerBars, safeLimit, localByOpenTime);
         }
       } catch (error) {
@@ -155,42 +154,6 @@ class MarketHistoryService {
     return Candle.find(filter).sort({ openTime: -1 }).limit(limit).lean();
   }
 
-  async #persistBackfill(symbol, timeframe, bars) {
-    const stepMs = TIMEFRAME_MS[timeframe];
-    if (!stepMs || !bars.length) return;
-
-    const now = Date.now();
-    const completedBars = bars.filter(bar => Number(bar.openTimeMs) + stepMs <= now);
-    if (!completedBars.length) return;
-
-    const operations = completedBars.map(bar => {
-      const openTime = new Date(bar.openTimeMs);
-      return {
-        updateOne: {
-          filter: { symbol, timeframe, openTime },
-          update: {
-            $set: {
-              closeTime: new Date(bar.openTimeMs + stepMs),
-              open: String(bar.open),
-              high: String(bar.high),
-              low: String(bar.low),
-              close: String(bar.close),
-              providerVolume: bar.providerVolume == null ? null : String(bar.providerVolume),
-              complete: true,
-              synthetic: false,
-              source: bar.canonicalUtc ? 'CANONICAL_BACKFILL' : 'BACKFILL',
-              provider: 'twelve-data',
-              expiresAt: candleExpiresAt(timeframe, bar.openTimeMs),
-            },
-            $setOnInsert: { symbol, timeframe, openTime, tickCount: 0 },
-          },
-          upsert: true,
-        },
-      };
-    });
-
-    await Candle.bulkWrite(operations, { ordered: false });
-  }
 }
 
 module.exports = { MarketHistoryService, chooseVolumeMode };
