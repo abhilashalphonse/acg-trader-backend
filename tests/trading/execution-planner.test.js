@@ -229,7 +229,7 @@ test('market execution enforces maximum open positions', () => {
       exposure: { currentOpenPositions: 2, currentTotalVolume: '1.5' },
       nowMs: 10_100,
     }),
-    error => error.code === 'MAX_OPEN_POSITIONS_REACHED',
+    error => error.code === 'MAX_OPEN_POSITIONS',
   );
 });
 
@@ -297,18 +297,15 @@ test('market execution rejects non-positive and crossed executable books', () =>
 });
 
 
-test('server risk policy requires stop loss when configured', () => {
-  assert.throws(
-    () => planMarketOpen({
-      account: account({ riskPolicy: { allowedSymbols: [], requireStopLoss: true } }),
-      instrument: instrument(),
-      quote: quote(),
-      side: 'BUY',
-      volume: '1',
-      nowMs: 10_100,
-    }),
-    error => error.code === 'STOP_LOSS_REQUIRED_BY_POLICY',
-  );
+test('standard risk policy never forces a stop loss', () => {
+  assert.doesNotThrow(() => planMarketOpen({
+    account: account({ riskPolicy: { allowedSymbols: [], requireStopLoss: true } }),
+    instrument: instrument(),
+    quote: quote(),
+    side: 'BUY',
+    volume: '1',
+    nowMs: 10_100,
+  }));
 });
 
 test('server risk policy rejects per-position and per-trade risk excess', () => {
@@ -335,7 +332,7 @@ test('server risk policy rejects per-position and per-trade risk excess', () => 
       stopLoss: '1.08',
       nowMs: 10_100,
     }),
-    error => error.code === 'MAX_RISK_PER_TRADE_REACHED',
+    error => error.code === 'MAX_TRADE_RISK',
   );
 });
 
@@ -365,6 +362,59 @@ test('server risk policy rejects projected symbol volume and aggregate stop risk
       exposure: { currentOpenPositions: 1, currentTotalVolume: '1', currentSymbolVolume: '1', currentOpenRisk: '1000', unmeasuredRiskPositions: 0 },
       nowMs: 10_100,
     }),
-    error => error.code === 'MAX_AGGREGATE_RISK_REACHED',
+    error => error.code === 'MAX_AGGREGATE_RISK',
   );
+});
+
+
+test('standard ACG policy enforces position, margin and exposure caps', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxPositionsPerSymbol: 3 } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      exposure: { currentOpenPositions: 3, currentSymbolPositions: 3, currentTotalVolume: '3', currentSymbolVolume: '3', currentSymbolMargin: '3300', currentOpenRisk: '0', unmeasuredRiskPositions: 3 },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_SYMBOL_POSITIONS',
+  );
+
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ state: { ...account().state, usedMargin: '49000', freeMargin: '51000' }, riskPolicy: { allowedSymbols: [], maxMarginUsagePercent: '50', maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      exposure: { currentOpenPositions: 1, currentSymbolPositions: 0, currentTotalVolume: '1', currentSymbolVolume: '0', currentSymbolMargin: '0', currentOpenRisk: '0', unmeasuredRiskPositions: 1 },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_MARGIN_USAGE',
+  );
+
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxSingleOrderMarginPercentOfFree: '1', maxSymbolMarginPercentOfPermitted: '100' } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      exposure: { currentOpenPositions: 0, currentSymbolPositions: 0, currentTotalVolume: '0', currentSymbolVolume: '0', currentSymbolMargin: '0', currentOpenRisk: '0', unmeasuredRiskPositions: 0 },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_SINGLE_ORDER_EXPOSURE',
+  );
+});
+
+test('1% trade risk is enforced only when the trader supplies a stop loss', () => {
+  assert.doesNotThrow(() => planMarketOpen({
+    account: account({ riskPolicy: { allowedSymbols: [], maxRiskPerTradePercent: '1', maxAggregateRiskPercent: '2', maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
+    instrument: instrument(),
+    quote: quote(),
+    side: 'BUY',
+    volume: '1',
+    nowMs: 10_100,
+  }));
 });

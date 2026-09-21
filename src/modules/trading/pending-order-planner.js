@@ -12,8 +12,9 @@ const {
   validateAccountForOpen,
   validateInstrumentForOpen,
   validateVolume,
+  calculateRequiredMargin,
 } = require('./execution-planner');
-const { validatePerOrderRiskPolicy } = require('./firm-risk-policy');
+const { validatePreTradeRiskPolicy } = require('./firm-risk-policy');
 
 const PENDING_TYPES = Object.freeze(['LIMIT', 'STOP', 'STOP_LIMIT']);
 const PENDING_STATUSES = Object.freeze(['PENDING', 'TRIGGERED']);
@@ -34,6 +35,8 @@ function planPendingOrder({
   expiresAt = null,
   nowMs = Date.now(),
   currencyConverter = null,
+  exposure = null,
+  pendingExposure = null,
 }) {
   validateAccountForOpen(account, instrument?.symbol, nowMs);
   validateInstrumentForOpen(instrument);
@@ -63,13 +66,26 @@ function planPendingOrder({
     stopLoss: normalizedStopLoss,
     takeProfit: normalizedTakeProfit,
   });
-  validatePerOrderRiskPolicy({
+  const projectedRequiredMargin = calculateRequiredMargin({
     account,
     instrument,
+    volume: normalizedVolume,
+    fillPrice: protectionReference,
+    currencyConverter,
+    nowMs,
+  });
+  validatePreTradeRiskPolicy({
+    account,
+    instrument,
+    symbol: instrument.symbol,
     side: normalizedSide,
     entryPrice: protectionReference,
     volume: normalizedVolume,
     stopLoss: normalizedStopLoss,
+    requiredMargin: projectedRequiredMargin,
+    exposure,
+    pendingExposure,
+    orderKind: 'PENDING_PLACEMENT',
     currencyConverter,
     nowMs,
   });

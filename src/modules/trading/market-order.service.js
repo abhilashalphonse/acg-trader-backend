@@ -591,13 +591,15 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
   const filter = { accountId: String(accountId), status: 'OPEN' };
   if (excludePositionId) filter._id = mongoose.trusted({ $ne: String(excludePositionId) });
   let query = positionModel.find(filter)
-    .select('symbol side openVolume entryPrice stopLoss contractSize quoteCurrency')
+    .select('symbol side openVolume entryPrice stopLoss contractSize quoteCurrency margin')
     .lean();
   if (session) query = query.session(session);
   const positions = await query;
   const targetSymbol = normalizeSymbol(symbol);
   let currentTotalVolume = '0';
   let currentSymbolVolume = '0';
+  let currentSymbolMargin = '0';
+  let currentSymbolPositions = 0;
   let currentOpenRisk = '0';
   let unmeasuredRiskPositions = 0;
   const aggregateRiskEnabled = account?.riskPolicy?.maxAggregateRiskPercent != null
@@ -608,6 +610,8 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
     currentTotalVolume = addDecimal(currentTotalVolume, openVolume);
     if (targetSymbol && normalizeSymbol(position.symbol) === targetSymbol) {
       currentSymbolVolume = addDecimal(currentSymbolVolume, openVolume);
+      currentSymbolMargin = addDecimal(currentSymbolMargin, position.margin?.toString?.() ?? String(position.margin || '0'));
+      currentSymbolPositions += 1;
     }
     if (aggregateRiskEnabled) {
       const risk = calculatePositionStopRiskAmount({
@@ -625,6 +629,8 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
     currentOpenPositions: positions.length,
     currentTotalVolume,
     currentSymbolVolume,
+    currentSymbolMargin,
+    currentSymbolPositions,
     currentOpenRisk,
     unmeasuredRiskPositions,
   };

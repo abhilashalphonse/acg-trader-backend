@@ -18,7 +18,7 @@ const { assertInstrumentSessionOpen } = require('../instruments/session-calendar
 const { executionPriceForVolume } = require('../market-data/execution-pricing');
 const { dayKeyInTimezone } = require('./risk-day-engine');
 const {
-  validatePerOrderRiskPolicy,
+  validatePreTradeRiskPolicy,
   validateActiveExposurePolicy,
 } = require('./firm-risk-policy');
 
@@ -35,21 +35,6 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
   const normalizedStopLoss = optionalPrice(stopLoss, instrument);
   const normalizedTakeProfit = optionalPrice(takeProfit, instrument);
   validateProtection({ side: normalizedSide, fillPrice, stopLoss: normalizedStopLoss, takeProfit: normalizedTakeProfit });
-  const firmRisk = validatePerOrderRiskPolicy({
-    account,
-    instrument,
-    side: normalizedSide,
-    entryPrice: fillPrice,
-    volume: normalizedVolume,
-    stopLoss: normalizedStopLoss,
-    currencyConverter,
-    nowMs,
-  });
-  validateExposureLimits(account, normalizedVolume, exposure, {
-    symbol: instrument.symbol,
-    tradeRiskAmount: firmRisk.tradeRiskAmount,
-  });
-
   const commission = calculateCommission(instrument, normalizedVolume, {
     account,
     fillPrice,
@@ -57,6 +42,20 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     nowMs,
   });
   const requiredMargin = calculateRequiredMargin({ account, instrument, volume: normalizedVolume, fillPrice, currencyConverter, nowMs });
+  const firmRisk = validatePreTradeRiskPolicy({
+    account,
+    instrument,
+    symbol: instrument.symbol,
+    side: normalizedSide,
+    entryPrice: fillPrice,
+    volume: normalizedVolume,
+    stopLoss: normalizedStopLoss,
+    requiredMargin,
+    exposure,
+    orderKind: 'OPEN_EXECUTION',
+    currencyConverter,
+    nowMs,
+  });
   const totalRequirement = addDecimal(requiredMargin, commission);
   const freeMargin = normalizeDecimal(account.state?.freeMargin ?? '0');
 

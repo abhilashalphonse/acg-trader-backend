@@ -149,20 +149,17 @@ test('expiry wins over a market trigger and stale ticks never fill', () => {
 });
 
 
-test('pending orders honor firm mandatory-stop and per-position limits before acceptance', () => {
-  assert.throws(
-    () => planPendingOrder({
-      account: account({ riskPolicy: { allowedSymbols: [], requireStopLoss: true } }),
-      instrument: instrument(),
-      quote: quote(),
-      type: 'LIMIT',
-      side: 'BUY',
-      volume: '1',
-      limitPrice: '1.09900',
-      nowMs: 10_100,
-    }),
-    error => error.code === 'STOP_LOSS_REQUIRED_BY_POLICY',
-  );
+test('pending orders do not force a stop loss and still honor per-position limits', () => {
+  assert.doesNotThrow(() => planPendingOrder({
+    account: account({ riskPolicy: { allowedSymbols: [], requireStopLoss: true, maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
+    instrument: instrument(),
+    quote: quote(),
+    type: 'LIMIT',
+    side: 'BUY',
+    volume: '1',
+    limitPrice: '1.09900',
+    nowMs: 10_100,
+  }));
 
   assert.throws(
     () => planPendingOrder({
@@ -177,5 +174,40 @@ test('pending orders honor firm mandatory-stop and per-position limits before ac
       nowMs: 10_100,
     }),
     error => error.code === 'MAX_POSITION_VOLUME_REACHED',
+  );
+});
+
+
+test('pending placement enforces account and per-symbol pending-order caps', () => {
+  assert.throws(
+    () => planPendingOrder({
+      account: account({ riskPolicy: { allowedSymbols: [], maxPendingOrders: 10, maxPendingOrdersPerSymbol: 3, maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
+      instrument: instrument(),
+      quote: quote(),
+      type: 'LIMIT',
+      side: 'BUY',
+      volume: '0.1',
+      limitPrice: '1.09900',
+      exposure: { currentOpenPositions: 0, currentSymbolPositions: 0, currentTotalVolume: '0', currentSymbolVolume: '0', currentSymbolMargin: '0', currentOpenRisk: '0', unmeasuredRiskPositions: 0 },
+      pendingExposure: { currentPendingOrders: 10, currentSymbolPendingOrders: 2 },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_PENDING_ORDERS',
+  );
+
+  assert.throws(
+    () => planPendingOrder({
+      account: account({ riskPolicy: { allowedSymbols: [], maxPendingOrders: 10, maxPendingOrdersPerSymbol: 3, maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
+      instrument: instrument(),
+      quote: quote(),
+      type: 'LIMIT',
+      side: 'BUY',
+      volume: '0.1',
+      limitPrice: '1.09900',
+      exposure: { currentOpenPositions: 0, currentSymbolPositions: 0, currentTotalVolume: '0', currentSymbolVolume: '0', currentSymbolMargin: '0', currentOpenRisk: '0', unmeasuredRiskPositions: 0 },
+      pendingExposure: { currentPendingOrders: 2, currentSymbolPendingOrders: 3 },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_SYMBOL_PENDING',
   );
 });
