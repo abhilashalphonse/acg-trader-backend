@@ -16,7 +16,13 @@ const riskPolicySchema = new Schema({
   profitTarget: { type: Decimal128, required: true, default: '0' },
   breachAction: { type: String, enum: ['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK'], default: 'LIQUIDATE_AND_LOCK' },
   maxOpenPositions: { type: Number, default: null, min: 1 },
+  maxPendingOrders: { type: Number, default: null, min: 1 },
+  maxPositionVolume: { type: Decimal128, default: null },
+  maxSymbolVolume: { type: Decimal128, default: null },
   maxTotalVolume: { type: Decimal128, default: null },
+  requireStopLoss: { type: Boolean, default: false },
+  maxRiskPerTradePercent: { type: Decimal128, default: null },
+  maxAggregateRiskPercent: { type: Decimal128, default: null },
   allowedSymbols: [{ type: String, uppercase: true, trim: true }],
 }, { _id: false });
 
