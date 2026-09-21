@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const { Candle } = require('../src/modules/market-data/candle.model');
 const { candleExpiresAt, CANDLE_RETENTION_MS } = require('../src/modules/market-data/candle-retention');
 
-const DEFAULT_PERSIST = ['1h', '4h', '1d', '1w'];
+const DEFAULT_PERSIST = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
 const DURABLE_PERSIST = new Set(DEFAULT_PERSIST);
 const BATCH_SIZE = 5000;
 
