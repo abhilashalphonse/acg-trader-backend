@@ -378,7 +378,7 @@ function forexSpreadProfile(pair) {
   const [base, quote] = pair.split('/');
   const stressed = FX_STRESSED_CURRENCIES.has(base) || FX_STRESSED_CURRENCIES.has(quote);
   const exotic = FX_EXOTIC_CURRENCIES.has(base) || FX_EXOTIC_CURRENCIES.has(quote);
-  const normal = FX_TIGHT_POINTS[symbol] ?? (stressed ? 80 : exotic ? 30 : 6);
+  const normal = FX_TIGHT_POINTS[symbol] ?? (stressed ? 50 : exotic ? 20 : 6);
   return dynamicSpread(normal, {
     minimumPoints: normal,
     maximumPoints: Math.max(normal * 20, 80),
@@ -390,7 +390,15 @@ function forexSpreadProfile(pair) {
 }
 
 function commoditySpreadProfile(spec) {
-  const normal = spec.symbol === 'XAUUSD' ? 20 : spec.symbol === 'XAGUSD' ? 20 : Number(spec.fixedPoints || 30);
+  const normal = spec.symbol === 'XAUUSD'
+    ? 10
+    : spec.symbol === 'XAGUSD'
+      ? 15
+      : spec.assetClass === 'METAL'
+        ? 20
+        : spec.assetClass === 'ENERGY'
+          ? 10
+          : Math.max(4, Math.round(Number(spec.fixedPoints || 10) * 0.6));
   return dynamicSpread(normal, {
     minimumPoints: Math.max(1, Math.round(normal * 0.5)),
     maximumPoints: Math.max(normal * 15, 100),
@@ -402,7 +410,7 @@ function commoditySpreadProfile(spec) {
 }
 
 function indexSpreadProfile(spec) {
-  const points = { US500: 20, US100: 80, US30: 150, US2000: 80, VIX: 30, UK100: 80, GER40: 80, FRA40: 60, EU50: 50, ESP35: 120, IT40: 120, NETH25: 30, SWI20: 80, JPN225: 800, HK50: 150, CHINA50: 100, AUS200: 60, INDIA50: 100, KOR200: 40, SG30: 30 }[spec.symbol] || 80;
+  const points = { US500: 10, US100: 40, US30: 80, US2000: 40, VIX: 20, UK100: 40, GER40: 40, FRA40: 30, EU50: 25, ESP35: 60, IT40: 60, NETH25: 15, SWI20: 40, JPN225: 400, HK50: 80, CHINA50: 60, AUS200: 30, INDIA50: 50, KOR200: 20, SG30: 15 }[spec.symbol] || 40;
   return dynamicSpread(points, {
     minimumPoints: Math.max(1, Math.round(points * 0.5)),
     maximumPoints: points * 12,
@@ -417,7 +425,7 @@ function indexSpreadProfile(spec) {
 }
 
 function equitySpreadProfile() {
-  return dynamicSpread(2, {
+  return dynamicSpread(1, {
     minimumPoints: 1,
     maximumPoints: 100,
     volumeBands: [
@@ -432,7 +440,7 @@ function equitySpreadProfile() {
 
 function cryptoSpreadProfile(pair) {
   const base = pair.split('/')[0];
-  const normal = { BTC: 500, ETH: 50, BNB: 20, BCH: 20 }[base] || 20;
+  const normal = { BTC: 200, ETH: 20, BNB: 10, BCH: 10 }[base] || 10;
   return dynamicSpread(normal, {
     minimumPoints: Math.max(2, Math.round(normal * 0.5)),
     maximumPoints: normal * 20,
