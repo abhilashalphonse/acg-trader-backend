@@ -3,9 +3,14 @@
 const { AppError } = require('../../shared/errors/app-error');
 const { Position } = require('./position.model');
 const { Instrument } = require('../instruments/instrument.model');
+const { TradingAccount } = require('../accounts/trading-account.model');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
-const { runMongoTransaction } = require('./market-order.service');
+const { runMongoTransaction, loadOpenExposure } = require('./market-order.service');
+const {
+  validatePerOrderRiskPolicy,
+  validateAggregateRiskPolicy,
+} = require('./firm-risk-policy');
 const { serializePosition } = require('./trading.serializer');
 const { planPositionProtection } = require('./position-protection-planner');
 
@@ -16,6 +21,8 @@ class PositionProtectionService {
     logger,
     positionModel = Position,
     instrumentModel = Instrument,
+    accountModel = TradingAccount,
+    valuationEngine = null,
     commandQueue = new AccountCommandQueue(),
     idempotencyService = new IdempotencyService(),
     runTransaction = runMongoTransaction,
@@ -26,6 +33,8 @@ class PositionProtectionService {
       logger,
       positionModel,
       instrumentModel,
+      accountModel,
+      valuationEngine,
       commandQueue,
       idempotencyService,
       runTransaction,
@@ -74,6 +83,15 @@ class PositionProtectionService {
           const position = await this.positionModel.findById(normalized.positionId).session(session);
           validateOwnership(position, normalized.accountId);
 
+          const account = await this.accountModel.findById(normalized.accountId).session(session);
+          if (!account) {
+            throw new AppError('Trading account was not found', {
+              statusCode: 404,
+              code: 'ACCOUNT_NOT_FOUND',
+            });
+          }
+          if (this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: false });
+
           const instrument = await this.instrumentModel.findOne({ symbol: String(position.symbol).toUpperCase() }).session(session);
           const plan = planPositionProtection({
             position,
@@ -84,6 +102,31 @@ class PositionProtectionService {
             breakEven,
             nowMs,
           });
+
+          const firmRisk = validatePerOrderRiskPolicy({
+            account,
+            instrument,
+            side: position.side,
+            entryPrice: position.entryPrice,
+            volume: position.openVolume,
+            stopLoss: plan.stopLoss,
+            nowMs,
+            checkPositionVolume: false,
+          });
+          const aggregateLimit = Number(account.riskPolicy?.maxAggregateRiskPercent?.toString?.() ?? account.riskPolicy?.maxAggregateRiskPercent);
+          if (Number.isFinite(aggregateLimit) && aggregateLimit > 0) {
+            const exposure = await loadOpenExposure(this.positionModel, normalized.accountId, session, {
+              account,
+              symbol: position.symbol,
+              nowMs,
+              excludePositionId: position._id,
+            });
+            validateAggregateRiskPolicy({
+              account,
+              tradeRiskAmount: firmRisk.tradeRiskAmount,
+              exposure,
+            });
+          }
 
           if (plan.changed) {
             position.stopLoss = plan.stopLoss;
