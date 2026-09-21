@@ -295,3 +295,76 @@ test('market execution rejects non-positive and crossed executable books', () =>
     );
   }
 });
+
+
+test('server risk policy requires stop loss when configured', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], requireStopLoss: true } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'STOP_LOSS_REQUIRED_BY_POLICY',
+  );
+});
+
+test('server risk policy rejects per-position and per-trade risk excess', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxPositionVolume: '0.5' } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      stopLoss: '1.09',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_POSITION_VOLUME_REACHED',
+  );
+
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxRiskPerTradePercent: '1' } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      stopLoss: '1.08',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_RISK_PER_TRADE_REACHED',
+  );
+});
+
+test('server risk policy rejects projected symbol volume and aggregate stop risk', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxSymbolVolume: '1.5' } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      stopLoss: '1.099',
+      exposure: { currentOpenPositions: 1, currentTotalVolume: '1', currentSymbolVolume: '1', currentOpenRisk: '0', unmeasuredRiskPositions: 0 },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_SYMBOL_VOLUME_REACHED',
+  );
+
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxAggregateRiskPercent: '1.5' } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      stopLoss: '1.09',
+      exposure: { currentOpenPositions: 1, currentTotalVolume: '1', currentSymbolVolume: '1', currentOpenRisk: '1000', unmeasuredRiskPositions: 0 },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_AGGREGATE_RISK_REACHED',
+  );
+});
