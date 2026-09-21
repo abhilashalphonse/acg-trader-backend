@@ -20,6 +20,7 @@ const candleSchema = new Schema({
   synthetic: { type: Boolean, default: false },
   source: { type: String, enum: ['LIVE', 'SYNTHETIC', 'BACKFILL'], default: 'LIVE' },
   provider: { type: String, default: null },
+  expiresAt: { type: Date, default: null },
 }, {
   timestamps: true,
   versionKey: false,
@@ -27,6 +28,7 @@ const candleSchema = new Schema({
 
 candleSchema.index({ symbol: 1, timeframe: 1, openTime: 1 }, { unique: true });
 candleSchema.index({ symbol: 1, timeframe: 1, openTime: -1 });
+candleSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 const Candle = mongoose.models.Candle || mongoose.model('Candle', candleSchema);
 

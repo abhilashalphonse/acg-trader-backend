@@ -4,11 +4,13 @@ const { Candle } = require('./candle.model');
 const { TIMEFRAME_MS } = require('./market.constants');
 const { normalizeSymbol, serializeCandle, clampInteger } = require('./market.utils');
 const { AppError } = require('../../shared/errors/app-error');
+const { candleExpiresAt } = require('./candle-retention');
 
 class MarketHistoryService {
-  constructor({ adapter, instrumentRegistry, logger }) {
+  constructor({ adapter, instrumentRegistry, persistTimeframes = [], logger }) {
     this.adapter = adapter;
     this.instrumentRegistry = instrumentRegistry;
+    this.persistTimeframes = new Set(persistTimeframes);
     this.logger = logger;
   }
 
@@ -22,8 +24,27 @@ class MarketHistoryService {
         const providerSymbol = this.instrumentRegistry.providerSymbol(canonical);
         const providerBars = await this.adapter.fetchHistorical({ providerSymbol, timeframe, limit: safeLimit });
         if (providerBars.length) {
-          await this.#persistBackfill(canonical, timeframe, providerBars);
-          rows = await this.#loadLocal(canonical, timeframe, safeLimit);
+          if (this.persistTimeframes.has(timeframe)) {
+            await this.#persistBackfill(canonical, timeframe, providerBars);
+            rows = await this.#loadLocal(canonical, timeframe, safeLimit);
+          } else {
+            return providerBars.slice(-safeLimit).map(bar => serializeCandle({
+              symbol: canonical,
+              timeframe,
+              openTimeMs: bar.openTimeMs,
+              closeTimeMs: bar.openTimeMs + TIMEFRAME_MS[timeframe],
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              tickCount: 0,
+              providerVolume: bar.providerVolume,
+              complete: true,
+              synthetic: false,
+              source: 'BACKFILL',
+              provider: 'twelve-data',
+            }));
+          }
         }
       } catch (error) {
         this.logger.warn({ err: error, symbol: canonical, timeframe }, 'Historical provider backfill failed');
@@ -71,6 +92,7 @@ class MarketHistoryService {
               synthetic: false,
               source: 'BACKFILL',
               provider: 'twelve-data',
+              expiresAt: candleExpiresAt(timeframe, bar.openTimeMs),
             },
           },
           upsert: true,

@@ -3,6 +3,7 @@
 const { Candle } = require('./candle.model');
 const { TIMEFRAME_MS } = require('./market.constants');
 const { normalizeSymbol, serializeCandle } = require('./market.utils');
+const { candleExpiresAt } = require('./candle-retention');
 
 async function persistCandleToMongo(candle) {
   const openTime = new Date(candle.openTimeMs);
@@ -21,6 +22,7 @@ async function persistCandleToMongo(candle) {
         synthetic: candle.synthetic,
         source: candle.source,
         provider: candle.provider || null,
+        expiresAt: candleExpiresAt(candle.timeframe, candle.openTimeMs),
       },
       $setOnInsert: { symbol: candle.symbol, timeframe: candle.timeframe, openTime },
     },

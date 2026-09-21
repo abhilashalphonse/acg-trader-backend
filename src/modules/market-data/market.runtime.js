@@ -23,7 +23,7 @@ function createMarketRuntime() {
   const adapter = new TwelveDataAdapter({ apiKey: env.twelveData.apiKey, wsUrl: env.twelveData.wsUrl, apiBase: env.twelveData.apiBase, heartbeatMs: env.twelveData.heartbeatMs, reconnectMinMs: env.twelveData.reconnectMinMs, reconnectMaxMs: env.twelveData.reconnectMaxMs, httpTimeoutMs: env.twelveData.httpTimeoutMs, subscribeBatchSize: env.twelveData.subscribeBatchSize, logger });
   const candleEngine = new CandleEngine({ eventBus, timeframes: env.market.candleTimeframes, persistTimeframes: env.market.persistTimeframes, flushIntervalMs: env.market.candleFlushIntervalMs, maxSyntheticGapBars: env.market.maxSyntheticGapBars, logger });
   const gateway = new MarketGateway({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols: symbols, staleCheckMs: env.market.staleCheckMs, logger });
-  const historyService = new MarketHistoryService({ adapter, instrumentRegistry, logger });
+  const historyService = new MarketHistoryService({ adapter, instrumentRegistry, persistTimeframes: env.market.persistTimeframes, logger });
   let wsServer = null;
   let started = false;
 

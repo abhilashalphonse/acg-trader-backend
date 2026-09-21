@@ -6,6 +6,7 @@ require('dotenv').config();
 const REQUIRED_TIMEFRAMES = Object.freeze(['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']);
 const SUPPORTED_TIMEFRAMES = new Set(REQUIRED_TIMEFRAMES);
 const LEGACY_SUBMINUTE_TIMEFRAMES = new Set(['1s', '5s', '15s', '30s']);
+const DURABLE_PERSIST_TIMEFRAMES = new Set(['1h', '4h', '1d', '1w']);
 const booleanFromEnv = z.preprocess(value => {
   if (typeof value === 'boolean') return value;
   if (typeof value !== 'string') return value;
@@ -47,7 +48,7 @@ const schema = z.object({
   MARKET_UNIVERSE_MODE: z.enum(['catalog', 'explicit']).default('catalog'),
   MARKET_SYMBOLS: z.string().default('EURUSD,XAUUSD'),
   MARKET_CANDLE_TIMEFRAMES: z.string().default('1m,5m,15m,30m,1h,4h,1d,1w'),
-  MARKET_PERSIST_TIMEFRAMES: z.string().default('1m,5m,15m,30m,1h,4h,1d,1w'),
+  MARKET_PERSIST_TIMEFRAMES: z.string().default('1h,4h,1d,1w'),
   MARKET_DEFAULT_MAX_QUOTE_AGE_MS: positiveInt(5000),
   MARKET_STALE_CHECK_MS: positiveInt(1000),
   MARKET_CANDLE_FLUSH_INTERVAL_MS: positiveInt(250),
@@ -88,7 +89,7 @@ for (const timeframe of [...configuredCandleTimeframes, ...configuredPersistTime
 // values also upgrades Railway deployments that still carry the legacy
 // sub-minute environment strings, without requiring a coordinated env edit.
 const candleTimeframes = [...new Set([...configuredCandleTimeframes, ...REQUIRED_TIMEFRAMES])];
-const persistTimeframes = [...new Set([...configuredPersistTimeframes, ...REQUIRED_TIMEFRAMES])];
+const persistTimeframes = [...new Set(configuredPersistTimeframes.filter(timeframe => DURABLE_PERSIST_TIMEFRAMES.has(timeframe)))];
 if (raw.MARKET_GATEWAY_ENABLED && !useCatalogUniverse && !symbols.length) throw new Error('MARKET_SYMBOLS must include at least one symbol when MARKET_UNIVERSE_MODE=explicit');
 if (
   raw.MARKET_GATEWAY_ENABLED
