@@ -4,7 +4,7 @@
   "private": true,
   "description": "Independent multi-tenant ACG Trader execution backend",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node scripts/compact-candles.js && node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
     "seed:instruments": "node scripts/seed-instruments.js",
