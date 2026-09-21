@@ -147,3 +147,35 @@ test('expiry wins over a market trigger and stale ticks never fill', () => {
   assert.equal(detectPendingOrderAction({ order: expired, tick: quote({ ask: 1.098 }), nowMs: Date.parse('2026-09-16T12:00:01Z') }).action, 'EXPIRE');
   assert.equal(detectPendingOrderAction({ order: order(), tick: quote({ ask: 1.098, isStale: true }), nowMs: 10_100 }), null);
 });
+
+
+test('pending orders honor firm mandatory-stop and per-position limits before acceptance', () => {
+  assert.throws(
+    () => planPendingOrder({
+      account: account({ riskPolicy: { allowedSymbols: [], requireStopLoss: true } }),
+      instrument: instrument(),
+      quote: quote(),
+      type: 'LIMIT',
+      side: 'BUY',
+      volume: '1',
+      limitPrice: '1.09900',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'STOP_LOSS_REQUIRED_BY_POLICY',
+  );
+
+  assert.throws(
+    () => planPendingOrder({
+      account: account({ riskPolicy: { allowedSymbols: [], maxPositionVolume: '0.5' } }),
+      instrument: instrument(),
+      quote: quote(),
+      type: 'LIMIT',
+      side: 'BUY',
+      volume: '1',
+      limitPrice: '1.09900',
+      stopLoss: '1.09',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_POSITION_VOLUME_REACHED',
+  );
+});
