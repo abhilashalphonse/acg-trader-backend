@@ -468,11 +468,21 @@ function normalizeRiskPolicy(policy = {}) {
   const dailyLimit = normalizeDecimal(policy?.dailyLoss?.limit ?? '0');
   const maxLimit = normalizeDecimal(policy?.maxLoss?.limit ?? '0');
   const profitTarget = normalizeDecimal(policy?.profitTarget ?? '0');
+  const maxPositionVolume = policy?.maxPositionVolume == null ? null : normalizeDecimal(policy.maxPositionVolume);
+  const maxSymbolVolume = policy?.maxSymbolVolume == null ? null : normalizeDecimal(policy.maxSymbolVolume);
+  const maxTotalVolume = policy?.maxTotalVolume == null ? null : normalizeDecimal(policy.maxTotalVolume);
+  const maxRiskPerTradePercent = policy?.maxRiskPerTradePercent == null ? null : normalizeDecimal(policy.maxRiskPerTradePercent);
+  const maxAggregateRiskPercent = policy?.maxAggregateRiskPercent == null ? null : normalizeDecimal(policy.maxAggregateRiskPercent);
 
   for (const [field, value] of [
     ['dailyLoss.limit', dailyLimit],
     ['maxLoss.limit', maxLimit],
     ['profitTarget', profitTarget],
+    ['maxPositionVolume', maxPositionVolume],
+    ['maxSymbolVolume', maxSymbolVolume],
+    ['maxTotalVolume', maxTotalVolume],
+    ['maxRiskPerTradePercent', maxRiskPerTradePercent],
+    ['maxAggregateRiskPercent', maxAggregateRiskPercent],
   ]) {
     if (compareDecimal(value, '0') < 0) {
       throw new AppError(`${field} cannot be negative`, {
@@ -494,7 +504,13 @@ function normalizeRiskPolicy(policy = {}) {
     profitTarget,
     breachAction: String(policy?.breachAction || 'LIQUIDATE_AND_LOCK').toUpperCase(),
     maxOpenPositions: policy?.maxOpenPositions ?? null,
-    maxTotalVolume: policy?.maxTotalVolume == null ? null : normalizeDecimal(policy.maxTotalVolume),
+    maxPendingOrders: policy?.maxPendingOrders ?? null,
+    maxPositionVolume,
+    maxSymbolVolume,
+    maxTotalVolume,
+    requireStopLoss: policy?.requireStopLoss === true,
+    maxRiskPerTradePercent,
+    maxAggregateRiskPercent,
     allowedSymbols: Array.isArray(policy?.allowedSymbols)
       ? policy.allowedSymbols.map(value => String(value).replace('/', '').toUpperCase())
       : [],
