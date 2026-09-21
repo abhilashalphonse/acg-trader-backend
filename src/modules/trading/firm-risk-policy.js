@@ -59,6 +59,7 @@ function calculateStopRiskAmount({
   stopLoss,
   currencyConverter = null,
   nowMs = Date.now(),
+  checkPositionVolume = true,
 }) {
   if (stopLoss === null || stopLoss === undefined || stopLoss === '') return null;
   const normalizedSide = String(side || '').toUpperCase();
@@ -114,7 +115,7 @@ function validatePerOrderRiskPolicy({
   const maxRiskPerTradePercent = enabledLimit(policy, 'maxRiskPerTradePercent');
   const maxAggregateRiskPercent = enabledLimit(policy, 'maxAggregateRiskPercent');
 
-  if (maxPositionVolume && compareDecimal(normalizeDecimal(volume), maxPositionVolume) > 0) {
+  if (checkPositionVolume && maxPositionVolume && compareDecimal(normalizeDecimal(volume), maxPositionVolume) > 0) {
     throw new AppError('Order volume exceeds the firm per-position limit', {
       statusCode: 409,
       code: 'MAX_POSITION_VOLUME_REACHED',
@@ -211,38 +212,52 @@ function validateActiveExposurePolicy({
     });
   }
 
+  validateAggregateRiskPolicy({
+    account,
+    tradeRiskAmount,
+    exposure,
+  });
+}
+
+function validateAggregateRiskPolicy({
+  account,
+  tradeRiskAmount = null,
+  exposure = null,
+}) {
+  const policy = account?.riskPolicy || {};
   const maxAggregateRiskPercent = enabledLimit(policy, 'maxAggregateRiskPercent');
-  if (maxAggregateRiskPercent) {
-    const unmeasured = Number(exposure.unmeasuredRiskPositions || 0);
-    if (unmeasured > 0) {
-      throw new AppError('Aggregate open risk cannot be measured because an existing position has no stop loss', {
-        statusCode: 409,
-        code: 'AGGREGATE_RISK_UNMEASURABLE',
-        details: { unmeasuredRiskPositions: unmeasured },
-      });
-    }
-    if (tradeRiskAmount == null) {
-      throw new AppError('A stop loss is required to enforce aggregate open risk', {
-        statusCode: 409,
-        code: 'STOP_LOSS_REQUIRED_BY_POLICY',
-      });
-    }
-    const projectedRiskAmount = addDecimal(exposure.currentOpenRisk ?? '0', tradeRiskAmount);
-    const projectedRiskPercent = riskPercent(projectedRiskAmount, account);
-    if (compareDecimal(projectedRiskPercent, maxAggregateRiskPercent) > 0) {
-      throw new AppError('Projected aggregate open risk exceeds the firm limit', {
-        statusCode: 409,
-        code: 'MAX_AGGREGATE_RISK_REACHED',
-        details: {
-          currentOpenRisk: normalizeDecimal(exposure.currentOpenRisk ?? '0'),
-          tradeRiskAmount,
-          projectedRiskAmount,
-          projectedRiskPercent,
-          maxAggregateRiskPercent,
-          accountCurrency: account?.currency || null,
-        },
-      });
-    }
+  if (!maxAggregateRiskPercent) return;
+  if (!exposure) return;
+
+  const unmeasured = Number(exposure.unmeasuredRiskPositions || 0);
+  if (unmeasured > 0) {
+    throw new AppError('Aggregate open risk cannot be measured because an existing position has no stop loss', {
+      statusCode: 409,
+      code: 'AGGREGATE_RISK_UNMEASURABLE',
+      details: { unmeasuredRiskPositions: unmeasured },
+    });
+  }
+  if (tradeRiskAmount == null) {
+    throw new AppError('A stop loss is required to enforce aggregate open risk', {
+      statusCode: 409,
+      code: 'STOP_LOSS_REQUIRED_BY_POLICY',
+    });
+  }
+  const projectedRiskAmount = addDecimal(exposure.currentOpenRisk ?? '0', tradeRiskAmount);
+  const projectedRiskPercent = riskPercent(projectedRiskAmount, account);
+  if (compareDecimal(projectedRiskPercent, maxAggregateRiskPercent) > 0) {
+    throw new AppError('Projected aggregate open risk exceeds the firm limit', {
+      statusCode: 409,
+      code: 'MAX_AGGREGATE_RISK_REACHED',
+      details: {
+        currentOpenRisk: normalizeDecimal(exposure.currentOpenRisk ?? '0'),
+        tradeRiskAmount,
+        projectedRiskAmount,
+        projectedRiskPercent,
+        maxAggregateRiskPercent,
+        accountCurrency: account?.currency || null,
+      },
+    });
   }
 }
 
@@ -259,5 +274,6 @@ module.exports = {
   calculatePositionStopRiskAmount,
   validatePerOrderRiskPolicy,
   validateActiveExposurePolicy,
+  validateAggregateRiskPolicy,
   hasActiveExposurePolicy,
 };
