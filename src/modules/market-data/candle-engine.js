@@ -81,8 +81,9 @@ class CandleEngine {
     // just because execution pricing derives a different bid/ask midpoint.
     // referencePrice remains a safe fallback for feeds that do not expose price.
     const chartPrice = [tick.price, tick.referencePrice, tick.mid, tick.bid]
+      .filter(value => value !== null && value !== undefined && value !== '')
       .map(Number)
-      .find(Number.isFinite);
+      .find(value => Number.isFinite(value) && value > 0);
     if (!Number.isFinite(chartPrice)) return;
     const symbol = normalizeSymbol(tick.symbol);
     const continuityBroken = this.continuityBroken.has(symbol);
