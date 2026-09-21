@@ -10,6 +10,7 @@ const { createMarketRuntime } = require('./modules/market-data/market.runtime');
 const { createTradingRuntime } = require('./modules/trading/trading.runtime');
 const { createAuthRuntime } = require('./modules/auth/auth.runtime');
 const { syncInstrumentCatalog, provisionCatalogExecution, enforceCatalogLeveragePolicy } = require('./modules/instruments/instrument-catalog.service');
+const { runLegacyCandleCleanup } = require('./modules/market-data/legacy-candle-cleanup');
 
 async function start() {
   await connectDatabase();
@@ -79,6 +80,20 @@ async function start() {
 
   await listenHttpServer(server, env.port);
   logger.info({ port: env.port, market: marketRuntime.health(), trading: tradingRuntime.health() }, 'ACG Trader backend listening');
+
+  // This maintenance starts only after the API is serving traffic. It is not
+  // awaited by startup, and its small throttled batches avoid a maintenance
+  // window while legacy pre-TTL candle rows are retired.
+  if (env.market.legacyCleanup.enabled) {
+    const timer = setTimeout(() => {
+      void runLegacyCandleCleanup({
+        logger,
+        batchSize: env.market.legacyCleanup.batchSize,
+        delayMs: env.market.legacyCleanup.delayMs,
+      }).catch(error => logger.error({ err: error }, 'Legacy candle retention cleanup failed'));
+    }, 5_000);
+    timer.unref?.();
+  }
 
   process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.on('SIGINT', () => { void shutdown('SIGINT'); });
