@@ -212,8 +212,8 @@ function finalizePricing({ referencePrice, bid, ask, tickSize, providerSpreadPoi
     ask,
     mid: (bid + ask) / 2,
     spread,
-    spreadPoints: tickSize > 0 ? tidy(spread / tickSize) : null,
-    providerSpreadPoints: Number.isFinite(providerSpreadPoints) ? tidy(providerSpreadPoints) : null,
+    spreadPoints: tickSize > 0 ? normalizePoints(spread / tickSize) : null,
+    providerSpreadPoints: Number.isFinite(providerSpreadPoints) ? normalizePoints(providerSpreadPoints) : null,
     pricingModel,
     spreadSource,
     volatilityMultiplier,
@@ -242,6 +242,10 @@ function emptyPricing(referencePrice = null, extra = {}) {
 function floorToTick(value, tickSize) { return tidy(Math.floor((value + tickSize * 1e-9) / tickSize) * tickSize); }
 function ceilToTick(value, tickSize) { return tidy(Math.ceil((value - tickSize * 1e-9) / tickSize) * tickSize); }
 function tidy(value) { return Number(Number(value).toPrecision(14)); }
+function normalizePoints(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number * 1e8) / 1e8 : null;
+}
 function positiveNumber(value) { const n = numberValue(value, null); return n != null && n > 0 ? n : null; }
 function finiteOrNull(value) { const n = numberValue(value, null); return n == null ? null : n; }
 function numberValue(value, fallback = null) {
