@@ -586,8 +586,11 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
   symbol = null,
   currencyConverter = null,
   nowMs = Date.now(),
+  excludePositionId = null,
 } = {}) {
-  let query = positionModel.find({ accountId: String(accountId), status: 'OPEN' })
+  const filter = { accountId: String(accountId), status: 'OPEN' };
+  if (excludePositionId) filter._id = mongoose.trusted({ $ne: String(excludePositionId) });
+  let query = positionModel.find(filter)
     .select('symbol side openVolume entryPrice stopLoss contractSize quoteCurrency')
     .lean();
   if (session) query = query.session(session);
