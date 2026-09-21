@@ -179,7 +179,7 @@ function validateMeasuredRisk({
   const tradeRiskPercent = riskPercent(tradeRiskAmount, account);
 
   if (maxRiskPerTradePercent && compareDecimal(tradeRiskPercent, maxRiskPerTradePercent) > 0) {
-    throwLimit('Order risk exceeds the 1% ACG per-trade limit', PRE_TRADE_REJECTION_CODES.MAX_TRADE_RISK, {
+    throwLimit(`Order risk exceeds the ${maxRiskPerTradePercent}% ACG per-trade limit`, PRE_TRADE_REJECTION_CODES.MAX_TRADE_RISK, {
       tradeRiskAmount,
       tradeRiskPercent,
       maxRiskPerTradePercent,
@@ -192,7 +192,7 @@ function validateMeasuredRisk({
     const projectedRiskAmount = addDecimal(exposure.currentOpenRisk ?? '0', tradeRiskAmount ?? '0');
     projectedAggregateRiskPercent = riskPercent(projectedRiskAmount, account);
     if (compareDecimal(projectedAggregateRiskPercent, maxAggregateRiskPercent) > 0) {
-      throwLimit('Projected aggregate measured risk exceeds the 2% ACG limit', PRE_TRADE_REJECTION_CODES.MAX_AGGREGATE_RISK, {
+      throwLimit(`Projected aggregate measured risk exceeds the ${maxAggregateRiskPercent}% ACG limit`, PRE_TRADE_REJECTION_CODES.MAX_AGGREGATE_RISK, {
         currentOpenRisk: normalizeDecimal(exposure.currentOpenRisk ?? '0'),
         tradeRiskAmount,
         projectedRiskAmount,
@@ -242,7 +242,7 @@ function validateCountLimits({ account, symbol, exposure, pendingExposure, order
     const maxOpenPositions = policyInteger(account, 'maxOpenPositions');
     const currentOpenPositions = Number(exposure.currentOpenPositions || 0);
     if (maxOpenPositions && currentOpenPositions + 1 > maxOpenPositions) {
-      throwLimit('Maximum 10 open positions are allowed on this ACG account', PRE_TRADE_REJECTION_CODES.MAX_OPEN_POSITIONS, {
+      throwLimit(`Maximum ${maxOpenPositions} open positions are allowed on this ACG account`, PRE_TRADE_REJECTION_CODES.MAX_OPEN_POSITIONS, {
         currentOpenPositions,
         maxOpenPositions,
       });
@@ -251,7 +251,7 @@ function validateCountLimits({ account, symbol, exposure, pendingExposure, order
     const maxPositionsPerSymbol = policyInteger(account, 'maxPositionsPerSymbol');
     const currentSymbolPositions = Number(exposure.currentSymbolPositions || 0);
     if (maxPositionsPerSymbol && currentSymbolPositions + 1 > maxPositionsPerSymbol) {
-      throwLimit('Maximum 3 open positions are allowed on this instrument', PRE_TRADE_REJECTION_CODES.MAX_SYMBOL_POSITIONS, {
+      throwLimit(`Maximum ${maxPositionsPerSymbol} open positions are allowed on this instrument`, PRE_TRADE_REJECTION_CODES.MAX_SYMBOL_POSITIONS, {
         symbol: normalizeSymbol(symbol),
         currentSymbolPositions,
         maxPositionsPerSymbol,
@@ -263,7 +263,7 @@ function validateCountLimits({ account, symbol, exposure, pendingExposure, order
     const maxPendingOrders = policyInteger(account, 'maxPendingOrders');
     const currentPendingOrders = Number(pendingExposure.currentPendingOrders || 0);
     if (maxPendingOrders && currentPendingOrders + 1 > maxPendingOrders) {
-      throwLimit('Maximum 10 pending orders are allowed on this ACG account', PRE_TRADE_REJECTION_CODES.MAX_PENDING_ORDERS, {
+      throwLimit(`Maximum ${maxPendingOrders} pending orders are allowed on this ACG account`, PRE_TRADE_REJECTION_CODES.MAX_PENDING_ORDERS, {
         currentPendingOrders,
         maxPendingOrders,
       });
@@ -272,7 +272,7 @@ function validateCountLimits({ account, symbol, exposure, pendingExposure, order
     const maxPendingOrdersPerSymbol = policyInteger(account, 'maxPendingOrdersPerSymbol');
     const currentSymbolPendingOrders = Number(pendingExposure.currentSymbolPendingOrders || 0);
     if (maxPendingOrdersPerSymbol && currentSymbolPendingOrders + 1 > maxPendingOrdersPerSymbol) {
-      throwLimit('Maximum 3 pending orders are allowed on this instrument', PRE_TRADE_REJECTION_CODES.MAX_SYMBOL_PENDING, {
+      throwLimit(`Maximum ${maxPendingOrdersPerSymbol} pending orders are allowed on this instrument`, PRE_TRADE_REJECTION_CODES.MAX_SYMBOL_PENDING, {
         symbol: normalizeSymbol(symbol),
         currentSymbolPendingOrders,
         maxPendingOrdersPerSymbol,
@@ -302,7 +302,7 @@ function validateMarginExposure({
   const maxMarginUsagePercent = enabledLimit(account, 'maxMarginUsagePercent');
   const projectedMarginUsagePercent = divideDecimal(multiplyDecimal(projectedUsedMargin, '100'), equity, { scale: 8, rounding: ROUNDING.HALF_UP });
   if (maxMarginUsagePercent && compareDecimal(projectedMarginUsagePercent, maxMarginUsagePercent) > 0) {
-    throwLimit('This order would increase margin usage above the 50% ACG limit', PRE_TRADE_REJECTION_CODES.MAX_MARGIN_USAGE, {
+    throwLimit(`This order would increase margin usage above the ${maxMarginUsagePercent}% ACG limit`, PRE_TRADE_REJECTION_CODES.MAX_MARGIN_USAGE, {
       usedMargin,
       requiredMargin: margin,
       projectedUsedMargin,
@@ -324,7 +324,7 @@ function validateMarginExposure({
     }
     singleOrderMarginPercentOfFree = divideDecimal(multiplyDecimal(margin, '100'), freeMargin, { scale: 8, rounding: ROUNDING.HALF_UP });
     if (compareDecimal(singleOrderMarginPercentOfFree, maxSingleOrderMarginPercentOfFree) > 0) {
-      throwLimit('This order exceeds 20% of available margin capacity', PRE_TRADE_REJECTION_CODES.MAX_SINGLE_ORDER_EXPOSURE, {
+      throwLimit(`This order exceeds ${maxSingleOrderMarginPercentOfFree}% of available margin capacity`, PRE_TRADE_REJECTION_CODES.MAX_SINGLE_ORDER_EXPOSURE, {
         freeMargin,
         requiredMargin: margin,
         singleOrderMarginPercentOfFree,
@@ -343,7 +343,7 @@ function validateMarginExposure({
     if (compareDecimal(permittedAccountExposure, '0') > 0) {
       projectedSymbolMarginPercentOfPermitted = divideDecimal(multiplyDecimal(projectedSymbolMargin, '100'), permittedAccountExposure, { scale: 8, rounding: ROUNDING.HALF_UP });
       if (compareDecimal(projectedSymbolMarginPercentOfPermitted, maxSymbolMarginPercentOfPermitted) > 0) {
-        throwLimit('This order would exceed the 30% per-symbol gross exposure limit', PRE_TRADE_REJECTION_CODES.MAX_SYMBOL_EXPOSURE, {
+        throwLimit(`This order would exceed the ${maxSymbolMarginPercentOfPermitted}% per-symbol gross exposure limit`, PRE_TRADE_REJECTION_CODES.MAX_SYMBOL_EXPOSURE, {
           symbol: normalizeSymbol(symbol),
           currentSymbolMargin,
           requiredMargin: margin,
@@ -436,7 +436,7 @@ function validateAggregateRiskPolicy({
   const projectedRiskAmount = addDecimal(exposure.currentOpenRisk ?? '0', tradeRiskAmount);
   const projectedRiskPercent = riskPercent(projectedRiskAmount, account);
   if (compareDecimal(projectedRiskPercent, maxAggregateRiskPercent) > 0) {
-    throwLimit('Projected aggregate measured risk exceeds the 2% ACG limit', PRE_TRADE_REJECTION_CODES.MAX_AGGREGATE_RISK, {
+    throwLimit(`Projected aggregate measured risk exceeds the ${maxAggregateRiskPercent}% ACG limit`, PRE_TRADE_REJECTION_CODES.MAX_AGGREGATE_RISK, {
       currentOpenRisk: normalizeDecimal(exposure.currentOpenRisk ?? '0'),
       tradeRiskAmount,
       projectedRiskAmount,

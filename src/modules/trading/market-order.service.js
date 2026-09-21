@@ -602,8 +602,9 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
   let currentSymbolPositions = 0;
   let currentOpenRisk = '0';
   let unmeasuredRiskPositions = 0;
-  const aggregateRiskEnabled = account?.riskPolicy?.maxAggregateRiskPercent != null
-    && compareDecimal(account.riskPolicy.maxAggregateRiskPercent?.toString?.() ?? String(account.riskPolicy.maxAggregateRiskPercent), '0') > 0;
+  // Standard ACG aggregate-risk monitoring is enabled even for older accounts
+  // whose persisted policy predates the new default fields.
+  const aggregateRiskEnabled = true;
 
   for (const position of positions) {
     const openVolume = position.openVolume?.toString?.() ?? String(position.openVolume || '0');

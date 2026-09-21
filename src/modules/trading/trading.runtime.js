@@ -52,7 +52,7 @@ function createTradingRuntime({ marketRuntime }) {
   const accountLedgerService = new AccountLedgerService({ eventBus, commandQueue, logger });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus, marketOrderService, logger });
   const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, logger });
-  const pendingOrderAmendService = new PendingOrderAmendService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
+  const pendingOrderAmendService = new PendingOrderAmendService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
   const tradingHistoryService = new TradingHistoryService();
   const pendingOrderEngine = new PendingOrderEngine({ eventBus, pendingOrderService, marketPriority, logger });
   const positionProtectionService = new PositionProtectionService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });

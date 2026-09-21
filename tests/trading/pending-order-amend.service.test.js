@@ -17,7 +17,8 @@ function account() {
   return {
     _id: '64a000000000000000000001',
     status: 'ACTIVE', tradingEnabled: true, currency: 'USD', leverage: 100, riskTimezone: 'UTC',
-    riskPolicy: { allowedSymbols: [] },
+    riskPolicy: { allowedSymbols: [], maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' },
+    state: { balance: '100000', equity: '100000', freeMargin: '100000', usedMargin: '0' },
   };
 }
 function instrument() {
@@ -44,7 +45,13 @@ function serviceFor(order) {
     eventBus: { emit: (name, payload) => events.push([name, payload]) },
     accountModel: { findById: () => query(account()) },
     instrumentModel: { findOne: () => query(instrument()) },
-    orderModel: { findById: () => query(order) },
+    orderModel: {
+      findById: () => query(order),
+      find: () => ({ select: () => ({ lean: () => ({ session: async () => [] }) }) }),
+    },
+    positionModel: {
+      find: () => ({ select: () => ({ lean: () => ({ session: async () => [] }) }) }),
+    },
     commandQueue: { run: async (_accountId, task) => task() },
     idempotencyService: idempotency(),
     runTransaction: async work => work({ id: 'session' }),
