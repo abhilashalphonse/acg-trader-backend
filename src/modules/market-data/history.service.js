@@ -163,6 +163,10 @@ class MarketHistoryService {
     return this.historyCache.stats();
   }
 
+  clearCache() {
+    this.historyCache.clear();
+  }
+
   async #loadLocal(symbol, timeframe, limit) {
     const filter = { symbol, timeframe, synthetic: mongoose.trusted({ $ne: true }) };
     if (CANONICAL_UTC_HISTORY_SOURCE[timeframe]) {

@@ -9,7 +9,19 @@ const RECOVERY_COOLDOWN_MS = 2500;
 const MAX_PROVIDER_TIMESTAMP_DRIFT_MS = 5 * 60 * 1000;
 
 class MarketGateway {
-  constructor({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols, staleCheckMs, logger, executionPricing = null, tickSanityFilter = null }) {
+  constructor({
+    adapter,
+    instrumentRegistry,
+    quoteStore,
+    candleEngine,
+    eventBus,
+    symbols,
+    staleCheckMs,
+    logger,
+    executionPricing = null,
+    tickSanityFilter = null,
+    onStreamRecovered = null,
+  }) {
     this.adapter = adapter;
     this.instrumentRegistry = instrumentRegistry;
     this.quoteStore = quoteStore;
@@ -20,6 +32,8 @@ class MarketGateway {
     this.logger = logger;
     this.executionPricing = executionPricing || new ExecutionPricingService();
     this.tickSanityFilter = tickSanityFilter || new TickSanityFilter();
+    this.onStreamRecovered = typeof onStreamRecovered === 'function' ? onStreamRecovered : null;
+    this.streamOutage = false;
 
     this.connectionState = MARKET_CONNECTION_STATES.DISCONNECTED;
     this.symbolStates = new Map(this.symbols.map(symbol => [symbol, 'WAITING']));
@@ -124,6 +138,7 @@ class MarketGateway {
           symbol: canonical,
           providerSymbol: instrument.providerSymbol,
           source: raw?.source || 'twelve-data-rest',
+          quoteOnly: true,
         });
         const recovered = this.quoteStore.get(canonical);
         this.logger?.debug?.({ symbol: canonical, reason }, 'Market quote recovered from latest-price endpoint');
@@ -178,8 +193,12 @@ class MarketGateway {
   }
 
   #onConnection(event) {
+    const previousState = this.connectionState;
     this.connectionState = event.state;
+    let recovered = false;
+
     if (event.state === MARKET_CONNECTION_STATES.DISCONNECTED) {
+      this.streamOutage = true;
       for (const symbol of this.symbols) {
         // A disconnected stream must never fabricate carry-forward chart bars.
         // Keep a still-fresh quote executable, but break candle continuity immediately.
@@ -197,8 +216,20 @@ class MarketGateway {
           void this.ensureFreshQuote(symbol, { reason: 'stream-disconnected' }).catch(() => undefined);
         }
       }
+    } else if (event.state === MARKET_CONNECTION_STATES.LIVE && this.streamOutage) {
+      recovered = true;
+      this.streamOutage = false;
+      try {
+        this.onStreamRecovered?.({
+          previousState,
+          timestamp: Number(event.timestamp) || Date.now(),
+        });
+      } catch (error) {
+        this.logger?.warn?.({ err: error }, 'Market stream recovery hook failed');
+      }
     }
-    this.#emitGatewayStatus({ code: event.code, reason: event.reason });
+
+    this.#emitGatewayStatus({ code: event.code, reason: event.reason, recovered });
   }
 
   #onAdapterError(error) {
@@ -320,10 +351,20 @@ class MarketGateway {
     });
 
     const previousState = this.symbolStates.get(symbol);
-    this.candleEngine.setSymbolLive(symbol, true);
+    const quoteOnly = raw.quoteOnly === true;
     const quote = this.quoteStore.set(tick);
     this.#setSymbolState(symbol, 'LIVE');
 
+    // REST latest-price recovery is a point-in-time quote snapshot. It keeps
+    // execution/UI pricing fresh, but it is not a continuous market stream and
+    // therefore must never reopen candle continuity, emit a market tick, or
+    // build synthetic/live OHLC. Only websocket prices may do that.
+    if (quoteOnly) {
+      this.eventBus.emit('market.quote', quote);
+      return;
+    }
+
+    this.candleEngine.setSymbolLive(symbol, true);
     this.eventBus.emit('market.tick', tick);
     this.eventBus.emit('market.quote', quote);
     this.candleEngine.processTick(tick);

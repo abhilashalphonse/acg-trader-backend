@@ -28,7 +28,7 @@ class FakeAdapter extends EventEmitter {
   }
 }
 
-function createHarness() {
+function createHarness({ onStreamRecovered = null } = {}) {
   const adapter = new FakeAdapter();
   const quoteStore = new QuoteStore();
   const eventBus = new EventEmitter();
@@ -69,6 +69,7 @@ function createHarness() {
     symbols: ['EURUSD'],
     staleCheckMs: 100000,
     logger,
+    onStreamRecovered,
   });
   return { adapter, quoteStore, eventBus, feedStates, processedTicks, gateway, instrument };
 }
@@ -151,6 +152,61 @@ test('soft-stale priority quote is recovered through latest-price REST without b
   assert.ok(Math.abs(recovered.bid - 1.10195) < 1e-12);
   assert.ok(Math.abs(recovered.ask - 1.10205) < 1e-12);
   assert.ok(Date.now() - recovered.receivedAtMs < 1000);
+
+  await gateway.stop();
+});
+
+test('REST quote recovery never reopens candle continuity or emits a market tick', async () => {
+  const { adapter, quoteStore, feedStates, processedTicks, gateway } = createHarness();
+  await gateway.start();
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1,
+    bid: null,
+    ask: null,
+    providerTimestampMs: Date.now(),
+    dayVolume: null,
+  });
+  assert.deepEqual(processedTicks.map(tick => tick.price), [1.1]);
+
+  adapter.emit('connection', { state: 'DISCONNECTED', code: 1006, reason: '' });
+  assert.equal(feedStates.at(-1).live, false);
+
+  adapter.latestPrice = 1.102;
+  const recovered = await gateway.ensureFreshQuote('EURUSD', { reason: 'test-rest-recovery', force: true });
+
+  assert.equal(recovered.source, 'twelve-data-rest');
+  assert.equal(recovered.price, 1.102);
+  assert.deepEqual(processedTicks.map(tick => tick.price), [1.1]);
+  assert.equal(feedStates.at(-1).live, false);
+
+  await gateway.stop();
+});
+
+test('provider reconnect invokes recovery hook once and marks recovered gateway status', async () => {
+  const recoveries = [];
+  const { adapter, eventBus, gateway } = createHarness({
+    onStreamRecovered: event => recoveries.push(event),
+  });
+  const statuses = [];
+  eventBus.on('market.status', status => {
+    if (status.scope === 'gateway') statuses.push(status);
+  });
+  await gateway.start();
+
+  adapter.emit('connection', { state: 'LIVE', timestamp: 1000 });
+  assert.equal(recoveries.length, 0);
+
+  adapter.emit('connection', { state: 'DISCONNECTED', timestamp: 2000, code: 1006, reason: '' });
+  adapter.emit('connection', { state: 'CONNECTING', timestamp: 2500 });
+  adapter.emit('connection', { state: 'LIVE', timestamp: 3000 });
+
+  assert.equal(recoveries.length, 1);
+  assert.equal(recoveries[0].timestamp, 3000);
+  assert.equal(statuses.at(-1).state, 'LIVE');
+  assert.equal(statuses.at(-1).recovered, true);
 
   await gateway.stop();
 });
