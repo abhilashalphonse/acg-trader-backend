@@ -145,19 +145,17 @@ test('manual SL mutation disables an active trailing configuration', async () =>
 });
 
 
-test('firm mandatory-stop policy prevents removing SL from an open position', async () => {
+test('standard ACG policy allows removing SL from an open position', async () => {
   const { service, doc } = fixture({ riskPolicy: { requireStopLoss: true } });
-  await assert.rejects(
-    () => service.updateProtection({
-      accountId: String(doc.accountId),
-      positionId: String(doc._id),
-      clientRequestId: 'protect-hard-stop',
-      stopLoss: null,
-      source: 'WEB',
-    }),
-    error => error.code === 'STOP_LOSS_REQUIRED_BY_POLICY',
-  );
-  assert.equal(doc.stopLoss, '1.09');
+  const result = await service.updateProtection({
+    accountId: String(doc.accountId),
+    positionId: String(doc._id),
+    clientRequestId: 'protect-optional-stop',
+    stopLoss: null,
+    source: 'WEB',
+  });
+  assert.equal(result.position.stopLoss, null);
+  assert.equal(doc.stopLoss, null);
 });
 
 test('firm per-trade risk cap prevents widening an existing stop beyond the limit', async () => {
@@ -170,7 +168,7 @@ test('firm per-trade risk cap prevents widening an existing stop beyond the limi
       stopLoss: '1.08',
       source: 'WEB',
     }),
-    error => error.code === 'MAX_RISK_PER_TRADE_REACHED',
+    error => error.code === 'MAX_TRADE_RISK',
   );
   assert.equal(doc.stopLoss, '1.09');
 });

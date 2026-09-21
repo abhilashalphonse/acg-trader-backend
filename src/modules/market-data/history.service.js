@@ -62,12 +62,11 @@ function chooseVolumeMode(bars) {
   // recover quickly after a restart without waiting for the entire window.
   const recentTickWindow = usable.slice(-8);
   const recentTickPositive = recentTickWindow.filter(bar => positiveNumber(bar.tickCount) != null).length;
-  const recentTickCoverage = recentTickPositive / recentTickWindow.length;
   const trailingTickRun = trailingPositiveRun(recentTickWindow, bar => bar.tickCount);
-  const tickHealthy = tickPositive >= 3
-    && recentTickPositive >= Math.min(3, recentTickWindow.length)
-    && recentTickCoverage >= 0.5
-    && trailingTickRun >= Math.min(3, recentTickWindow.length);
+  const minimumRecoveryRun = Math.min(3, recentTickWindow.length);
+  const tickHealthy = tickPositive >= minimumRecoveryRun
+    && recentTickPositive >= minimumRecoveryRun
+    && trailingTickRun >= minimumRecoveryRun;
 
   if (tickHealthy) return 'tick';
   return 'unavailable';

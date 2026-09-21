@@ -128,7 +128,22 @@ test('market execution enforces volume steps and free margin', () => {
     error => error.code === 'INVALID_VOLUME_STEP',
   );
   assert.throws(
-    () => planMarketOpen({ account: account({ state: { ...account().state, freeMargin: '100' } }), instrument: instrument(), quote: quote(), side: 'BUY', volume: '1', nowMs: 10_100 }),
+    () => planMarketOpen({
+      account: account({
+        riskPolicy: {
+          allowedSymbols: [],
+          maxMarginUsagePercent: '0',
+          maxSingleOrderMarginPercentOfFree: '0',
+          maxSymbolMarginPercentOfPermitted: '0',
+        },
+        state: { ...account().state, freeMargin: '100' },
+      }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      nowMs: 10_100,
+    }),
     error => error.code === 'INSUFFICIENT_MARGIN',
   );
 });
@@ -145,11 +160,11 @@ test('protection prices must be on the correct side of the fill', () => {
     quote: quote(),
     side: 'BUY',
     volume: '1',
-    stopLoss: '1.09000',
+    stopLoss: '1.09010',
     takeProfit: '1.12000',
     nowMs: 10_100,
   });
-  assert.equal(plan.stopLoss, '1.09');
+  assert.equal(plan.stopLoss, '1.0901');
   assert.equal(plan.takeProfit, '1.12');
 });
 
@@ -358,7 +373,7 @@ test('server risk policy rejects projected symbol volume and aggregate stop risk
       quote: quote(),
       side: 'BUY',
       volume: '1',
-      stopLoss: '1.09',
+      stopLoss: '1.095',
       exposure: { currentOpenPositions: 1, currentTotalVolume: '1', currentSymbolVolume: '1', currentOpenRisk: '1000', unmeasuredRiskPositions: 0 },
       nowMs: 10_100,
     }),

@@ -37,6 +37,13 @@ function fixture() {
   class FakePosition {
     constructor(data) { Object.assign(this, data); this._id = `position-doc-${++sequence}`; this.positionId = `position-${sequence}`; this.trailing = { enabled: false }; }
     static findById() { return sessionQuery(original); }
+    static find() {
+      return {
+        select() { return this; },
+        lean() { return this; },
+        async session() { return []; },
+      };
+    }
     async save({ session }) { this.savedSession = session; saved.positions.push(this); }
   }
   class FakeLedger {

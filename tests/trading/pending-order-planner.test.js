@@ -77,7 +77,7 @@ test('plans BUY LIMIT away from current ASK without reserving margin', () => {
     quote: quote(),
     type: 'LIMIT',
     side: 'BUY',
-    volume: '1',
+    volume: '0.1',
     limitPrice: '1.09900',
     stopLoss: '1.09',
     takeProfit: '1.12',
