@@ -76,7 +76,12 @@ class CandleEngine {
 
   processTick(tick) {
     if (!tick || !Number.isFinite(tick.timeMs)) return;
-    const chartPrice = Number.isFinite(tick.bid) ? tick.bid : tick.price;
+    // Historical bars come from the provider reference-price series.
+    // Keep live OHLC on that same series; executable bid/ask belong on price
+    // lines and in the order engine, not inside the chart candle body.
+    const chartPrice = [tick.referencePrice, tick.price, tick.mid, tick.bid]
+      .map(Number)
+      .find(Number.isFinite);
     if (!Number.isFinite(chartPrice)) return;
     const symbol = normalizeSymbol(tick.symbol);
     const continuityBroken = this.continuityBroken.has(symbol);

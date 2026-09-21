@@ -68,10 +68,14 @@ class ExecutionPricingService {
       });
     }
 
+    // ACG_DYNAMIC is a simulated execution product. Twelve Data is the
+    // reference market-data feed, not the execution venue, so its indicative
+    // bid/ask width must not silently become ACG's spread. Keep the provider
+    // spread in quote metadata for diagnostics, while executable bid/ask are
+    // derived from ACG's own instrument profile, volatility and session rules.
     const profilePoints = policy.normalPoints * volatilityMultiplier * sessionMultiplier;
-    const marketObservedPoints = Number.isFinite(providerSpreadPoints) ? providerSpreadPoints : 0;
     const targetPoints = clamp(
-      Math.max(policy.minimumPoints, profilePoints, marketObservedPoints) + policy.markupPoints,
+      Math.max(policy.minimumPoints, profilePoints) + policy.markupPoints,
       policy.minimumPoints,
       policy.maximumPoints,
     );
@@ -82,9 +86,7 @@ class ExecutionPricingService {
       points: targetPoints,
       providerSpreadPoints,
       pricingModel: 'ACG_DYNAMIC',
-      spreadSource: Number.isFinite(providerSpreadPoints) && providerSpreadPoints >= profilePoints
-        ? 'PROVIDER_SPREAD_FLOOR'
-        : 'ACG_SPREAD_PROFILE',
+      spreadSource: 'ACG_SPREAD_PROFILE',
       volatilityMultiplier,
       sessionMultiplier,
     });

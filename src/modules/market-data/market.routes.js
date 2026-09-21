@@ -65,8 +65,11 @@ function createMarketRouter(runtime, authService = null) {
 
     if (current) {
       const last = history[history.length - 1];
-      if (last?.openTimeMs === current.openTimeMs) candles = [...history.slice(0, -1), current];
-      else candles = [...history, current];
+      if (last?.openTimeMs === current.openTimeMs) {
+        candles = [...history.slice(0, -1), mergeCurrentCandle(last, current)];
+      } else {
+        candles = [...history, current];
+      }
     }
 
     if (candles.length > limit) candles = candles.slice(candles.length - limit);
@@ -96,4 +99,41 @@ function validateSymbols(runtime, symbols) {
   }
 }
 
-module.exports = { createMarketRouter };
+function mergeCurrentCandle(historyBar, currentBar) {
+  if (!historyBar) return currentBar;
+  if (!currentBar) return historyBar;
+  if (Number(historyBar.openTimeMs) !== Number(currentBar.openTimeMs)) return currentBar;
+
+  const numeric = value => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  const historyOpen = numeric(historyBar.open);
+  const historyHigh = numeric(historyBar.high);
+  const historyLow = numeric(historyBar.low);
+  const historyClose = numeric(historyBar.close);
+  const currentOpen = numeric(currentBar.open);
+  const currentHigh = numeric(currentBar.high);
+  const currentLow = numeric(currentBar.low);
+  const currentClose = numeric(currentBar.close);
+
+  const highs = [historyHigh, historyOpen, historyClose, currentHigh, currentOpen, currentClose].filter(Number.isFinite);
+  const lows = [historyLow, historyOpen, historyClose, currentLow, currentOpen, currentClose].filter(Number.isFinite);
+
+  return {
+    ...historyBar,
+    ...currentBar,
+    open: historyOpen ?? currentOpen,
+    high: highs.length ? Math.max(...highs) : (currentHigh ?? historyHigh),
+    low: lows.length ? Math.min(...lows) : (currentLow ?? historyLow),
+    close: currentClose ?? historyClose,
+    tickCount: Number(currentBar.tickCount || 0),
+    providerVolume: historyBar.providerVolume ?? currentBar.providerVolume ?? null,
+    complete: false,
+    synthetic: Boolean(currentBar.synthetic && historyBar.synthetic),
+    source: 'LIVE_MERGED',
+    provider: currentBar.provider || historyBar.provider || null,
+  };
+}
+
+module.exports = { createMarketRouter, mergeCurrentCandle };

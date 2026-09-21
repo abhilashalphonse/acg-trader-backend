@@ -28,19 +28,23 @@ function instrument(overrides = {}) {
   };
 }
 
-test('dynamic pricing owns executable spread while using provider book as a market floor', () => {
+test('dynamic pricing uses ACG spread profile while preserving provider spread only as diagnostics', () => {
   const service = new ExecutionPricingService();
   const quote = service.priceQuote({
-    raw: { price: 1.1, bid: 1.099995, ask: 1.100005 },
+    // Deliberately wide provider book: 21 pips on EURUSD.
+    raw: { price: 1.1, bid: 1.09895, ask: 1.10105 },
     instrument: instrument(),
     nowMs: Date.parse('2026-09-21T12:00:00Z'),
   });
 
   assert.equal(quote.pricingModel, 'ACG_DYNAMIC');
+  assert.equal(quote.spreadSource, 'ACG_SPREAD_PROFILE');
   assert.equal(quote.isSyntheticSpread, true);
   assert.ok(Math.abs(quote.referencePrice - 1.1) < 1e-12);
-  assert.ok(quote.spreadPoints >= 2);
-  assert.ok(quote.bid < quote.ask);
+  assert.ok(Math.abs(quote.spreadPoints - 2) < 1e-9);
+  assert.ok(Math.abs(quote.providerSpreadPoints - 210) < 1e-9);
+  assert.ok(Math.abs(quote.bid - 1.09999) < 1e-12);
+  assert.ok(Math.abs(quote.ask - 1.10001) < 1e-12);
 });
 
 test('REST price recovery uses the same dynamic pricing model instead of a separate fixed fallback', () => {

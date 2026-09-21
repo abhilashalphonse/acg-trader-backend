@@ -139,7 +139,7 @@ test('fills only short missing-candle gaps with synthetic bars when feed continu
 });
 
 
-test('uses bid as the live chart price when bid is available', () => {
+test('uses reference price for live chart candles instead of executable bid', () => {
   const bus = new EventEmitter();
   const engine = createEngine(bus);
 
@@ -147,16 +147,17 @@ test('uses bid as the live chart price when bid is available', () => {
     symbol: 'EURUSD',
     timeMs: 1000,
     price: 1.10010,
-    bid: 1.10000,
-    ask: 1.10020,
+    referencePrice: 1.10010,
+    bid: 1.09905,
+    ask: 1.10115,
     source: 'test',
   });
 
   const current = engine.getCurrent('EURUSD', '5s');
-  assert.equal(current.open, 1.1);
-  assert.equal(current.high, 1.1);
-  assert.equal(current.low, 1.1);
-  assert.equal(current.close, 1.1);
+  assert.equal(current.open, 1.1001);
+  assert.equal(current.high, 1.1001);
+  assert.equal(current.low, 1.1001);
+  assert.equal(current.close, 1.1001);
 });
 
 
