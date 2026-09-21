@@ -76,10 +76,11 @@ class CandleEngine {
 
   processTick(tick) {
     if (!tick || !Number.isFinite(tick.timeMs)) return;
-    // Historical bars come from the provider reference-price series.
-    // Keep live OHLC on that same series; executable bid/ask belong on price
-    // lines and in the order engine, not inside the chart candle body.
-    const chartPrice = [tick.referencePrice, tick.price, tick.mid, tick.bid]
+    // Historical OHLC comes from the provider's price series. Keep live OHLC
+    // on that exact same series so the REST -> websocket handoff cannot jump
+    // just because execution pricing derives a different bid/ask midpoint.
+    // referencePrice remains a safe fallback for feeds that do not expose price.
+    const chartPrice = [tick.price, tick.referencePrice, tick.mid, tick.bid]
       .map(Number)
       .find(Number.isFinite);
     if (!Number.isFinite(chartPrice)) return;
