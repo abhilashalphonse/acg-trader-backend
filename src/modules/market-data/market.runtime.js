@@ -54,7 +54,7 @@ function createMarketRuntime() {
     },
     attachWebSocket(server, authService, tradingRuntime) {
       if (wsServer) return wsServer;
-      wsServer = createMarketWebSocketServer({ server, runtime: this, tradingRuntime, authService, path: env.market.wsPath, corsOrigins: env.corsOrigins, pingIntervalMs: env.market.wsPingIntervalMs, maxBufferBytes: env.market.wsMaxBufferBytes, logger });
+      wsServer = createMarketWebSocketServer({ server, runtime: this, tradingRuntime, authService, path: env.market.wsPath, corsOrigins: env.corsOrigins, pingIntervalMs: env.market.wsPingIntervalMs, maxBufferBytes: env.market.wsMaxBufferBytes, quoteCoalesceMs: env.market.wsQuoteCoalesceMs, valuationCoalesceMs: env.market.wsValuationCoalesceMs, logger });
       return wsServer;
     },
     async stop() {
