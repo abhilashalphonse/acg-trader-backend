@@ -240,3 +240,24 @@ test('challenge policy sync can explicitly clear nullable total-volume limit', (
   });
   assert.equal(parsed.riskPolicy.maxTotalVolume, null);
 });
+
+
+test('challenge policy sync accepts authoritative execution risk controls', () => {
+  const parsed = challengeSyncSchema.parse({
+    riskPolicy: {
+      requireStopLoss: true,
+      maxRiskPerTradePercent: '1',
+      maxAggregateRiskPercent: '2',
+      maxPositionVolume: '5',
+      maxSymbolVolume: '10',
+      maxPendingOrders: 4,
+    },
+  });
+
+  assert.equal(parsed.riskPolicy.requireStopLoss, true);
+  assert.equal(parsed.riskPolicy.maxRiskPerTradePercent, '1');
+  assert.equal(parsed.riskPolicy.maxAggregateRiskPercent, '2');
+  assert.equal(parsed.riskPolicy.maxPositionVolume, '5');
+  assert.equal(parsed.riskPolicy.maxSymbolVolume, '10');
+  assert.equal(parsed.riskPolicy.maxPendingOrders, 4);
+});
