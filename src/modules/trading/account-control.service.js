@@ -484,7 +484,7 @@ function normalizeRiskPolicy(policy = {}) {
     ['maxRiskPerTradePercent', maxRiskPerTradePercent],
     ['maxAggregateRiskPercent', maxAggregateRiskPercent],
   ]) {
-    if (compareDecimal(value, '0') < 0) {
+    if (value != null && compareDecimal(value, '0') < 0) {
       throw new AppError(`${field} cannot be negative`, {
         statusCode: 400,
         code: 'INVALID_RISK_POLICY',
