@@ -49,6 +49,7 @@ function createMarketRouter(runtime, authService = null) {
     const symbol = normalizeSymbol(req.query.symbol);
     const timeframe = String(req.query.timeframe || '').toLowerCase();
     const limit = clampInteger(req.query.limit, 1, 1000, 160);
+    const beforeMs = parseOptionalHistoryCursor(req.query.before);
 
     validateSymbols(runtime, [symbol]);
     if (!runtime.timeframes.includes(timeframe)) {
@@ -59,30 +60,66 @@ function createMarketRouter(runtime, authService = null) {
       });
     }
 
-    const history = await runtime.historyService.getCandles({ symbol, timeframe, limit });
-    const historyVolumeMode = history[history.length - 1]?.volumeMode || null;
-    if (historyVolumeMode) runtime.candleEngine.setVolumeMode?.(symbol, timeframe, historyVolumeMode);
-    let current = runtime.candleEngine.getCurrent(symbol, timeframe);
+    const page = await runtime.historyService.getCandlePage({ symbol, timeframe, limit, beforeMs });
+    const history = page.candles;
     let candles = history;
+    let hasMore = page.hasMore;
 
-    if (current) {
-      const last = history[history.length - 1];
-      if (last?.openTimeMs === current.openTimeMs) {
-        runtime.candleEngine.reconcileCurrentVolume?.(symbol, timeframe, last);
-        current = runtime.candleEngine.getCurrent(symbol, timeframe) || current;
-        candles = [...history.slice(0, -1), mergeCurrentCandle(last, current)];
-      } else {
-        const inheritedMode = last?.volumeMode || null;
-        if (inheritedMode) current = applyVolumeMode(current, inheritedMode);
-        candles = [...history, current];
+    // Historical pagination is intentionally detached from the live candle.
+    // Older pages must be stable, non-overlapping provider history. Only the
+    // latest page inherits the active volume mode and merges the live bucket.
+    if (beforeMs == null) {
+      const historyVolumeMode = history[history.length - 1]?.volumeMode || null;
+      if (historyVolumeMode) runtime.candleEngine.setVolumeMode?.(symbol, timeframe, historyVolumeMode);
+      let current = runtime.candleEngine.getCurrent(symbol, timeframe);
+
+      if (current) {
+        const last = history[history.length - 1];
+        if (last?.openTimeMs === current.openTimeMs) {
+          runtime.candleEngine.reconcileCurrentVolume?.(symbol, timeframe, last);
+          current = runtime.candleEngine.getCurrent(symbol, timeframe) || current;
+          candles = [...history.slice(0, -1), mergeCurrentCandle(last, current)];
+        } else {
+          const inheritedMode = last?.volumeMode || null;
+          if (inheritedMode) current = applyVolumeMode(current, inheritedMode);
+          candles = [...history, current];
+        }
+      }
+
+      if (candles.length > limit) {
+        hasMore = true;
+        candles = candles.slice(candles.length - limit);
       }
     }
 
-    if (candles.length > limit) candles = candles.slice(candles.length - limit);
-    res.json({ symbol, timeframe, volumeMode: candles[0]?.volumeMode || null, candles });
+    const nextBefore = candles.length ? Number(candles[0].openTimeMs) : page.nextBefore;
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      symbol,
+      timeframe,
+      volumeMode: candles[0]?.volumeMode || null,
+      candles,
+      pagination: {
+        hasMore: Boolean(hasMore && Number.isFinite(nextBefore)),
+        nextBefore: Number.isFinite(nextBefore) ? nextBefore : null,
+        limit,
+      },
+    });
   });
 
   return router;
+}
+
+function parseOptionalHistoryCursor(value) {
+  if (value == null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new AppError('Invalid candle history cursor', {
+      statusCode: 400,
+      code: 'INVALID_HISTORY_CURSOR',
+    });
+  }
+  return Math.trunc(numeric);
 }
 
 function requireEnabled(runtime) {
@@ -162,4 +199,4 @@ function mergeCurrentCandle(historyBar, currentBar) {
   return applyVolumeMode(merged, volumeMode);
 }
 
-module.exports = { createMarketRouter, mergeCurrentCandle, applyVolumeMode };
+module.exports = { createMarketRouter, mergeCurrentCandle, applyVolumeMode, parseOptionalHistoryCursor };

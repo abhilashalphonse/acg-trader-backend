@@ -97,30 +97,55 @@ class MarketHistoryService {
     this.logger = logger;
   }
 
-  async getCandles({ symbol, timeframe, limit = 160 }) {
+  async getCandles(options) {
+    const page = await this.getCandlePage(options);
+    return page.candles;
+  }
+
+  async getCandlePage({ symbol, timeframe, limit = 160, beforeMs = null }) {
     const canonical = normalizeSymbol(symbol);
     const safeLimit = clampInteger(limit, 1, 1000, 160);
-    const rows = await this.#loadLocal(canonical, timeframe, safeLimit);
+    const fetchLimit = Math.min(1000, safeLimit + 1);
+    const cursor = Number.isFinite(Number(beforeMs)) && Number(beforeMs) > 0
+      ? Math.trunc(Number(beforeMs))
+      : null;
+    const rows = await this.#loadLocal(canonical, timeframe, fetchLimit, cursor);
     const localByOpenTime = new Map(rows.map(row => [new Date(row.openTime).getTime(), row]));
 
     if (this.adapter.supportsHistory(timeframe)) {
       try {
         const providerSymbol = this.instrumentRegistry.providerSymbol(canonical);
+        const cursorKey = cursor == null ? 'latest' : String(cursor);
         const providerBars = await this.historyCache.getOrLoad({
-          key: `${providerSymbol}:${timeframe}`,
+          key: `${providerSymbol}:${timeframe}:${cursorKey}`,
           timeframe,
-          limit: safeLimit,
-          load: () => this.adapter.fetchHistorical({ providerSymbol, timeframe, limit: safeLimit }),
+          limit: fetchLimit,
+          load: () => this.adapter.fetchHistorical({
+            providerSymbol,
+            timeframe,
+            limit: fetchLimit,
+            beforeMs: cursor,
+          }),
         });
         if (providerBars.length) {
-          // Provider history is authoritative chart data, not durable ACG state.
-          // Return it directly and keep MongoDB reserved for locally observed
-          // live candles/tick metadata. This prevents chart reads from growing
-          // the candle collection while preserving identical chart output.
-          return this.#serializeProviderBars(canonical, timeframe, providerBars, safeLimit, localByOpenTime);
+          const hasMore = providerBars.length > safeLimit
+            || (safeLimit === 1000 && providerBars.length === safeLimit);
+          const selected = providerBars.slice(-safeLimit);
+          const candles = this.#serializeProviderBars(
+            canonical,
+            timeframe,
+            selected,
+            safeLimit,
+            localByOpenTime,
+          );
+          return {
+            candles,
+            hasMore,
+            nextBefore: candles.length ? Number(candles[0].openTimeMs) : null,
+          };
         }
       } catch (error) {
-        this.logger.warn({ err: error, symbol: canonical, timeframe }, 'Historical provider reconciliation failed');
+        this.logger.warn({ err: error, symbol: canonical, timeframe, beforeMs: cursor }, 'Historical provider reconciliation failed');
         if (!rows.length) {
           throw new AppError('Market history is temporarily unavailable', {
             statusCode: 502,
@@ -130,8 +155,15 @@ class MarketHistoryService {
       }
     }
 
-    const localBars = rows.reverse();
-    return applyVolumeMode(localBars, chooseVolumeMode(localBars, timeframe));
+    const orderedLocal = rows.reverse();
+    const hasMore = orderedLocal.length > safeLimit;
+    const localBars = orderedLocal.slice(-safeLimit);
+    const candles = applyVolumeMode(localBars, chooseVolumeMode(localBars, timeframe));
+    return {
+      candles,
+      hasMore,
+      nextBefore: candles.length ? Number(candles[0].openTimeMs) : null,
+    };
   }
 
   #serializeProviderBars(symbol, timeframe, bars, limit, localByOpenTime) {
@@ -167,10 +199,13 @@ class MarketHistoryService {
     this.historyCache.clear();
   }
 
-  async #loadLocal(symbol, timeframe, limit) {
+  async #loadLocal(symbol, timeframe, limit, beforeMs = null) {
     const filter = { symbol, timeframe, synthetic: mongoose.trusted({ $ne: true }) };
     if (CANONICAL_UTC_HISTORY_SOURCE[timeframe]) {
       filter.source = mongoose.trusted({ $in: ['LIVE', 'CANONICAL_BACKFILL'] });
+    }
+    if (Number.isFinite(Number(beforeMs)) && Number(beforeMs) > 0) {
+      filter.openTime = mongoose.trusted({ $lt: new Date(Number(beforeMs)) });
     }
     return Candle.find(filter).sort({ openTime: -1 }).limit(limit).lean();
   }

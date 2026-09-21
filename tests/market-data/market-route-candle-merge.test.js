@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mergeCurrentCandle } = require('../../src/modules/market-data/market.routes');
+const { mergeCurrentCandle, parseOptionalHistoryCursor } = require('../../src/modules/market-data/market.routes');
 
 test('merges provider current candle with post-connect live fragment without changing OHLC semantics', () => {
   const merged = mergeCurrentCandle(
@@ -97,4 +97,15 @@ test('tick volume mode never mixes provider volume into the displayed value', ()
   assert.equal(merged.displayVolume, 35);
   assert.equal(merged.volumeSource, 'tick');
   assert.equal(merged.volumeMode, 'tick');
+});
+
+
+test('parses millisecond history cursors and rejects malformed cursors', () => {
+  assert.equal(parseOptionalHistoryCursor(undefined), null);
+  assert.equal(parseOptionalHistoryCursor(''), null);
+  assert.equal(parseOptionalHistoryCursor('1790010000000'), 1790010000000);
+  assert.throws(
+    () => parseOptionalHistoryCursor('not-a-time'),
+    error => error?.code === 'INVALID_HISTORY_CURSOR' && error?.statusCode === 400,
+  );
 });

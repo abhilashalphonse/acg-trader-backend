@@ -232,8 +232,12 @@ class TwelveDataAdapter extends EventEmitter {
     return Boolean(TWELVE_DATA_HISTORY_INTERVALS[timeframe]);
   }
 
-  async fetchHistorical({ providerSymbol, timeframe, limit = 160 }) {
+  async fetchHistorical({ providerSymbol, timeframe, limit = 160, beforeMs = null }) {
     const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 160));
+    const cursor = Number.isFinite(Number(beforeMs)) && Number(beforeMs) > 0
+      ? Math.trunc(Number(beforeMs))
+      : null;
+    const endDateMs = cursor == null ? null : cursor - 1;
     const canonicalSource = CANONICAL_UTC_HISTORY_SOURCE[timeframe];
     if (canonicalSource) {
       return this.#fetchCanonicalUtcHistorical({
@@ -241,19 +245,25 @@ class TwelveDataAdapter extends EventEmitter {
         timeframe,
         sourceTimeframe: canonicalSource,
         limit: safeLimit,
+        endDateMs,
       });
     }
-    return this.#fetchTimeSeries({ providerSymbol, timeframe, limit: safeLimit });
+    return this.#fetchTimeSeries({
+      providerSymbol,
+      timeframe,
+      limit: safeLimit,
+      endDateMs,
+    });
   }
 
-  async #fetchCanonicalUtcHistorical({ providerSymbol, timeframe, sourceTimeframe, limit }) {
+  async #fetchCanonicalUtcHistorical({ providerSymbol, timeframe, sourceTimeframe, limit, endDateMs: initialEndDateMs = null }) {
     const barsPerTarget = canonicalSourceBarsPerTarget(timeframe);
     if (!barsPerTarget) return [];
 
     const desiredSourceBars = Math.max(barsPerTarget * 2, (limit + 2) * barsPerTarget);
     const maxPages = 12;
     const sourceByTime = new Map();
-    let endDateMs = null;
+    let endDateMs = Number.isFinite(initialEndDateMs) ? initialEndDateMs : null;
 
     for (let page = 0; page < maxPages; page += 1) {
       const remaining = Math.max(1, desiredSourceBars - sourceByTime.size);
