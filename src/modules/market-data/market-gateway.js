@@ -5,6 +5,7 @@ const { MARKET_CONNECTION_STATES } = require('./market.constants');
 const { ExecutionPricingService } = require('./execution-pricing');
 
 const RECOVERY_COOLDOWN_MS = 2500;
+const MAX_PROVIDER_TIMESTAMP_DRIFT_MS = 5 * 60 * 1000;
 
 class MarketGateway {
   constructor({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols, staleCheckMs, logger, executionPricing = null }) {
@@ -177,11 +178,13 @@ class MarketGateway {
     this.connectionState = event.state;
     if (event.state === MARKET_CONNECTION_STATES.DISCONNECTED) {
       for (const symbol of this.symbols) {
+        // A disconnected stream must never fabricate carry-forward chart bars.
+        // Keep a still-fresh quote executable, but break candle continuity immediately.
+        this.candleEngine.setSymbolLive(symbol, false);
         const quote = this.quoteStore.get(symbol);
         const instrument = this.instrumentRegistry.get(symbol);
         const ageMs = this.#quoteAgeMs(quote);
         if (!quote || !instrument || ageMs > instrument.maxQuoteAgeMs) {
-          this.candleEngine.setSymbolLive(symbol, false);
           const staleQuote = this.quoteStore.markStale(symbol, true);
           if (staleQuote) this.eventBus.emit('market.quote', staleQuote);
           this.#setSymbolState(symbol, 'DISCONNECTED');
@@ -228,6 +231,12 @@ class MarketGateway {
       return;
     }
 
+    const providerTimestampMs = Number(raw.providerTimestampMs);
+    const providerTimeUsable = Number.isFinite(providerTimestampMs)
+      && providerTimestampMs > 0
+      && Math.abs(receivedAtMs - providerTimestampMs) <= MAX_PROVIDER_TIMESTAMP_DRIFT_MS;
+    const marketTimeMs = providerTimeUsable ? Math.trunc(providerTimestampMs) : receivedAtMs;
+
     const normalizedPrices = this.#normalizePrices({ ...raw, price: lastPrice }, instrument, receivedAtMs);
     const sequence = (this.sequences.get(symbol) || 0) + 1;
     this.sequences.set(symbol, sequence);
@@ -248,9 +257,9 @@ class MarketGateway {
       spreadSource: normalizedPrices.spreadSource,
       volatilityMultiplier: normalizedPrices.volatilityMultiplier,
       sessionMultiplier: normalizedPrices.sessionMultiplier,
-      providerTimestampMs: raw.providerTimestampMs,
+      providerTimestampMs: Number.isFinite(providerTimestampMs) ? Math.trunc(providerTimestampMs) : null,
       receivedAtMs,
-      timeMs: receivedAtMs,
+      timeMs: marketTimeMs,
       source: raw.source || 'twelve-data',
       providerSymbol: raw.providerSymbol,
       isSyntheticSpread: normalizedPrices.isSyntheticSpread,
