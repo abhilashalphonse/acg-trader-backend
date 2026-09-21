@@ -11,15 +11,39 @@ function positiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
+function trailingProviderGap(bars) {
+  let count = 0;
+  for (let index = bars.length - 1; index >= 0; index -= 1) {
+    if (positiveNumber(bars[index]?.providerVolume) != null) break;
+    count += 1;
+  }
+  return count;
+}
+
 function chooseVolumeMode(bars) {
-  const usable = (Array.isArray(bars) ? bars : []).filter(bar => !bar.synthetic);
+  const usable = (Array.isArray(bars) ? bars : [])
+    .filter(bar => !bar.synthetic && bar?.complete !== false);
   if (!usable.length) return 'unavailable';
 
   const providerPositive = usable.filter(bar => positiveNumber(bar.providerVolume) != null).length;
   const tickPositive = usable.filter(bar => positiveNumber(bar.tickCount) != null).length;
   const providerCoverage = providerPositive / usable.length;
 
-  if (providerPositive >= 2 && providerCoverage >= 0.5) return 'provider';
+  // Overall coverage alone is not enough: some provider feeds can return
+  // healthy historical volume followed by a long zero/null tail while prices
+  // continue normally. Prefer recent continuity so the chart never compares
+  // stale historical provider bars with a live volume spike.
+  const recent = usable.slice(-24);
+  const recentProviderPositive = recent.filter(bar => positiveNumber(bar.providerVolume) != null).length;
+  const recentProviderCoverage = recentProviderPositive / recent.length;
+  const recentTrailingGap = trailingProviderGap(recent);
+  const providerHealthy = providerPositive >= 2
+    && providerCoverage >= 0.5
+    && recentProviderPositive >= Math.min(2, recent.length)
+    && recentProviderCoverage >= 0.65
+    && recentTrailingGap <= 2;
+
+  if (providerHealthy) return 'provider';
   if (tickPositive > 0) return 'tick';
   return 'unavailable';
 }
