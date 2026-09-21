@@ -1,5 +1,6 @@
 'use strict';
 
+const mongoose = require('mongoose');
 const { Candle } = require('./candle.model');
 const { TIMEFRAME_MS } = require('./market.constants');
 const { normalizeSymbol, serializeCandle, clampInteger } = require('./market.utils');
@@ -141,7 +142,7 @@ class MarketHistoryService {
   }
 
   async #loadLocal(symbol, timeframe, limit) {
-    return Candle.find({ symbol, timeframe, synthetic: { $ne: true } })
+    return Candle.find({ symbol, timeframe, synthetic: mongoose.trusted({ $ne: true }) })
       .sort({ openTime: -1 })
       .limit(limit)
       .lean();
