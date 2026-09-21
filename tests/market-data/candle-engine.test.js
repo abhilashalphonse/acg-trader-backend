@@ -212,3 +212,24 @@ test('keeps provider volume unavailable when the feed does not supply day volume
   assert.equal(current.providerVolume, null);
   assert.equal(current.tickCount, 2);
 });
+
+
+test('anchors weekly candles to Monday 00:00 UTC instead of Unix-epoch Thursday', () => {
+  const bus = new EventEmitter();
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['1w'],
+    persistTimeframes: [],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 12,
+    logger,
+    persistCandle: async () => {},
+  });
+
+  const sunday = Date.UTC(2026, 8, 20, 18, 30, 0);
+  const monday = Date.UTC(2026, 8, 14, 0, 0, 0);
+  engine.processTick(tick(sunday, 1.2));
+
+  const current = engine.getCurrent('EURUSD', '1w');
+  assert.equal(current.openTimeMs, monday);
+});
