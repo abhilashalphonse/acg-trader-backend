@@ -83,3 +83,77 @@ test('volume bands apply deterministic adverse liquidity adjustment without rand
   assert.equal(larger.executionBid, 1.09999);
   assert.equal(larger.volumeBand, 'UP_TO_15');
 });
+
+
+test('synthetic pricing cannot inflate an exact two-point target through two-sided tick rounding', () => {
+  const service = new ExecutionPricingService();
+  const quote = service.priceQuote({
+    raw: { price: 1.100006, bid: null, ask: null },
+    instrument: instrument(),
+    nowMs: Date.parse('2026-09-21T12:00:00Z'),
+  });
+
+  assert.equal(quote.targetSpreadPoints, 2);
+  assert.equal(quote.spreadPoints, 2);
+  assert.ok(Math.abs((quote.ask - quote.bid) - 0.00002) < 1e-12);
+});
+
+test('fractional dynamic targets resolve once to the next executable tick instead of double-rounding', () => {
+  const service = new ExecutionPricingService();
+  const fractional = instrument({
+    spread: {
+      ...instrument().spread,
+      normalPoints: 2.4,
+      minimumPoints: 2.4,
+    },
+  });
+  const quote = service.priceQuote({
+    raw: { price: 1.100006, bid: null, ask: null },
+    instrument: fractional,
+    nowMs: Date.parse('2026-09-21T12:00:00Z'),
+  });
+
+  assert.equal(quote.targetSpreadPoints, 2.4);
+  assert.equal(quote.spreadPoints, 3);
+  assert.ok(Math.abs((quote.ask - quote.bid) - 0.00003) < 1e-12);
+});
+
+test('order pricing reports quoted and effective spread separately after size adjustment', () => {
+  const result = executionPriceForVolume({
+    quote: {
+      bid: 1.09999,
+      ask: 1.10001,
+      spreadPoints: 2,
+      providerSpreadPoints: 210,
+      pricingModel: 'ACG_DYNAMIC',
+    },
+    instrument: instrument(),
+    side: 'BUY',
+    volume: 10,
+  });
+
+  assert.equal(result.spreadPoints, 2);
+  assert.equal(result.quotedSpreadPoints, 2);
+  assert.equal(result.liquidityAdjustmentPoints, 2);
+  assert.equal(result.effectiveExecutionSpreadPoints, 4);
+  assert.ok(Math.abs(result.executionAsk - 1.10003) < 1e-12);
+});
+
+test('sell-side size adjustment reports the same effective spread accounting', () => {
+  const result = executionPriceForVolume({
+    quote: {
+      bid: 1.09999,
+      ask: 1.10001,
+      spreadPoints: 2,
+      pricingModel: 'ACG_DYNAMIC',
+    },
+    instrument: instrument(),
+    side: 'SELL',
+    volume: 10,
+  });
+
+  assert.equal(result.quotedSpreadPoints, 2);
+  assert.equal(result.liquidityAdjustmentPoints, 2);
+  assert.equal(result.effectiveExecutionSpreadPoints, 4);
+  assert.ok(Math.abs(result.executionBid - 1.09997) < 1e-12);
+});
