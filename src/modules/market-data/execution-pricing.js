@@ -120,11 +120,17 @@ function executionPriceForVolume({ quote, instrument, side, volume } = {}) {
   const normalizedSide = String(side || '').toUpperCase();
   const tickSize = positiveNumber(instrument?.tickSize);
   const basePrice = positiveNumber(normalizedSide === 'BUY' ? quote?.ask : quote?.bid);
+  const quotedSpreadPoints = finiteOrNull(quote?.spreadPoints);
   const baseResult = {
     price: basePrice,
     liquidityAdjustmentPoints: 0,
     volumeBand: null,
-    spreadPoints: finiteOrNull(quote?.spreadPoints),
+    // Keep spreadPoints for backward compatibility; new consumers should use
+    // quotedSpreadPoints for the displayed quote and effectiveExecutionSpreadPoints
+    // for the order-specific all-in crossing cost.
+    spreadPoints: quotedSpreadPoints,
+    quotedSpreadPoints,
+    effectiveExecutionSpreadPoints: quotedSpreadPoints,
     providerSpreadPoints: finiteOrNull(quote?.providerSpreadPoints),
     referencePrice: finiteOrNull(quote?.referencePrice ?? quote?.mid ?? quote?.price),
     executionBid: finiteOrNull(quote?.bid),
@@ -144,6 +150,9 @@ function executionPriceForVolume({ quote, instrument, side, volume } = {}) {
     executionBid: normalizedSide === 'SELL' ? adjustedPrice : baseResult.executionBid,
     executionAsk: normalizedSide === 'BUY' ? adjustedPrice : baseResult.executionAsk,
     liquidityAdjustmentPoints: extraPoints,
+    effectiveExecutionSpreadPoints: quotedSpreadPoints == null
+      ? null
+      : normalizePoints(quotedSpreadPoints + extraPoints),
     volumeBand: bandLabel(band),
   };
 }
@@ -194,11 +203,19 @@ function rolloverMultiplier(policy, nowMs) {
 }
 
 function syntheticPricing({ referencePrice, tickSize, points, providerSpreadPoints, pricingModel, spreadSource, volatilityMultiplier, sessionMultiplier }) {
-  const width = Math.max(0, points) * tickSize;
+  const targetSpreadPoints = Math.max(0, numberValue(points, 0));
+  // Synthetic execution must be representable on the instrument tick grid.
+  // Resolve the requested width once, in whole ticks, rather than rounding bid
+  // down and ask up independently (which can inflate the spread by another tick).
+  const executableSpreadPoints = Math.ceil(targetSpreadPoints - 1e-12);
+  const centerTick = Math.round(referencePrice / tickSize);
+  const bidTick = centerTick - Math.floor(executableSpreadPoints / 2);
+  const askTick = bidTick + executableSpreadPoints;
+
   return finalizePricing({
     referencePrice,
-    bid: floorToTick(referencePrice - width / 2, tickSize),
-    ask: ceilToTick(referencePrice + width / 2, tickSize),
+    bid: tidy(bidTick * tickSize),
+    ask: tidy(askTick * tickSize),
     tickSize,
     providerSpreadPoints,
     pricingModel,
@@ -206,10 +223,11 @@ function syntheticPricing({ referencePrice, tickSize, points, providerSpreadPoin
     isSyntheticSpread: true,
     volatilityMultiplier,
     sessionMultiplier,
+    targetSpreadPoints: normalizePoints(targetSpreadPoints),
   });
 }
 
-function finalizePricing({ referencePrice, bid, ask, tickSize, providerSpreadPoints, pricingModel, spreadSource, isSyntheticSpread, volatilityMultiplier, sessionMultiplier }) {
+function finalizePricing({ referencePrice, bid, ask, tickSize, providerSpreadPoints, pricingModel, spreadSource, isSyntheticSpread, volatilityMultiplier, sessionMultiplier, targetSpreadPoints = null }) {
   const valid = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0 && ask >= bid;
   if (!valid) return emptyPricing(referencePrice, { providerSpreadPoints, pricingModel });
   const spread = ask - bid;
@@ -220,6 +238,7 @@ function finalizePricing({ referencePrice, bid, ask, tickSize, providerSpreadPoi
     mid: (bid + ask) / 2,
     spread,
     spreadPoints: tickSize > 0 ? normalizePoints(spread / tickSize) : null,
+    targetSpreadPoints: Number.isFinite(targetSpreadPoints) ? normalizePoints(targetSpreadPoints) : null,
     providerSpreadPoints: Number.isFinite(providerSpreadPoints) ? normalizePoints(providerSpreadPoints) : null,
     pricingModel,
     spreadSource,
@@ -237,6 +256,7 @@ function emptyPricing(referencePrice = null, extra = {}) {
     mid: finiteOrNull(referencePrice),
     spread: null,
     spreadPoints: null,
+    targetSpreadPoints: null,
     providerSpreadPoints: extra.providerSpreadPoints ?? null,
     pricingModel: extra.pricingModel || null,
     spreadSource: null,
