@@ -3,12 +3,13 @@
 const { normalizeSymbol } = require('./market.utils');
 const { MARKET_CONNECTION_STATES } = require('./market.constants');
 const { ExecutionPricingService } = require('./execution-pricing');
+const { TickSanityFilter } = require('./tick-sanity-filter');
 
 const RECOVERY_COOLDOWN_MS = 2500;
 const MAX_PROVIDER_TIMESTAMP_DRIFT_MS = 5 * 60 * 1000;
 
 class MarketGateway {
-  constructor({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols, staleCheckMs, logger, executionPricing = null }) {
+  constructor({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols, staleCheckMs, logger, executionPricing = null, tickSanityFilter = null }) {
     this.adapter = adapter;
     this.instrumentRegistry = instrumentRegistry;
     this.quoteStore = quoteStore;
@@ -18,6 +19,7 @@ class MarketGateway {
     this.staleCheckMs = staleCheckMs;
     this.logger = logger;
     this.executionPricing = executionPricing || new ExecutionPricingService();
+    this.tickSanityFilter = tickSanityFilter || new TickSanityFilter();
 
     this.connectionState = MARKET_CONNECTION_STATES.DISCONNECTED;
     this.symbolStates = new Map(this.symbols.map(symbol => [symbol, 'WAITING']));
@@ -169,6 +171,7 @@ class MarketGateway {
           maxQuoteAgeMs: instrument?.maxQuoteAgeMs ?? null,
           priority: this.priorityCount(symbol) > 0,
           isStale: quote?.isStale ?? true,
+          tickSanity: this.tickSanityFilter.snapshot(symbol),
         };
       }),
     };
@@ -181,6 +184,7 @@ class MarketGateway {
         // A disconnected stream must never fabricate carry-forward chart bars.
         // Keep a still-fresh quote executable, but break candle continuity immediately.
         this.candleEngine.setSymbolLive(symbol, false);
+        this.tickSanityFilter.resetPending(symbol);
         const quote = this.quoteStore.get(symbol);
         const instrument = this.instrumentRegistry.get(symbol);
         const ageMs = this.#quoteAgeMs(quote);
@@ -231,6 +235,54 @@ class MarketGateway {
       return;
     }
 
+    const sanity = this.tickSanityFilter.inspect({
+      symbol,
+      raw: { ...raw, price: lastPrice },
+      instrument,
+      receivedAtMs,
+    });
+
+    if (!sanity.accepted.length) {
+      if (sanity.reason === 'QUARANTINED' || sanity.reason === 'REPLACED_QUARANTINE') {
+        this.logger?.debug?.({
+          symbol,
+          price: lastPrice,
+          reason: sanity.reason,
+          threshold: sanity.threshold,
+        }, 'Quarantining suspicious market tick pending confirmation');
+      } else if (sanity.reason === 'OUT_OF_ORDER') {
+        this.logger?.debug?.({ symbol, price: lastPrice, providerTimestampMs: raw.providerTimestampMs }, 'Ignoring out-of-order market tick');
+      }
+      return;
+    }
+
+    if (sanity.reason === 'REJECTED_ISOLATED_SPIKE') {
+      this.logger?.warn?.({
+        symbol,
+        price: lastPrice,
+        threshold: sanity.threshold,
+      }, 'Rejected isolated provider price spike');
+    } else if (sanity.reason === 'CONFIRMED_JUMP') {
+      this.logger?.info?.({
+        symbol,
+        price: lastPrice,
+        threshold: sanity.threshold,
+      }, 'Confirmed large provider price move');
+    }
+
+    for (const accepted of sanity.accepted) {
+      this.#publishPrice(accepted.raw, accepted.receivedAtMs);
+    }
+  }
+
+  #publishPrice(raw, receivedAtMs) {
+    const symbol = normalizeSymbol(raw.symbol);
+    const instrument = this.instrumentRegistry.get(symbol);
+    if (!instrument || !this.symbols.includes(symbol)) return;
+
+    const lastPrice = Number(raw.price);
+    if (!Number.isFinite(lastPrice) || lastPrice <= 0) return;
+
     const providerTimestampMs = Number(raw.providerTimestampMs);
     const providerTimeUsable = Number.isFinite(providerTimestampMs)
       && providerTimestampMs > 0
@@ -244,8 +296,8 @@ class MarketGateway {
     const tick = Object.freeze({
       symbol,
       sequence,
-      price: raw.price,
-      last: raw.price,
+      price: lastPrice,
+      last: lastPrice,
       bid: normalizedPrices.bid,
       ask: normalizedPrices.ask,
       mid: normalizedPrices.mid,
