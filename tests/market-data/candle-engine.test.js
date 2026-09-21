@@ -139,7 +139,7 @@ test('fills only short missing-candle gaps with synthetic bars when feed continu
 });
 
 
-test('uses reference price for live chart candles instead of executable bid', () => {
+test('keeps live chart candles on the provider price series when execution midpoint differs', () => {
   const bus = new EventEmitter();
   const engine = createEngine(bus);
 
@@ -147,9 +147,10 @@ test('uses reference price for live chart candles instead of executable bid', ()
     symbol: 'EURUSD',
     timeMs: 1000,
     price: 1.10010,
-    referencePrice: 1.10010,
-    bid: 1.09905,
-    ask: 1.10115,
+    referencePrice: 1.10030,
+    mid: 1.10030,
+    bid: 1.09925,
+    ask: 1.10135,
     source: 'test',
   });
 
@@ -158,6 +159,25 @@ test('uses reference price for live chart candles instead of executable bid', ()
   assert.equal(current.high, 1.1001);
   assert.equal(current.low, 1.1001);
   assert.equal(current.close, 1.1001);
+});
+
+test('falls back to reference price when a feed does not expose provider price', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({
+    symbol: 'EURUSD',
+    timeMs: 1000,
+    price: null,
+    referencePrice: 1.10030,
+    bid: 1.09925,
+    ask: 1.10135,
+    source: 'test',
+  });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.open, 1.1003);
+  assert.equal(current.close, 1.1003);
 });
 
 
