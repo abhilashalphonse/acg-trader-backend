@@ -132,16 +132,19 @@ function validatePerOrderRiskPolicy({
     });
   }
 
-  const tradeRiskAmount = calculateStopRiskAmount({
-    account,
-    instrument,
-    side,
-    entryPrice,
-    volume,
-    stopLoss,
-    currencyConverter,
-    nowMs,
-  });
+  const needsRiskMeasurement = maxRiskPerTradePercent != null || maxAggregateRiskPercent != null;
+  const tradeRiskAmount = needsRiskMeasurement
+    ? calculateStopRiskAmount({
+      account,
+      instrument,
+      side,
+      entryPrice,
+      volume,
+      stopLoss,
+      currencyConverter,
+      nowMs,
+    })
+    : null;
   const tradeRiskPercent = tradeRiskAmount == null ? null : riskPercent(tradeRiskAmount, account);
 
   if (maxRiskPerTradePercent && compareDecimal(tradeRiskPercent, maxRiskPerTradePercent) > 0) {
