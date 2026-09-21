@@ -226,6 +226,14 @@ class MarketOrderService {
       quoteSequence: plan.quoteSequence,
       quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null,
       quoteSource: quoteSnapshot?.source || null,
+      referencePrice: plan.referencePrice,
+      executionBid: plan.executionBid,
+      executionAsk: plan.executionAsk,
+      spreadPoints: plan.spreadPoints,
+      providerSpreadPoints: plan.providerSpreadPoints,
+      liquidityAdjustmentPoints: plan.liquidityAdjustmentPoints,
+      volumeBand: plan.volumeBand,
+      pricingModel: plan.pricingModel,
       executedAt: now,
     });
 
@@ -290,6 +298,14 @@ class MarketOrderService {
       quoteSequence: plan.quoteSequence,
       quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null,
       quoteSource: quoteSnapshot?.source || null,
+      referencePrice: plan.referencePrice,
+      executionBid: plan.executionBid,
+      executionAsk: plan.executionAsk,
+      spreadPoints: plan.spreadPoints,
+      providerSpreadPoints: plan.providerSpreadPoints,
+      liquidityAdjustmentPoints: plan.liquidityAdjustmentPoints,
+      volumeBand: plan.volumeBand,
+      pricingModel: plan.pricingModel,
       executedAt: now,
     });
 

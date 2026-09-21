@@ -85,6 +85,32 @@ test('market SELL fills at bid and applies per-lot commission', () => {
   assert.equal(plan.requiredMargin, '549.975');
 });
 
+test('dynamic execution applies volume-band price adjustment and explicit per-side commission', () => {
+  const plan = planMarketOpen({
+    account: account(),
+    instrument: instrument({
+      commissionPerLot: '0',
+      commissionPerLotPerSide: '2.5',
+      spread: {
+        volumeBands: [
+          { upTo: '1', extraPoints: '0' },
+          { upTo: '5', extraPoints: '2' },
+        ],
+      },
+    }),
+    quote: quote({ ask: 1.10005, bid: 1.09995, spreadPoints: 10, pricingModel: 'ACG_DYNAMIC' }),
+    side: 'BUY',
+    volume: '2',
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.fillPrice, '1.10007');
+  assert.equal(plan.commission, '5');
+  assert.equal(plan.liquidityAdjustmentPoints, '2');
+  assert.equal(plan.volumeBand, 'UP_TO_5');
+  assert.equal(plan.pricingModel, 'ACG_DYNAMIC');
+});
+
 test('market execution rejects stale quotes and disabled instruments', () => {
   assert.throws(
     () => planMarketOpen({ account: account(), instrument: instrument(), quote: quote({ isStale: true }), side: 'BUY', volume: '1', nowMs: 10_100 }),

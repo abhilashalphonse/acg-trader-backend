@@ -137,12 +137,23 @@ function serializeInstrument(document) {
     defaultLeverage: doc.defaultLeverage,
     marginRate: decimal(doc.marginRate),
     commissionPerLot: decimal(doc.commissionPerLot),
+    commissionPerLotPerSide: decimal(doc.commissionPerLotPerSide ?? doc.commissionPerLot),
+    commissionRate: decimal(doc.commissionRate),
     swapLong: decimal(doc.swapLong),
     swapShort: decimal(doc.swapShort),
     spread: {
       mode: doc.spread?.mode || 'MARKET',
       fixedPoints: decimal(doc.spread?.fixedPoints),
       markupPoints: decimal(doc.spread?.markupPoints),
+      normalPoints: decimal(doc.spread?.normalPoints),
+      minimumPoints: decimal(doc.spread?.minimumPoints),
+      maximumPoints: decimal(doc.spread?.maximumPoints),
+      rolloverMultiplier: decimal(doc.spread?.rolloverMultiplier),
+      rolloverStartUtcMinute: doc.spread?.rolloverStartUtcMinute ?? null,
+      rolloverEndUtcMinute: doc.spread?.rolloverEndUtcMinute ?? null,
+      volumeBands: Array.isArray(doc.spread?.volumeBands)
+        ? doc.spread.volumeBands.map(item => ({ upTo: decimal(item?.upTo), extraPoints: decimal(item?.extraPoints) }))
+        : [],
     },
     tradingSessions: doc.tradingSessions || [],
     tradingHolidays: doc.tradingHolidays || [],

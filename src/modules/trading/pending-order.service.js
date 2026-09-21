@@ -283,6 +283,10 @@ class PendingOrderService {
           return { operation: 'PENDING_REJECT', order: serializeOrder(order), skipped: false };
         }
 
+        if (!pendingFillRespectsLimit(order, plan.fillPrice)) {
+          return { skipped: true, order: serializeOrder(order) };
+        }
+
         const now = new Date(executionNowMs);
         if ((order.type === 'STOP' || order.type === 'STOP_LIMIT') && !order.triggeredAt) order.triggeredAt = now;
         order.status = 'FILLED';
@@ -329,6 +333,14 @@ class PendingOrderService {
           quoteSequence: plan.quoteSequence,
           quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null,
           quoteSource: quoteSnapshot.source || null,
+          referencePrice: plan.referencePrice,
+          executionBid: plan.executionBid,
+          executionAsk: plan.executionAsk,
+          spreadPoints: plan.spreadPoints,
+          providerSpreadPoints: plan.providerSpreadPoints,
+          liquidityAdjustmentPoints: plan.liquidityAdjustmentPoints,
+          volumeBand: plan.volumeBand,
+          pricingModel: plan.pricingModel,
           executedAt: now,
         });
 
@@ -453,6 +465,16 @@ function resolveReservation(reservation) {
 function pendingRequestedPrice(order) {
   if (order.type === 'STOP') return order.stopPrice;
   return order.limitPrice;
+}
+
+function pendingFillRespectsLimit(order, fillPrice) {
+  if (!['LIMIT', 'STOP_LIMIT'].includes(String(order?.type || '').toUpperCase())) return true;
+  if (order?.limitPrice == null || fillPrice == null) return false;
+  const side = String(order.side || '').toUpperCase();
+  const fill = Number(fillPrice?.toString ? fillPrice.toString() : fillPrice);
+  const limit = Number(order.limitPrice?.toString ? order.limitPrice.toString() : order.limitPrice);
+  if (!Number.isFinite(fill) || !Number.isFinite(limit)) return false;
+  return side === 'BUY' ? fill <= limit : fill >= limit;
 }
 
 function normalizePlaceCommand(command) {

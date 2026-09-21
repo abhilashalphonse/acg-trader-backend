@@ -8,6 +8,24 @@
 
 const ACG_STANDARD_LEVERAGE = 100;
 
+const FX_TIGHT_POINTS = Object.freeze({ EURUSD: 2, USDJPY: 2, GBPUSD: 3, AUDUSD: 3, USDCHF: 3, USDCAD: 3, NZDUSD: 4, EURGBP: 4, EURJPY: 4, GBPJPY: 6 });
+const FX_EXOTIC_CURRENCIES = new Set(['CNH', 'CZK', 'DKK', 'HKD', 'HUF', 'MXN', 'NOK', 'PLN', 'SEK', 'SGD', 'TRY', 'ZAR']);
+const FX_STRESSED_CURRENCIES = new Set(['MXN', 'TRY', 'ZAR']);
+const FX_VOLUME_BANDS = Object.freeze([
+  Object.freeze({ upTo: '1', extraPoints: '0' }),
+  Object.freeze({ upTo: '5', extraPoints: '1' }),
+  Object.freeze({ upTo: '15', extraPoints: '2' }),
+  Object.freeze({ upTo: '30', extraPoints: '4' }),
+  Object.freeze({ upTo: null, extraPoints: '8' }),
+]);
+const METAL_VOLUME_BANDS = Object.freeze([
+  Object.freeze({ upTo: '1', extraPoints: '0' }),
+  Object.freeze({ upTo: '5', extraPoints: '5' }),
+  Object.freeze({ upTo: '15', extraPoints: '10' }),
+  Object.freeze({ upTo: '30', extraPoints: '20' }),
+  Object.freeze({ upTo: null, extraPoints: '40' }),
+]);
+
 const FX_WEEK = Object.freeze([
   Object.freeze({ days: [0], open: '22:00', close: '23:59' }),
   Object.freeze({ days: [1, 2, 3, 4], open: '00:00', close: '23:59' }),
@@ -333,19 +351,120 @@ const CRYPTO_PAIRS = Object.freeze([
   "ALGO/USD",
 ]);
 
+function dynamicSpread(normalPoints, {
+  minimumPoints = normalPoints,
+  maximumPoints = Math.max(normalPoints * 20, normalPoints),
+  rolloverMultiplier = 1,
+  rolloverStartUtcMinute = null,
+  rolloverEndUtcMinute = null,
+  volumeBands = [],
+} = {}) {
+  return Object.freeze({
+    mode: 'DYNAMIC',
+    fixedPoints: String(normalPoints),
+    markupPoints: '0',
+    normalPoints: String(normalPoints),
+    minimumPoints: String(minimumPoints),
+    maximumPoints: String(maximumPoints),
+    rolloverMultiplier: String(rolloverMultiplier),
+    rolloverStartUtcMinute,
+    rolloverEndUtcMinute,
+    volumeBands: Object.freeze(volumeBands.map(item => Object.freeze({ ...item }))),
+  });
+}
+
+function forexSpreadProfile(pair) {
+  const symbol = pair.replace('/', '');
+  const [base, quote] = pair.split('/');
+  const stressed = FX_STRESSED_CURRENCIES.has(base) || FX_STRESSED_CURRENCIES.has(quote);
+  const exotic = FX_EXOTIC_CURRENCIES.has(base) || FX_EXOTIC_CURRENCIES.has(quote);
+  const normal = FX_TIGHT_POINTS[symbol] ?? (stressed ? 80 : exotic ? 30 : 6);
+  return dynamicSpread(normal, {
+    minimumPoints: normal,
+    maximumPoints: Math.max(normal * 20, 80),
+    rolloverMultiplier: 4,
+    rolloverStartUtcMinute: 21 * 60 + 55,
+    rolloverEndUtcMinute: 22 * 60 + 10,
+    volumeBands: FX_VOLUME_BANDS,
+  });
+}
+
+function commoditySpreadProfile(spec) {
+  const normal = spec.symbol === 'XAUUSD' ? 20 : spec.symbol === 'XAGUSD' ? 20 : Number(spec.fixedPoints || 30);
+  return dynamicSpread(normal, {
+    minimumPoints: Math.max(1, Math.round(normal * 0.5)),
+    maximumPoints: Math.max(normal * 15, 100),
+    rolloverMultiplier: ['METAL', 'ENERGY'].includes(spec.assetClass) ? 3 : 1,
+    rolloverStartUtcMinute: ['METAL', 'ENERGY'].includes(spec.assetClass) ? 21 * 60 + 55 : null,
+    rolloverEndUtcMinute: ['METAL', 'ENERGY'].includes(spec.assetClass) ? 22 * 60 + 10 : null,
+    volumeBands: spec.assetClass === 'METAL' ? METAL_VOLUME_BANDS : FX_VOLUME_BANDS,
+  });
+}
+
+function indexSpreadProfile(spec) {
+  const points = { US500: 20, US100: 80, US30: 150, US2000: 80, VIX: 30, UK100: 80, GER40: 80, FRA40: 60, EU50: 50, ESP35: 120, IT40: 120, NETH25: 30, SWI20: 80, JPN225: 800, HK50: 150, CHINA50: 100, AUS200: 60, INDIA50: 100, KOR200: 40, SG30: 30 }[spec.symbol] || 80;
+  return dynamicSpread(points, {
+    minimumPoints: Math.max(1, Math.round(points * 0.5)),
+    maximumPoints: points * 12,
+    volumeBands: [
+      { upTo: '1', extraPoints: '0' },
+      { upTo: '5', extraPoints: String(Math.max(1, Math.round(points * 0.2))) },
+      { upTo: '20', extraPoints: String(Math.max(1, Math.round(points * 0.5))) },
+      { upTo: '50', extraPoints: String(points) },
+      { upTo: null, extraPoints: String(points * 2) },
+    ],
+  });
+}
+
+function equitySpreadProfile() {
+  return dynamicSpread(2, {
+    minimumPoints: 1,
+    maximumPoints: 100,
+    volumeBands: [
+      { upTo: '10', extraPoints: '0' },
+      { upTo: '50', extraPoints: '1' },
+      { upTo: '200', extraPoints: '2' },
+      { upTo: '1000', extraPoints: '5' },
+      { upTo: null, extraPoints: '10' },
+    ],
+  });
+}
+
+function cryptoSpreadProfile(pair) {
+  const base = pair.split('/')[0];
+  const normal = { BTC: 500, ETH: 50, BNB: 20, BCH: 20 }[base] || 20;
+  return dynamicSpread(normal, {
+    minimumPoints: Math.max(2, Math.round(normal * 0.5)),
+    maximumPoints: normal * 20,
+    volumeBands: [
+      { upTo: '1', extraPoints: '0' },
+      { upTo: '5', extraPoints: String(Math.max(1, Math.round(normal * 0.1))) },
+      { upTo: '20', extraPoints: String(Math.max(1, Math.round(normal * 0.25))) },
+      { upTo: '50', extraPoints: String(Math.max(1, Math.round(normal * 0.5))) },
+      { upTo: null, extraPoints: String(normal) },
+    ],
+  });
+}
+
 function baseSpec({
   symbol, displaySymbol, name, assetClass, baseCurrency = null, quoteCurrency = 'USD',
   digits, tickSize, pipSize, contractSize, minVolume = '0.01', maxVolume = '100',
   volumeStep = '0.01', defaultLeverage = 100, marginRate = null,
-  commissionPerLot = '0', fixedPoints = '10', tradingSessions = [],
+  commissionPerLotPerSide = '0', commissionRate = '0', spreadProfile = null,
+  fixedPoints = '10', tradingSessions = [],
   timezone = 'UTC', providerSymbol, softQuoteAgeMs = 10000, maxQuoteAgeMs = 30000,
 }) {
+  const spread = spreadProfile || dynamicSpread(Number(fixedPoints || 0));
   return Object.freeze({
     symbol, displaySymbol, name, assetClass, baseCurrency, quoteCurrency,
     pnlCurrency: quoteCurrency, marginCurrency: quoteCurrency,
     digits, tickSize, pipSize, contractSize, minVolume, maxVolume, volumeStep,
-    defaultLeverage: ACG_STANDARD_LEVERAGE, marginRate, commissionPerLot, swapLong: '0', swapShort: '0',
-    spread: Object.freeze({ mode: 'SYNTHETIC', fixedPoints, markupPoints: '0' }),
+    defaultLeverage: ACG_STANDARD_LEVERAGE, marginRate,
+    commissionPerLot: commissionPerLotPerSide,
+    commissionPerLotPerSide,
+    commissionRate,
+    swapLong: '0', swapShort: '0',
+    spread,
     tradingSessions, tradingHolidays: Object.freeze([]), timezone,
     providerMappings: Object.freeze({ twelveData: providerSymbol }),
     softQuoteAgeMs, maxQuoteAgeMs, chartEnabled: true, executionEnabled: false, status: 'ACTIVE',
@@ -362,7 +481,8 @@ function forexSpec(pair) {
     baseCurrency, quoteCurrency, digits: isJpy ? 3 : 5,
     tickSize: isJpy ? '0.001' : '0.00001', pipSize: isJpy ? '0.01' : '0.0001',
     contractSize: '100000', defaultLeverage: 100,
-    fixedPoints: exoticQuotes.has(quoteCurrency) ? '30' : '10',
+    commissionPerLotPerSide: '2.5',
+    spreadProfile: forexSpreadProfile(pair),
     tradingSessions: FX_WEEK, providerSymbol: pair,
     softQuoteAgeMs: exoticQuotes.has(quoteCurrency) ? 10000 : 7000,
     maxQuoteAgeMs: exoticQuotes.has(quoteCurrency) ? 40000 : 25000,
@@ -376,7 +496,9 @@ function commoditySpec(spec) {
     name: spec.name, assetClass: spec.assetClass, baseCurrency: spec.baseCurrency,
     quoteCurrency: spec.quoteCurrency, digits: spec.digits, tickSize: spec.tickSize,
     pipSize: spec.pipSize, contractSize: spec.contractSize,
-    defaultLeverage: spec.defaultLeverage, fixedPoints: spec.fixedPoints,
+    defaultLeverage: spec.defaultLeverage,
+    commissionPerLotPerSide: spec.assetClass === 'METAL' ? '2.5' : '0',
+    spreadProfile: commoditySpreadProfile(spec),
     providerSymbol: spec.providerSymbol, tradingSessions: FX_WEEK,
     softQuoteAgeMs: spec.assetClass === 'OTHER' ? 15000 : 10000,
     maxQuoteAgeMs: spec.assetClass === 'OTHER' ? 60000 : 35000,
@@ -389,7 +511,8 @@ function indexSpec(spec) {
     assetClass: 'INDEX', quoteCurrency: spec.currency, digits: 2,
     tickSize: '0.01', pipSize: '0.01', contractSize: '1',
     minVolume: '0.01', maxVolume: '1000', volumeStep: '0.01',
-    defaultLeverage: 20, fixedPoints: '5',
+    defaultLeverage: 20,
+    spreadProfile: indexSpreadProfile(spec),
     providerSymbol: spec.providerSymbol, tradingSessions: [],
     softQuoteAgeMs: 10000,
     maxQuoteAgeMs: 35000,
@@ -402,7 +525,8 @@ function equitySpec(symbol) {
     assetClass: 'EQUITY', quoteCurrency: 'USD', digits: 2,
     tickSize: '0.01', pipSize: '0.01', contractSize: '1',
     minVolume: '0.01', maxVolume: '10000', volumeStep: '0.01',
-    defaultLeverage: 5, fixedPoints: '2',
+    defaultLeverage: 5,
+    spreadProfile: equitySpreadProfile(),
     tradingSessions: US_EQUITY_SESSION, timezone: 'America/New_York',
     providerSymbol: symbol,
     softQuoteAgeMs: 12000,
@@ -422,7 +546,8 @@ function cryptoSpec(pair) {
     pipSize: highPrice.has(baseCurrency) ? '0.01' : '0.0001',
     contractSize: '1', minVolume: '0.01', maxVolume: '1000',
     volumeStep: '0.01', defaultLeverage: 2,
-    fixedPoints: highPrice.has(baseCurrency) ? '10' : '20',
+    commissionRate: '0.0002',
+    spreadProfile: cryptoSpreadProfile(pair),
     tradingSessions: [], providerSymbol: pair,
     softQuoteAgeMs: highPrice.has(baseCurrency) ? 10000 : 15000,
     maxQuoteAgeMs: highPrice.has(baseCurrency) ? 35000 : 60000,

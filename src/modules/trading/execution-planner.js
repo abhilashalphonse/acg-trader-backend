@@ -15,6 +15,7 @@ const {
 } = require('../../shared/decimal/decimal');
 const { normalizeSymbol } = require('../market-data/market.utils');
 const { assertInstrumentSessionOpen } = require('../instruments/session-calendar');
+const { executionPriceForVolume } = require('../market-data/execution-pricing');
 const { dayKeyInTimezone } = require('./risk-day-engine');
 
 function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now(), currencyConverter = null, exposure = null }) {
@@ -26,12 +27,18 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
   const normalizedSide = normalizeSide(side);
   const normalizedVolume = validateVolume(volume, instrument);
   validateExposureLimits(account, normalizedVolume, exposure);
-  const fillPrice = executablePrice(quote, normalizedSide, instrument);
+  const execution = executionPriceForVolume({ quote, instrument, side: normalizedSide, volume: normalizedVolume });
+  const fillPrice = executablePrice({ ...quote, [normalizedSide === 'BUY' ? 'ask' : 'bid']: execution.price }, normalizedSide, instrument);
   const normalizedStopLoss = optionalPrice(stopLoss, instrument);
   const normalizedTakeProfit = optionalPrice(takeProfit, instrument);
   validateProtection({ side: normalizedSide, fillPrice, stopLoss: normalizedStopLoss, takeProfit: normalizedTakeProfit });
 
-  const commission = calculateCommission(instrument, normalizedVolume);
+  const commission = calculateCommission(instrument, normalizedVolume, {
+    account,
+    fillPrice,
+    currencyConverter,
+    nowMs,
+  });
   const requiredMargin = calculateRequiredMargin({ account, instrument, volume: normalizedVolume, fillPrice, currencyConverter, nowMs });
   const totalRequirement = addDecimal(requiredMargin, commission);
   const freeMargin = normalizeDecimal(account.state?.freeMargin ?? '0');
@@ -60,6 +67,14 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     pnlCurrency: String(instrument.pnlCurrency || instrument.quoteCurrency || '').toUpperCase(),
     quoteSequence: quote.sequence ?? null,
     quoteReceivedAtMs: quote.receivedAtMs,
+    referencePrice: decimalOrNull(execution.referencePrice),
+    executionBid: decimalOrNull(execution.executionBid),
+    executionAsk: decimalOrNull(execution.executionAsk),
+    spreadPoints: decimalOrNull(execution.spreadPoints),
+    providerSpreadPoints: decimalOrNull(execution.providerSpreadPoints),
+    liquidityAdjustmentPoints: normalizeDecimal(String(execution.liquidityAdjustmentPoints || 0)),
+    volumeBand: execution.volumeBand,
+    pricingModel: execution.pricingModel,
   });
 }
 
@@ -80,14 +95,20 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   if (compareDecimal(remainingVolume, '0') > 0 && compareDecimal(remainingVolume, minVolume) < 0) throw new AppError('Partial close would leave a position below the minimum volume', { statusCode: 400, code: 'INVALID_REMAINING_VOLUME', details: { remainingVolume, minVolume } });
 
   const closeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
-  const fillPrice = executablePrice(quote, closeSide, instrument);
+  const execution = executionPriceForVolume({ quote, instrument, side: closeSide, volume: requestedVolume });
+  const fillPrice = executablePrice({ ...quote, [closeSide === 'BUY' ? 'ask' : 'bid']: execution.price }, closeSide, instrument);
   const pnlCurrency = String(position.quoteCurrency || instrument.pnlCurrency || instrument.quoteCurrency || '').toUpperCase();
   const contractSize = normalizeDecimal(position.contractSize || instrument.contractSize);
   const entryPrice = normalizeDecimal(position.entryPrice);
   const priceDifference = position.side === 'BUY' ? subtractDecimal(fillPrice, entryPrice) : subtractDecimal(entryPrice, fillPrice);
   const realizedPnlQuote = multiplyDecimal(multiplyDecimal(priceDifference, contractSize), requestedVolume);
   const realizedPnl = convertCurrency(realizedPnlQuote, pnlCurrency, account.currency, currencyConverter, nowMs);
-  const commission = calculateCommission(instrument, requestedVolume);
+  const commission = calculateCommission(instrument, requestedVolume, {
+    account,
+    fillPrice,
+    currencyConverter,
+    nowMs,
+  });
   const netBalanceChange = subtractDecimal(realizedPnl, commission);
 
   const currentMargin = normalizeDecimal(position.margin ?? '0');
@@ -101,6 +122,14 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
     realizedPnlQuote, realizedPnl, commission, netBalanceChange, releasedMargin,
     quoteSequence: quote.sequence ?? null, quoteReceivedAtMs: quote.receivedAtMs,
     dealType: fullClose ? 'CLOSE' : 'PARTIAL_CLOSE',
+    referencePrice: decimalOrNull(execution.referencePrice),
+    executionBid: decimalOrNull(execution.executionBid),
+    executionAsk: decimalOrNull(execution.executionAsk),
+    spreadPoints: decimalOrNull(execution.spreadPoints),
+    providerSpreadPoints: decimalOrNull(execution.providerSpreadPoints),
+    liquidityAdjustmentPoints: normalizeDecimal(String(execution.liquidityAdjustmentPoints || 0)),
+    volumeBand: execution.volumeBand,
+    pricingModel: execution.pricingModel,
   });
 }
 
@@ -249,7 +278,30 @@ function validateProtection({ side, fillPrice, stopLoss, takeProfit }) {
   }
 }
 function invalidProtection(message) { return new AppError(message, { statusCode: 400, code: 'INVALID_PROTECTION_PRICE' }); }
-function calculateCommission(instrument, volume) { return multiplyDecimal(instrument.commissionPerLot == null ? '0' : normalizeDecimal(instrument.commissionPerLot), volume); }
+function calculateCommission(instrument, volume, { account = null, fillPrice = null, currencyConverter = null, nowMs = Date.now() } = {}) {
+  const perLot = instrument.commissionPerLotPerSide ?? instrument.commissionPerLot ?? '0';
+  let total = multiplyDecimal(normalizeDecimal(perLot), volume);
+  const rate = normalizeDecimal(instrument.commissionRate ?? '0');
+  if (compareDecimal(rate, '0') > 0) {
+    if (fillPrice == null || !account) {
+      throw new AppError('Commission-rate calculation requires account and fill price', {
+        statusCode: 409,
+        code: 'COMMISSION_PRICING_UNAVAILABLE',
+      });
+    }
+    const notionalQuote = multiplyDecimal(multiplyDecimal(fillPrice, instrument.contractSize), volume);
+    const rateChargeQuote = multiplyDecimal(notionalQuote, rate);
+    const rateCharge = convertCurrency(rateChargeQuote, instrument.quoteCurrency, account.currency, currencyConverter, nowMs);
+    total = addDecimal(total, rateCharge);
+  }
+  return total;
+}
+
+function decimalOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value?.toString ? value.toString() : value);
+  return Number.isFinite(number) ? normalizeDecimal(String(number)) : null;
+}
 
 function calculateRequiredMargin({ account, instrument, volume, fillPrice, currencyConverter = null, nowMs = Date.now() }) {
   const notional = multiplyDecimal(multiplyDecimal(fillPrice, instrument.contractSize), volume);

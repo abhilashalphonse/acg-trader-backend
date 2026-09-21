@@ -18,7 +18,7 @@ function serializeOrder(doc) {
 
 function serializeDeal(doc) {
   const deal = plain(doc);
-  return { id: String(deal._id), dealId: deal.dealId, accountId: String(deal.accountId), orderId: String(deal.orderId), positionId: deal.positionId ? String(deal.positionId) : null, symbol: deal.symbol, side: deal.side, type: deal.type, volume: decimalString(deal.volume), price: decimalString(deal.price), requestedPrice: decimalString(deal.requestedPrice), slippage: decimalString(deal.slippage), commission: decimalString(deal.commission), swap: decimalString(deal.swap), realizedPnl: decimalString(deal.realizedPnl), quoteSequence: deal.quoteSequence ?? null, executedAt: iso(deal.executedAt) };
+  return { id: String(deal._id), dealId: deal.dealId, accountId: String(deal.accountId), orderId: String(deal.orderId), positionId: deal.positionId ? String(deal.positionId) : null, symbol: deal.symbol, side: deal.side, type: deal.type, volume: decimalString(deal.volume), price: decimalString(deal.price), requestedPrice: decimalString(deal.requestedPrice), slippage: decimalString(deal.slippage), commission: decimalString(deal.commission), swap: decimalString(deal.swap), realizedPnl: decimalString(deal.realizedPnl), quoteSequence: deal.quoteSequence ?? null, referencePrice: decimalString(deal.referencePrice), executionBid: decimalString(deal.executionBid), executionAsk: decimalString(deal.executionAsk), spreadPoints: decimalString(deal.spreadPoints), providerSpreadPoints: decimalString(deal.providerSpreadPoints), liquidityAdjustmentPoints: decimalString(deal.liquidityAdjustmentPoints), volumeBand: deal.volumeBand || null, pricingModel: deal.pricingModel || null, executedAt: iso(deal.executedAt) };
 }
 
 function serializePosition(doc) {

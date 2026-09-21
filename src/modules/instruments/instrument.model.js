@@ -11,6 +11,11 @@ const sessionSchema = new Schema({
   close: { type: String, required: true, match: /^\d{2}:\d{2}$/ },
 }, { _id: false });
 
+const spreadVolumeBandSchema = new Schema({
+  upTo: { type: Decimal128, default: null },
+  extraPoints: { type: Decimal128, required: true, default: '0' },
+}, { _id: false });
+
 const identitySchema = new Schema({
   provider: { type: String, enum: ['twelve-data'], default: 'twelve-data' },
   status: { type: String, enum: ['UNKNOWN', 'READY', 'UNAVAILABLE'], default: 'UNKNOWN' },
@@ -47,13 +52,22 @@ const instrumentSchema = new Schema({
   defaultLeverage: { type: Number, required: true, min: 1 },
   marginRate: { type: Decimal128, default: null },
   commissionPerLot: { type: Decimal128, default: null },
+  commissionPerLotPerSide: { type: Decimal128, default: null },
+  commissionRate: { type: Decimal128, default: '0' },
   swapLong: { type: Decimal128, default: null },
   swapShort: { type: Decimal128, default: null },
 
   spread: {
-    mode: { type: String, enum: ['MARKET', 'FIXED', 'SYNTHETIC'], default: 'MARKET' },
+    mode: { type: String, enum: ['MARKET', 'FIXED', 'SYNTHETIC', 'DYNAMIC'], default: 'MARKET' },
     fixedPoints: { type: Decimal128, default: null },
     markupPoints: { type: Decimal128, default: '0' },
+    normalPoints: { type: Decimal128, default: null },
+    minimumPoints: { type: Decimal128, default: null },
+    maximumPoints: { type: Decimal128, default: null },
+    rolloverMultiplier: { type: Decimal128, default: '1' },
+    rolloverStartUtcMinute: { type: Number, default: null, min: 0, max: 1439 },
+    rolloverEndUtcMinute: { type: Number, default: null, min: 0, max: 1439 },
+    volumeBands: { type: [spreadVolumeBandSchema], default: [] },
   },
 
   tradingSessions: { type: [sessionSchema], default: [] },

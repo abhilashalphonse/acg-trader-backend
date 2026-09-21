@@ -2,11 +2,12 @@
 
 const { normalizeSymbol } = require('./market.utils');
 const { MARKET_CONNECTION_STATES } = require('./market.constants');
+const { ExecutionPricingService } = require('./execution-pricing');
 
 const RECOVERY_COOLDOWN_MS = 2500;
 
 class MarketGateway {
-  constructor({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols, staleCheckMs, logger }) {
+  constructor({ adapter, instrumentRegistry, quoteStore, candleEngine, eventBus, symbols, staleCheckMs, logger, executionPricing = null }) {
     this.adapter = adapter;
     this.instrumentRegistry = instrumentRegistry;
     this.quoteStore = quoteStore;
@@ -15,6 +16,7 @@ class MarketGateway {
     this.symbols = symbols.map(normalizeSymbol);
     this.staleCheckMs = staleCheckMs;
     this.logger = logger;
+    this.executionPricing = executionPricing || new ExecutionPricingService();
 
     this.connectionState = MARKET_CONNECTION_STATES.DISCONNECTED;
     this.symbolStates = new Map(this.symbols.map(symbol => [symbol, 'WAITING']));
@@ -226,7 +228,7 @@ class MarketGateway {
       return;
     }
 
-    const normalizedPrices = this.#normalizePrices({ ...raw, price: lastPrice }, instrument);
+    const normalizedPrices = this.#normalizePrices({ ...raw, price: lastPrice }, instrument, receivedAtMs);
     const sequence = (this.sequences.get(symbol) || 0) + 1;
     this.sequences.set(symbol, sequence);
 
@@ -239,6 +241,13 @@ class MarketGateway {
       ask: normalizedPrices.ask,
       mid: normalizedPrices.mid,
       spread: normalizedPrices.spread,
+      spreadPoints: normalizedPrices.spreadPoints,
+      providerSpreadPoints: normalizedPrices.providerSpreadPoints,
+      referencePrice: normalizedPrices.referencePrice,
+      pricingModel: normalizedPrices.pricingModel,
+      spreadSource: normalizedPrices.spreadSource,
+      volatilityMultiplier: normalizedPrices.volatilityMultiplier,
+      sessionMultiplier: normalizedPrices.sessionMultiplier,
       providerTimestampMs: raw.providerTimestampMs,
       receivedAtMs,
       timeMs: receivedAtMs,
@@ -263,45 +272,8 @@ class MarketGateway {
     }
   }
 
-  #normalizePrices(raw, instrument) {
-    const rawBid = Number(raw.bid);
-    const rawAsk = Number(raw.ask);
-    let bid = Number.isFinite(rawBid) && rawBid > 0 ? rawBid : null;
-    let ask = Number.isFinite(rawAsk) && rawAsk > 0 ? rawAsk : null;
-    let isSyntheticSpread = false;
-    const tickSize = Number(instrument.tickSize);
-    const markup = Number.isFinite(tickSize) && tickSize > 0 ? Math.max(0, Number(instrument.spread?.markupPoints) || 0) * tickSize : 0;
-    const validProviderBook = Number.isFinite(bid) && Number.isFinite(ask) && ask >= bid;
-
-    if (validProviderBook) {
-      if (markup > 0) {
-        bid -= markup / 2;
-        ask += markup / 2;
-      }
-    } else if (
-      ['FIXED', 'SYNTHETIC'].includes(String(instrument.spread?.mode || '').toUpperCase())
-      && Number.isFinite(tickSize)
-      && tickSize > 0
-      && Number.isFinite(Number(instrument.spread?.fixedPoints))
-    ) {
-      const spreadWidth = Math.max(0, Number(instrument.spread.fixedPoints) * tickSize + markup);
-      bid = raw.price - spreadWidth / 2;
-      ask = raw.price + spreadWidth / 2;
-      isSyntheticSpread = true;
-    } else {
-      bid = null;
-      ask = null;
-    }
-
-    if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || ask < bid) {
-      bid = null;
-      ask = null;
-      isSyntheticSpread = false;
-    }
-
-    const spread = Number.isFinite(bid) && Number.isFinite(ask) ? ask - bid : null;
-    const mid = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : raw.price;
-    return { bid, ask, mid, spread, isSyntheticSpread };
+  #normalizePrices(raw, instrument, nowMs = Date.now()) {
+    return this.executionPricing.priceQuote({ raw, instrument, nowMs });
   }
 
   #checkQuoteFreshness() {
