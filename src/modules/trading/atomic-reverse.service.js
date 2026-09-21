@@ -53,7 +53,11 @@ class AtomicReverseService {
           const closePlan = planMarketClose({ account, instrument, quote, position, volume: null, nowMs });
           const close = await this.#persistClose({ account, position, plan: closePlan, quote, normalized, session, nowMs, valuationComplete: valuationProjection ? valuationProjection.complete : true });
           const exposure = hasExposureLimits(account)
-            ? await loadOpenExposure(this.positionModel, normalized.accountId, session)
+            ? await loadOpenExposure(this.positionModel, normalized.accountId, session, {
+              account,
+              symbol,
+              nowMs,
+            })
             : null;
           const openPlan = planMarketOpen({ account, instrument, quote, side: oppositeSide, volume: originalVolume, stopLoss: normalized.stopLoss, takeProfit: normalized.takeProfit, nowMs, exposure });
           const open = await this.#persistOpen({ account, plan: openPlan, quote, normalized, session, nowMs });
