@@ -1,7 +1,7 @@
 'use strict';
 
 const { Candle } = require('./candle.model');
-const { TIMEFRAME_MS } = require('./market.constants');
+const { TIMEFRAME_MS, candleBucketOpenTimeMs } = require('./market.constants');
 const { normalizeSymbol, serializeCandle } = require('./market.utils');
 const { candleExpiresAt } = require('./candle-retention');
 
@@ -90,7 +90,8 @@ class CandleEngine {
     for (const timeframe of this.timeframes) {
       const stepMs = TIMEFRAME_MS[timeframe];
       if (!stepMs) continue;
-      const bucket = Math.floor(tick.timeMs / stepMs) * stepMs;
+      const bucket = candleBucketOpenTimeMs(tick.timeMs, timeframe);
+      if (!Number.isFinite(bucket)) continue;
       const state = this.#state(symbol, timeframe);
       const providerVolumeDelta = this.#providerVolumeDelta(state, tick.dayVolume);
 
