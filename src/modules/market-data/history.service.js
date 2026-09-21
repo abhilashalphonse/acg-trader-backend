@@ -9,6 +9,7 @@ const {
 } = require('./market.constants');
 const { normalizeSymbol, serializeCandle, clampInteger } = require('./market.utils');
 const { AppError } = require('../../shared/errors/app-error');
+const { ProviderHistoryCache } = require('./history-cache');
 
 function positiveNumber(value) {
   const number = Number(value);
@@ -83,9 +84,16 @@ function applyVolumeMode(bars, mode) {
 }
 
 class MarketHistoryService {
-  constructor({ adapter, instrumentRegistry, persistTimeframes: _persistTimeframes = [], logger }) {
+  constructor({
+    adapter,
+    instrumentRegistry,
+    persistTimeframes: _persistTimeframes = [],
+    historyCache = new ProviderHistoryCache(),
+    logger,
+  }) {
     this.adapter = adapter;
     this.instrumentRegistry = instrumentRegistry;
+    this.historyCache = historyCache;
     this.logger = logger;
   }
 
@@ -98,7 +106,12 @@ class MarketHistoryService {
     if (this.adapter.supportsHistory(timeframe)) {
       try {
         const providerSymbol = this.instrumentRegistry.providerSymbol(canonical);
-        const providerBars = await this.adapter.fetchHistorical({ providerSymbol, timeframe, limit: safeLimit });
+        const providerBars = await this.historyCache.getOrLoad({
+          key: `${providerSymbol}:${timeframe}`,
+          timeframe,
+          limit: safeLimit,
+          load: () => this.adapter.fetchHistorical({ providerSymbol, timeframe, limit: safeLimit }),
+        });
         if (providerBars.length) {
           // Provider history is authoritative chart data, not durable ACG state.
           // Return it directly and keep MongoDB reserved for locally observed
@@ -144,6 +157,10 @@ class MarketHistoryService {
       };
     });
     return applyVolumeMode(merged, chooseVolumeMode(merged, timeframe));
+  }
+
+  cacheStats() {
+    return this.historyCache.stats();
   }
 
   async #loadLocal(symbol, timeframe, limit) {

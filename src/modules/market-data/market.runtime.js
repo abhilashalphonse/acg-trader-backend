@@ -64,8 +64,9 @@ function createMarketRuntime() {
     },
     health() {
       const websocket = wsServer?.health?.() || { clients: 0, accountSubscriptions: 0, path: env.market.wsPath };
-      if (!env.market.enabled) return { enabled: false, state: 'DISABLED', symbols: symbols, websocket };
-      return { enabled: true, ...gateway.status(), websocket };
+      const historyCache = historyService.cacheStats?.() || null;
+      if (!env.market.enabled) return { enabled: false, state: 'DISABLED', symbols: symbols, websocket, historyCache };
+      return { enabled: true, ...gateway.status(), websocket, historyCache };
     },
   };
 }
