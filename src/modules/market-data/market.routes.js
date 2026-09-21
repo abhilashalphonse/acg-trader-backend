@@ -104,6 +104,14 @@ function validateSymbols(runtime, symbols) {
 }
 
 function applyVolumeMode(candle, volumeMode) {
+  const carriesAuthoritativeDisplay = candle?.volumeMode === volumeMode
+    && Object.prototype.hasOwnProperty.call(candle, 'displayVolume')
+    && (candle.volumeSource === volumeMode || candle.volumeSource === 'unavailable');
+
+  if (carriesAuthoritativeDisplay) {
+    return { ...candle, volumeMode };
+  }
+
   const resolved = resolveCandleVolume({ ...candle, volumeMode }, volumeMode);
   return {
     ...candle,

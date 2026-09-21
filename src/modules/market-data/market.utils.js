@@ -33,8 +33,8 @@ function resolveCandleVolume(candle, preferredSource = candle?.volumeMode || nul
   const tickCount = nonNegativeNumber(candle?.tickCount);
   const baseline = nonNegativeNumber(candle?.providerVolumeBaseline);
   const liveAnchor = nonNegativeNumber(candle?.providerVolumeLiveAnchor);
-  const providerDisplay = baseline != null && liveAnchor != null && providerVolume != null
-    ? baseline + Math.max(0, providerVolume - liveAnchor)
+  const providerDisplay = baseline != null && liveAnchor != null
+    ? baseline + Math.max(0, (providerVolume ?? liveAnchor) - liveAnchor)
     : providerVolume;
 
   if (preferredSource === 'provider') {
