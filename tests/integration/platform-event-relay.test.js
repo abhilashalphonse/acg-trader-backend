@@ -175,3 +175,79 @@ test('successful realtime snapshots are delivered directly without Mongo outbox 
   assert.equal(deliveries[0].payload.equity, '100100');
   assert.equal(outboxCreates.length, 0);
 });
+
+
+test('failed realtime snapshots keep at most one pending durable retry per account', async () => {
+  const eventBus = new EventEmitter();
+  const outboxCreates = [];
+  let pendingRetry = null;
+  const account = {
+    _id: '64b000000000000000000001',
+    tenantId: '64a000000000000000000001',
+    accountCode: 'ACG-1',
+    externalRef: 'challenge-1',
+    riskDayKey: '2026-09-18',
+    state: { dailyStartEquity: '100000' },
+    metadata: { fundedAccountId: 'FUNDED-1' },
+  };
+  const outboxModel = {
+    async countDocuments() { return 0; },
+    find() {
+      return {
+        sort() {
+          return {
+            async limit() { return []; },
+          };
+        },
+      };
+    },
+    findOne() {
+      return {
+        select() {
+          return {
+            async lean() { return pendingRetry; },
+          };
+        },
+      };
+    },
+    async create(input) {
+      outboxCreates.push(input);
+      pendingRetry = { _id: 'snapshot-retry-1' };
+      return input;
+    },
+  };
+  const relay = new PlatformEventRelay({
+    enabled: true,
+    eventBus,
+    webhookUrl: 'https://funded.example.test/webhook',
+    webhookSecret: 'test-secret-at-least-16-chars',
+    snapshotCoalesceMs: 1,
+    accountModel: { findById: () => ({ lean: async () => account }) },
+    outboxModel,
+    fetchImpl: async () => ({ ok: false, status: 503 }),
+  });
+
+  await relay.start();
+  for (const [sequence, equity] of [[10, '100100'], [11, '100110']]) {
+    eventBus.emit('valuation.account.updated', {
+      accountId: String(account._id),
+      accountCode: account.accountCode,
+      balance: '100000',
+      equity,
+      usedMargin: '1000',
+      freeMargin: '99100',
+      floatingPnl: '100',
+      positionCount: 1,
+      valuationStatus: 'LIVE',
+      complete: true,
+      sequence,
+      valuedAtMs: Date.parse('2026-09-18T12:00:00.000Z') + sequence,
+    });
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+
+  assert.equal(outboxCreates.length, 1);
+  assert.equal(relay.health().snapshotRetryPending, 1);
+  assert.equal(relay.health().snapshotCoalesceMs, 1);
+  await relay.stop();
+});

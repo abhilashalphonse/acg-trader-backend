@@ -19,7 +19,7 @@ class PlatformEventRelay {
     timeoutMs = 5000,
     batchSize = 100,
     maxAttempts = 12,
-    snapshotCoalesceMs = 1000,
+    snapshotCoalesceMs = 5000,
     retentionMs = 7 * 24 * 60 * 60 * 1000,
     now = () => new Date(),
   } = {}) {
@@ -31,6 +31,7 @@ class PlatformEventRelay {
     this.snapshotPending = new Map();
     this.snapshotTimers = new Map();
     this.latestSnapshotSequence = new Map();
+    this.snapshotRetryPending = new Set();
     this.lastSuccessfulDeliveryAt = null;
     this.lastDeliveryFailureAt = null;
     this.deliveryFailures = 0;
@@ -78,6 +79,8 @@ class PlatformEventRelay {
       running: this.running,
       webhookConfigured: Boolean(this.webhookUrl && this.webhookSecret),
       pendingSnapshots: this.snapshotPending.size,
+      snapshotRetryPending: this.snapshotRetryPending.size,
+      snapshotCoalesceMs: this.snapshotCoalesceMs,
       lastSuccessfulDeliveryAt: this.lastSuccessfulDeliveryAt,
       lastDeliveryFailureAt: this.lastDeliveryFailureAt,
       deliveryFailures: this.deliveryFailures,
@@ -224,16 +227,43 @@ class PlatformEventRelay {
     } catch (error) {
       this.deliveryFailures += 1;
       this.lastDeliveryFailureAt = this.now().toISOString();
-      this.logger?.warn({ err: error, accountId }, 'Realtime account snapshot delivery failed; queued for durable retry');
-      await this.#enqueue(
-        account,
-        fundedAccountId,
-        'ACCOUNT_SNAPSHOT',
-        snapshotPayload,
-        { ...eventMetadata, occurredAt },
-        null,
-        eventId,
-      );
+      this.logger?.warn({ err: error, accountId }, 'Realtime account snapshot delivery failed; keeping one durable retry per account');
+      await this.#ensureSnapshotRetry(account, fundedAccountId, snapshotPayload, eventMetadata, occurredAt, eventId);
+    }
+  }
+
+  async #ensureSnapshotRetry(account, fundedAccountId, snapshotPayload, eventMetadata, occurredAt, eventId) {
+    const accountId = String(account?._id || account?.id || "");
+    if (!accountId || this.snapshotRetryPending.has(accountId)) return;
+
+    this.snapshotRetryPending.add(accountId);
+    try {
+      let pending = null;
+      if (typeof this.outboxModel.findOne === 'function') {
+        pending = await this.outboxModel
+          .findOne({
+            accountId: account._id,
+            eventType: 'ACCOUNT_SNAPSHOT',
+            status: 'PENDING',
+          })
+          .select('_id')
+          .lean();
+      }
+
+      if (!pending) {
+        await this.#enqueue(
+          account,
+          fundedAccountId,
+          'ACCOUNT_SNAPSHOT',
+          snapshotPayload,
+          { ...eventMetadata, occurredAt },
+          null,
+          eventId,
+        );
+      }
+    } catch (error) {
+      this.snapshotRetryPending.delete(accountId);
+      throw error;
     }
   }
 
@@ -314,6 +344,9 @@ class PlatformEventRelay {
       record.lastError = null;
       record.expiresAt = new Date(this.now().getTime() + this.retentionMs);
       await record.save();
+      if (record.eventType === 'ACCOUNT_SNAPSHOT') {
+        this.snapshotRetryPending.delete(String(record.accountId || ''));
+      }
       this.lastSuccessfulDeliveryAt = this.now().toISOString();
     } catch (error) {
       record.attempts += 1;
@@ -322,6 +355,9 @@ class PlatformEventRelay {
       if (record.attempts >= this.maxAttempts) {
         record.status = 'DEAD';
         record.expiresAt = new Date(this.now().getTime() + this.retentionMs);
+        if (record.eventType === 'ACCOUNT_SNAPSHOT') {
+          this.snapshotRetryPending.delete(String(record.accountId || ''));
+        }
         this.deadEvents += 1;
       } else {
         record.nextAttemptAt = new Date(this.now().getTime() + retryDelayMs(record.attempts));

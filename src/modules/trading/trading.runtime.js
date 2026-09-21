@@ -42,6 +42,7 @@ function createTradingRuntime({ marketRuntime }) {
     timeoutMs: env.platformEvents.timeoutMs,
     batchSize: env.platformEvents.batchSize,
     maxAttempts: env.platformEvents.maxAttempts,
+    snapshotCoalesceMs: env.platformEvents.snapshotCoalesceMs,
     logger,
   });
   const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, quoteRecovery: marketRuntime.ensureFreshQuote, logger });

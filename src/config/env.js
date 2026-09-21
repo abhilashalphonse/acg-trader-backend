@@ -41,6 +41,7 @@ const schema = z.object({
   PLATFORM_EVENT_TIMEOUT_MS: positiveInt(5000),
   PLATFORM_EVENT_BATCH_SIZE: positiveInt(100),
   PLATFORM_EVENT_MAX_ATTEMPTS: positiveInt(12),
+  PLATFORM_SNAPSHOT_COALESCE_MS: positiveInt(5000),
   MARKET_GATEWAY_ENABLED: booleanFromEnv.default(true),
   MARKET_PROVIDER: z.enum(['twelve-data']).default('twelve-data'),
   MARKET_UNIVERSE_MODE: z.enum(['catalog', 'explicit']).default('catalog'),
@@ -140,6 +141,7 @@ const env = Object.freeze({
     timeoutMs: raw.PLATFORM_EVENT_TIMEOUT_MS,
     batchSize: raw.PLATFORM_EVENT_BATCH_SIZE,
     maxAttempts: raw.PLATFORM_EVENT_MAX_ATTEMPTS,
+    snapshotCoalesceMs: raw.PLATFORM_SNAPSHOT_COALESCE_MS,
   }),
   market: Object.freeze({
     enabled: raw.MARKET_GATEWAY_ENABLED,
