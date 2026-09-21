@@ -89,7 +89,12 @@ for (const timeframe of [...configuredCandleTimeframes, ...configuredPersistTime
 // values also upgrades Railway deployments that still carry the legacy
 // sub-minute environment strings, without requiring a coordinated env edit.
 const candleTimeframes = [...new Set([...configuredCandleTimeframes, ...REQUIRED_TIMEFRAMES])];
-const persistTimeframes = [...new Set(configuredPersistTimeframes.filter(timeframe => DURABLE_PERSIST_TIMEFRAMES.has(timeframe)))];
+// Recent intraday persistence is required for the chart's tick-volume fallback.
+const VOLUME_FALLBACK_PERSIST_TIMEFRAMES = ['1m', '5m', '15m', '30m'];
+const persistTimeframes = [...new Set([
+  ...configuredPersistTimeframes.filter(timeframe => DURABLE_PERSIST_TIMEFRAMES.has(timeframe)),
+  ...VOLUME_FALLBACK_PERSIST_TIMEFRAMES,
+])];
 if (raw.MARKET_GATEWAY_ENABLED && !useCatalogUniverse && !symbols.length) throw new Error('MARKET_SYMBOLS must include at least one symbol when MARKET_UNIVERSE_MODE=explicit');
 if (
   raw.MARKET_GATEWAY_ENABLED
