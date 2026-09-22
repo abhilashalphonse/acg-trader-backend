@@ -87,3 +87,23 @@ test('stale in-progress idempotency lease can be recovered after a process crash
   assert.equal(result.recovered, true);
   assert.ok(result.record.leaseExpiresAt > new Date('2026-09-18T12:00:00.000Z'));
 });
+
+
+test('idempotency reservation carries an authoritative tenant id when supplied', async () => {
+  let created = null;
+  const model = {
+    async create(payload) {
+      created = payload;
+      return { _id: 'idem-tenant', ...payload, state: 'IN_PROGRESS' };
+    },
+  };
+  const service = new IdempotencyService({ model });
+  await service.reserve({
+    accountId: 'account-1',
+    tenantId: 'tenant-1',
+    scope: 'MARKET_OPEN',
+    key: 'order-tenant',
+    payload: { symbol: 'EURUSD', side: 'BUY', volume: '0.01' },
+  });
+  assert.equal(created.tenantId, 'tenant-1');
+});
