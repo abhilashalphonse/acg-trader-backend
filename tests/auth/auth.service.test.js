@@ -167,3 +167,67 @@ test('rotated access tokens expire after the short overlap window', async () => 
     error => error.code === 'TRADER_SESSION_INVALID' && error.statusCode === 401,
   );
 });
+
+
+test('session authentication throttles last-seen writes inside the touch interval', async () => {
+  const now = new Date('2026-09-19T12:00:00.000Z');
+  const access = 'acg_ts_touch-throttle';
+  let updateCalls = 0;
+  const session = {
+    _id: 'session-touch',
+    tenantId: 'tenant-1',
+    tokenHash: hashToken(access),
+    authMethod: 'FEDERATED',
+    ownerExternalRef: 'user-1',
+    accountIds: ['account-1'],
+    accessExpiresAt: new Date(now.getTime() + 15 * 60_000),
+    idleExpiresAt: new Date(now.getTime() + 23 * 60 * 60_000),
+    expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60_000),
+    lastSeenAt: new Date(now.getTime() - 15_000),
+    revokedAt: null,
+  };
+  const model = {
+    findOne() { return { lean: async () => ({ ...session }) }; },
+    async updateOne() { updateCalls += 1; return { modifiedCount: 1 }; },
+  };
+  const service = new AuthService({
+    sessionModel: model,
+    now: () => new Date(now),
+    sessionTouchIntervalSeconds: 60,
+  });
+
+  const principal = await service.authenticateSessionToken(access);
+  assert.equal(principal.sessionId, 'session-touch');
+  assert.equal(updateCalls, 0);
+});
+
+test('session authentication refreshes last-seen after the touch interval', async () => {
+  const now = new Date('2026-09-19T12:00:00.000Z');
+  const access = 'acg_ts_touch-due';
+  let updateCalls = 0;
+  const session = {
+    _id: 'session-touch-due',
+    tenantId: 'tenant-1',
+    tokenHash: hashToken(access),
+    authMethod: 'FEDERATED',
+    ownerExternalRef: 'user-1',
+    accountIds: ['account-1'],
+    accessExpiresAt: new Date(now.getTime() + 15 * 60_000),
+    idleExpiresAt: new Date(now.getTime() + 23 * 60 * 60_000),
+    expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60_000),
+    lastSeenAt: new Date(now.getTime() - 61_000),
+    revokedAt: null,
+  };
+  const model = {
+    findOne() { return { lean: async () => ({ ...session }) }; },
+    async updateOne() { updateCalls += 1; return { modifiedCount: 1 }; },
+  };
+  const service = new AuthService({
+    sessionModel: model,
+    now: () => new Date(now),
+    sessionTouchIntervalSeconds: 60,
+  });
+
+  await service.authenticateSessionToken(access);
+  assert.equal(updateCalls, 1);
+});
