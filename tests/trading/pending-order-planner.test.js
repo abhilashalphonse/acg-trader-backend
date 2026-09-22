@@ -89,6 +89,45 @@ test('plans BUY LIMIT away from current ASK without reserving margin', () => {
   assert.equal(Object.hasOwn(plan, 'requiredMargin'), false);
 });
 
+test('Funded SELL LIMIT with explicit null margin caps is accepted at 0.50% risk sizing', () => {
+  const plan = planPendingOrder({
+    account: account({
+      state: { balance: '100347.83', equity: '100347.83', freeMargin: '100347.83', usedMargin: '0' },
+      riskPolicy: {
+        allowedSymbols: [],
+        maxMarginUsagePercent: null,
+        maxSingleOrderMarginPercentOfFree: null,
+        maxSymbolMarginPercentOfPermitted: null,
+      },
+    }),
+    instrument: instrument(),
+    quote: quote({ bid: 1.14460, ask: 1.14462 }),
+    type: 'LIMIT',
+    side: 'SELL',
+    volume: '15.2',
+    limitPrice: '1.14469',
+    stopLoss: '1.14502',
+    takeProfit: '1.14278',
+    exposure: {
+      currentOpenPositions: 0,
+      currentSymbolPositions: 0,
+      currentTotalVolume: '0',
+      currentSymbolVolume: '0',
+      currentSymbolMargin: '0',
+      currentOpenRisk: '0',
+      unmeasuredRiskPositions: 0,
+    },
+    pendingExposure: { currentPendingOrders: 0, currentSymbolPendingOrders: 0 },
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.side, 'SELL');
+  assert.equal(plan.limitPrice, '1.14469');
+  assert.equal(plan.volume, '15.2');
+  assert.equal(plan.stopLoss, '1.14502');
+  assert.equal(plan.takeProfit, '1.14278');
+});
+
 test('LIMIT trigger uses ASK for buys and BID for sells', () => {
   assert.equal(detectPendingOrderAction({ order: order(), tick: quote({ ask: 1.0989 }), nowMs: 10_100 }).action, 'FILL');
   assert.equal(detectPendingOrderAction({ order: order(), tick: quote({ ask: 1.0991 }), nowMs: 10_100 }), null);

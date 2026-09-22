@@ -23,7 +23,7 @@ const { TrailingStopService } = require('./trailing-stop.service');
 const { TrailingStopEngine } = require('./trailing-stop-engine');
 const { RiskDayEngine } = require('./risk-day-engine');
 const { ChallengeRiskEngine } = require('./challenge-risk-engine');
-const { normalizeLegacyFundedPercentageRiskDefaults } = require('../accounts/risk-policy-migration');
+const { normalizeLegacyFundedRiskDefaults } = require('../accounts/risk-policy-migration');
 
 function createTradingRuntime({ marketRuntime }) {
   const eventBus = marketRuntime.eventBus;
@@ -67,7 +67,7 @@ function createTradingRuntime({ marketRuntime }) {
   async function start() {
     if (started) return;
     try {
-      await normalizeLegacyFundedPercentageRiskDefaults({ logger });
+      await normalizeLegacyFundedRiskDefaults({ logger });
       await valuationEngine.start();
       riskDayEngine.start();
       challengeRiskEngine.start();

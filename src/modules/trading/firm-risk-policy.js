@@ -45,9 +45,26 @@ function rawPolicyValue(policy, key) {
   return value?.toString ? value.toString() : value;
 }
 
+const NULLABLE_POLICY_OVERRIDES = new Set([
+  // ACG Funded intentionally provisions these as null when the product has
+  // not enabled an additional exposure rule. Null must mean "disabled", not
+  // "fall back to a hidden platform cap".
+  'maxRiskPerTradePercent',
+  'maxAggregateRiskPercent',
+  'maxMarginUsagePercent',
+  'maxSingleOrderMarginPercentOfFree',
+  'maxSymbolMarginPercentOfPermitted',
+]);
+
 function effectivePolicyValue(account, key) {
-  const explicit = rawPolicyValue(account?.riskPolicy, key);
-  return explicit == null ? ACG_STANDARD_RISK_POLICY[key] : explicit;
+  const policy = account?.riskPolicy;
+  const explicit = rawPolicyValue(policy, key);
+  if (explicit != null) return explicit;
+
+  const fieldWasProvisioned = policy != null && policy[key] !== undefined;
+  if (fieldWasProvisioned && NULLABLE_POLICY_OVERRIDES.has(key)) return null;
+
+  return ACG_STANDARD_RISK_POLICY[key];
 }
 
 function policyDecimal(account, key) {

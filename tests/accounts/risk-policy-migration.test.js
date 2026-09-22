@@ -3,31 +3,57 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  normalizeLegacyFundedPercentageRiskDefaults,
+  normalizeLegacyFundedRiskDefaults,
   metadataValue,
   decimalText,
   modifiedCount,
 } = require('../../src/modules/accounts/risk-policy-migration');
 
-test('legacy ACG Funded percentage-risk defaults are cleared independently', async () => {
+test('legacy ACG Funded risk defaults are cleared without touching non-Funded accounts', async () => {
   const updates = [];
   const candidates = [
     {
       _id: '64b000000000000000000001',
       metadata: { fundedAccountId: 'funded-1' },
-      riskPolicy: { maxRiskPerTradePercent: '1', maxAggregateRiskPercent: '2' },
+      riskPolicy: {
+        maxRiskPerTradePercent: '1',
+        maxAggregateRiskPercent: '2',
+        maxMarginUsagePercent: '50',
+        maxSingleOrderMarginPercentOfFree: '20',
+        maxSymbolMarginPercentOfPermitted: '30',
+      },
     },
     {
       _id: '64b000000000000000000002',
       metadata: new Map([['fundedAccountId', 'funded-2']]),
-      riskPolicy: { maxRiskPerTradePercent: '1', maxAggregateRiskPercent: null },
+      riskPolicy: {
+        maxRiskPerTradePercent: '1',
+        maxAggregateRiskPercent: null,
+        maxMarginUsagePercent: '50',
+        maxSingleOrderMarginPercentOfFree: '20',
+        maxSymbolMarginPercentOfPermitted: '30',
+      },
     },
     {
       _id: '64b000000000000000000003',
       metadata: {},
-      riskPolicy: { maxRiskPerTradePercent: '1', maxAggregateRiskPercent: '2' },
+      riskPolicy: {
+        maxRiskPerTradePercent: '1',
+        maxAggregateRiskPercent: '2',
+        maxMarginUsagePercent: '50',
+        maxSingleOrderMarginPercentOfFree: '20',
+        maxSymbolMarginPercentOfPermitted: '30',
+      },
     },
   ];
+
+  const expectedCounts = {
+    'riskPolicy.maxRiskPerTradePercent': 2,
+    'riskPolicy.maxAggregateRiskPercent': 1,
+    'riskPolicy.maxMarginUsagePercent': 2,
+    'riskPolicy.maxSingleOrderMarginPercentOfFree': 2,
+    'riskPolicy.maxSymbolMarginPercentOfPermitted': 2,
+  };
 
   const accountModel = {
     find() {
@@ -38,19 +64,25 @@ test('legacy ACG Funded percentage-risk defaults are cleared independently', asy
     },
     async updateMany(filter, update) {
       updates.push({ filter, update });
-      return { modifiedCount: updates.length === 1 ? 2 : 1 };
+      const field = Object.keys(update.$set)[0];
+      return { modifiedCount: expectedCounts[field] || 0 };
     },
   };
 
-  const result = await normalizeLegacyFundedPercentageRiskDefaults({ accountModel });
+  const result = await normalizeLegacyFundedRiskDefaults({ accountModel });
 
   assert.deepEqual(result, {
     maxRiskPerTradeCleared: 2,
     maxAggregateRiskCleared: 1,
+    maxMarginUsageCleared: 2,
+    maxSingleOrderMarginCleared: 2,
+    maxSymbolMarginCleared: 2,
   });
-  assert.equal(updates.length, 2);
-  assert.equal(updates[0].update.$set['riskPolicy.maxRiskPerTradePercent'], null);
-  assert.equal(updates[1].update.$set['riskPolicy.maxAggregateRiskPercent'], null);
+  assert.equal(updates.length, 5);
+  for (const update of updates) {
+    const field = Object.keys(update.update.$set)[0];
+    assert.equal(update.update.$set[field], null);
+  }
 });
 
 test('migration helpers normalize metadata and decimal representations', () => {

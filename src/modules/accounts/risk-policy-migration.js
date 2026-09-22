@@ -3,47 +3,49 @@
 const mongoose = require('mongoose');
 const { TradingAccount } = require('./trading-account.model');
 
-async function normalizeLegacyFundedPercentageRiskDefaults({
+const LEGACY_FUNDED_RISK_DEFAULTS = Object.freeze([
+  { key: 'maxRiskPerTradePercent', value: '1', resultKey: 'maxRiskPerTradeCleared' },
+  { key: 'maxAggregateRiskPercent', value: '2', resultKey: 'maxAggregateRiskCleared' },
+  { key: 'maxMarginUsagePercent', value: '50', resultKey: 'maxMarginUsageCleared' },
+  { key: 'maxSingleOrderMarginPercentOfFree', value: '20', resultKey: 'maxSingleOrderMarginCleared' },
+  { key: 'maxSymbolMarginPercentOfPermitted', value: '30', resultKey: 'maxSymbolMarginCleared' },
+]);
+
+async function normalizeLegacyFundedRiskDefaults({
   accountModel = TradingAccount,
   logger = null,
 } = {}) {
   const candidates = await accountModel.find({
-    $or: [
-      { 'riskPolicy.maxRiskPerTradePercent': '1' },
-      { 'riskPolicy.maxAggregateRiskPercent': '2' },
-    ],
+    $or: LEGACY_FUNDED_RISK_DEFAULTS.map(item => ({
+      [`riskPolicy.${item.key}`]: item.value,
+    })),
   })
-    .select('_id metadata riskPolicy.maxRiskPerTradePercent riskPolicy.maxAggregateRiskPercent')
+    .select(`_id metadata ${LEGACY_FUNDED_RISK_DEFAULTS.map(item => `riskPolicy.${item.key}`).join(' ')}`)
     .lean();
 
   const funded = (candidates || []).filter(account => metadataValue(account?.metadata, 'fundedAccountId'));
-  const perTradeIds = funded
-    .filter(account => decimalText(account?.riskPolicy?.maxRiskPerTradePercent) === '1')
-    .map(account => account._id);
-  const aggregateIds = funded
-    .filter(account => decimalText(account?.riskPolicy?.maxAggregateRiskPercent) === '2')
-    .map(account => account._id);
+  const operations = LEGACY_FUNDED_RISK_DEFAULTS.map(item => {
+    const ids = funded
+      .filter(account => decimalText(account?.riskPolicy?.[item.key]) === item.value)
+      .map(account => account._id);
+    return clearField(accountModel, ids, `riskPolicy.${item.key}`);
+  });
+  const results = await Promise.all(operations);
 
-  const [perTradeResult, aggregateResult] = await Promise.all([
-    clearField(accountModel, perTradeIds, 'riskPolicy.maxRiskPerTradePercent'),
-    clearField(accountModel, aggregateIds, 'riskPolicy.maxAggregateRiskPercent'),
-  ]);
+  const summary = Object.fromEntries(
+    LEGACY_FUNDED_RISK_DEFAULTS.map((item, index) => [item.resultKey, modifiedCount(results[index])]),
+  );
 
-  const maxRiskPerTradeCleared = modifiedCount(perTradeResult);
-  const maxAggregateRiskCleared = modifiedCount(aggregateResult);
-
-  if (maxRiskPerTradeCleared || maxAggregateRiskCleared) {
-    logger?.info?.({
-      maxRiskPerTradeCleared,
-      maxAggregateRiskCleared,
-    }, 'Normalized legacy ACG Funded percentage-risk defaults');
+  if (Object.values(summary).some(Boolean)) {
+    logger?.info?.(summary, 'Normalized legacy ACG Funded risk-policy defaults');
   }
 
-  return {
-    maxRiskPerTradeCleared,
-    maxAggregateRiskCleared,
-  };
+  return summary;
 }
+
+// Backward-compatible export for callers/tests created before margin defaults
+// were included in this normalization.
+const normalizeLegacyFundedPercentageRiskDefaults = normalizeLegacyFundedRiskDefaults;
 
 async function clearField(accountModel, ids, field) {
   if (!ids.length) return { modifiedCount: 0 };
@@ -69,6 +71,8 @@ function modifiedCount(result) {
 }
 
 module.exports = {
+  LEGACY_FUNDED_RISK_DEFAULTS,
+  normalizeLegacyFundedRiskDefaults,
   normalizeLegacyFundedPercentageRiskDefaults,
   metadataValue,
   decimalText,

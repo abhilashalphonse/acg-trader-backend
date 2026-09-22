@@ -312,6 +312,73 @@ test('market execution rejects non-positive and crossed executable books', () =>
 });
 
 
+test('Funded explicit null margin policies do not inherit hidden platform exposure caps', () => {
+  const fundedAccount = account({
+    riskPolicy: {
+      allowedSymbols: [],
+      maxMarginUsagePercent: null,
+      maxSingleOrderMarginPercentOfFree: null,
+      maxSymbolMarginPercentOfPermitted: null,
+    },
+  });
+
+  const plan = planMarketOpen({
+    account: fundedAccount,
+    instrument: instrument(),
+    quote: quote({ bid: 1.14469, ask: 1.14471 }),
+    side: 'SELL',
+    volume: '15.2',
+    stopLoss: '1.14502',
+    takeProfit: '1.14278',
+    exposure: {
+      currentOpenPositions: 0,
+      currentSymbolPositions: 0,
+      currentTotalVolume: '0',
+      currentSymbolVolume: '0',
+      currentSymbolMargin: '0',
+      currentOpenRisk: '0',
+      unmeasuredRiskPositions: 0,
+    },
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.fillPrice, '1.14469');
+  assert.equal(plan.requiredMargin, '17399.288');
+  assert.equal(plan.stopLoss, '1.14502');
+  assert.equal(plan.takeProfit, '1.14278');
+});
+
+test('explicit null margin policy does not disable standard position-count safeguards', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({
+        riskPolicy: {
+          allowedSymbols: [],
+          maxPositionsPerSymbol: null,
+          maxMarginUsagePercent: null,
+          maxSingleOrderMarginPercentOfFree: null,
+          maxSymbolMarginPercentOfPermitted: null,
+        },
+      }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      exposure: {
+        currentOpenPositions: 3,
+        currentSymbolPositions: 3,
+        currentTotalVolume: '3',
+        currentSymbolVolume: '3',
+        currentSymbolMargin: '3300',
+        currentOpenRisk: '0',
+        unmeasuredRiskPositions: 3,
+      },
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_SYMBOL_POSITIONS',
+  );
+});
+
 test('standard risk policy never forces a stop loss', () => {
   assert.doesNotThrow(() => planMarketOpen({
     account: account({ riskPolicy: { allowedSymbols: [] } }),
