@@ -37,7 +37,7 @@ class IdempotencyService {
     this.now = now;
   }
 
-  async reserve({ accountId, scope, key, payload, expiresAt }) {
+  async reserve({ accountId, tenantId = null, scope, key, payload, expiresAt }) {
     if (!accountId) throw new TypeError('accountId is required');
     if (!scope || !String(scope).trim()) throw new TypeError('idempotency scope is required');
     if (!key || !String(key).trim()) throw new TypeError('idempotency key is required');
@@ -51,6 +51,7 @@ class IdempotencyService {
     try {
       const record = await this.model.create({
         accountId,
+        ...(tenantId ? { tenantId } : {}),
         scope: resolvedScope,
         key: resolvedKey,
         requestHash,
