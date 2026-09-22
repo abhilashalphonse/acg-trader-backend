@@ -68,7 +68,7 @@ class MarketOrderService {
     });
   }
 
-  async openMarketOrder(command, { timing = null, requestId = null } = {}) {
+  async openMarketOrder(command, { timing = null, requestId = null, tenantId = null } = {}) {
     const normalized = normalizeOpenCommand(command);
     setExecutionContext(timing, {
       requestId,
@@ -80,7 +80,7 @@ class MarketOrderService {
     const reservation = await timeAsync(
       timing,
       'idempotency_reserve',
-      () => this.#reserve(normalized.accountId, 'MARKET_OPEN', normalized.clientOrderId, normalized),
+      () => this.#reserve(normalized.accountId, 'MARKET_OPEN', normalized.clientOrderId, normalized, tenantId),
     );
     const replay = this.#resolveReservation(reservation, normalized.accountId);
     if (replay) return replay;
@@ -166,7 +166,7 @@ class MarketOrderService {
     }
   }
 
-  async closeMarketPosition(command, { timing = null, requestId = null } = {}) {
+  async closeMarketPosition(command, { timing = null, requestId = null, tenantId = null } = {}) {
     const normalized = normalizeCloseCommand(command);
     const scope = normalized.reason ? 'PROTECTIVE_CLOSE' : 'MARKET_CLOSE';
     setExecutionContext(timing, {
@@ -179,7 +179,7 @@ class MarketOrderService {
     const reservation = await timeAsync(
       timing,
       'idempotency_reserve',
-      () => this.#reserve(normalized.accountId, scope, normalized.clientOrderId, normalized),
+      () => this.#reserve(normalized.accountId, scope, normalized.clientOrderId, normalized, tenantId),
     );
     const replay = this.#resolveReservation(reservation, normalized.accountId);
     if (replay) return replay;
@@ -291,6 +291,7 @@ class MarketOrderService {
     const now = new Date(nowMs);
     const slippage = calculateAdverseSlippage({ side: plan.side, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice });
     const order = new this.orderModel({
+      tenantId: account.tenantId,
       accountId: account._id,
       clientOrderId: normalized.clientOrderId,
       symbol: plan.symbol,
@@ -309,6 +310,7 @@ class MarketOrderService {
       filledAt: now,
     });
     const position = new this.positionModel({
+      tenantId: account.tenantId,
       accountId: account._id,
       sourceOrderId: order._id,
       symbol: plan.symbol,
@@ -329,6 +331,7 @@ class MarketOrderService {
       openedAt: now,
     });
     const deal = new this.dealModel({
+      tenantId: account.tenantId,
       accountId: account._id,
       orderId: order._id,
       positionId: position._id,
@@ -394,6 +397,7 @@ class MarketOrderService {
     const now = new Date(nowMs);
     const slippage = calculateAdverseSlippage({ side: plan.closeSide, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice });
     const order = new this.orderModel({
+      tenantId: account.tenantId,
       accountId: account._id,
       clientOrderId: normalized.clientOrderId,
       targetPositionId: position._id,
@@ -411,6 +415,7 @@ class MarketOrderService {
       filledAt: now,
     });
     const deal = new this.dealModel({
+      tenantId: account.tenantId,
       accountId: account._id,
       orderId: order._id,
       positionId: position._id,
@@ -474,8 +479,8 @@ class MarketOrderService {
     return { response, events: closeEvents(response, plan.fullClose) };
   }
 
-  async #reserve(accountId, scope, key, payload) {
-    return this.idempotencyService.reserve({ accountId, scope, key, payload });
+  async #reserve(accountId, scope, key, payload, tenantId = null) {
+    return this.idempotencyService.reserve({ accountId, tenantId, scope, key, payload });
   }
 
   #resolveReservation(reservation, accountId) {
@@ -561,6 +566,7 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
   if (compareDecimal(plan.realizedPnl, '0') !== 0) {
     const next = addDecimal(runningBalance, plan.realizedPnl);
     ledgers.push(new ledgerModel({
+      tenantId: account.tenantId,
       accountId: account._id,
       type: 'REALIZED_PNL',
       amount: plan.realizedPnl,
@@ -579,6 +585,7 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
     const commissionAmount = subtractDecimal('0', plan.commission);
     const next = addDecimal(runningBalance, commissionAmount);
     ledgers.push(new ledgerModel({
+      tenantId: account.tenantId,
       accountId: account._id,
       type: 'COMMISSION',
       amount: commissionAmount,
@@ -621,6 +628,7 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
 
 function buildCommissionLedger({ account, amount, balanceAfter, referenceId, idempotencyKey }) {
   return {
+    tenantId: account.tenantId,
     accountId: account._id,
     type: 'COMMISSION',
     amount: subtractDecimal('0', amount),
