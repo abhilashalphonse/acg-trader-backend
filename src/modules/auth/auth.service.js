@@ -27,6 +27,7 @@ class AuthService {
     accessTokenGraceSeconds = 45,
     refreshSessionTtlSeconds = 30 * 24 * 60 * 60,
     idleTimeoutSeconds = 24 * 60 * 60,
+    sessionTouchIntervalSeconds = 60,
     federationTicketTtlSeconds = 60,
     maxFailedLogins = 5,
     lockoutSeconds = 900,
@@ -44,6 +45,7 @@ class AuthService {
       accessTokenGraceSeconds,
       refreshSessionTtlSeconds,
       idleTimeoutSeconds,
+      sessionTouchIntervalSeconds,
       federationTicketTtlSeconds,
       maxFailedLogins,
       lockoutSeconds,
@@ -250,23 +252,31 @@ class AuthService {
       throw invalidTraderSession();
     }
 
-    const nextIdleExpiresAt = new Date(Math.min(
-      session.expiresAt.getTime(),
-      now.getTime() + this.idleTimeoutSeconds * 1000,
-    ));
-    await timeAsync(timing, 'auth_touch', () => this.sessionModel.updateOne(
-      {
-        _id: session._id,
-        revokedAt: null,
-        $or: [
-          { tokenHash },
-          { previousTokenHash: tokenHash },
-        ],
-      },
-      { $set: { lastSeenAt: now, idleExpiresAt: nextIdleExpiresAt } },
-    ));
+    const lastSeenAt = session.lastSeenAt instanceof Date ? session.lastSeenAt : null;
+    const touchIntervalMs = Math.max(1, Number(this.sessionTouchIntervalSeconds) || 60) * 1000;
+    const shouldTouchSession = !lastSeenAt || (now.getTime() - lastSeenAt.getTime()) >= touchIntervalMs;
+    let resolvedIdleExpiresAt = idleExpiresAt;
 
-    return sessionPrincipal(session, accessExpiresAt, nextIdleExpiresAt);
+    if (shouldTouchSession) {
+      const nextIdleExpiresAt = new Date(Math.min(
+        session.expiresAt.getTime(),
+        now.getTime() + this.idleTimeoutSeconds * 1000,
+      ));
+      await timeAsync(timing, 'auth_touch', () => this.sessionModel.updateOne(
+        {
+          _id: session._id,
+          revokedAt: null,
+          $or: [
+            { tokenHash },
+            { previousTokenHash: tokenHash },
+          ],
+        },
+        { $set: { lastSeenAt: now, idleExpiresAt: nextIdleExpiresAt } },
+      ));
+      resolvedIdleExpiresAt = nextIdleExpiresAt;
+    }
+
+    return sessionPrincipal(session, accessExpiresAt, resolvedIdleExpiresAt);
   }
 
   async refreshSession({ refreshToken = null, legacyAccessToken = null } = {}) {
