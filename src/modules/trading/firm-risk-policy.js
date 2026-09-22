@@ -17,13 +17,15 @@ const ACG_STANDARD_RISK_POLICY = Object.freeze({
   // unless the account explicitly provisions them.
   maxRiskPerTradePercent: null,
   maxAggregateRiskPercent: null,
-  maxMarginUsagePercent: '50',
+  // Margin exposure caps are opt-in product rules. Leverage and actual free
+  // margin remain hard execution constraints even when these are disabled.
+  maxMarginUsagePercent: null,
   maxOpenPositions: 10,
   maxPositionsPerSymbol: 3,
   maxPendingOrders: 10,
   maxPendingOrdersPerSymbol: 3,
-  maxSingleOrderMarginPercentOfFree: '20',
-  maxSymbolMarginPercentOfPermitted: '30',
+  maxSingleOrderMarginPercentOfFree: null,
+  maxSymbolMarginPercentOfPermitted: null,
 });
 
 const PRE_TRADE_REJECTION_CODES = Object.freeze({

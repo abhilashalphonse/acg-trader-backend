@@ -24,9 +24,9 @@ const riskPolicySchema = new Schema({
   maxTotalVolume: { type: Decimal128, default: null },
   maxRiskPerTradePercent: { type: Decimal128, default: null },
   maxAggregateRiskPercent: { type: Decimal128, default: null },
-  maxMarginUsagePercent: { type: Decimal128, default: '50' },
-  maxSingleOrderMarginPercentOfFree: { type: Decimal128, default: '20' },
-  maxSymbolMarginPercentOfPermitted: { type: Decimal128, default: '30' },
+  maxMarginUsagePercent: { type: Decimal128, default: null },
+  maxSingleOrderMarginPercentOfFree: { type: Decimal128, default: null },
+  maxSymbolMarginPercentOfPermitted: { type: Decimal128, default: null },
   allowedSymbols: [{ type: String, uppercase: true, trim: true }],
 }, { _id: false });
 

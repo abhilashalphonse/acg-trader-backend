@@ -312,6 +312,30 @@ test('market execution rejects non-positive and crossed executable books', () =>
 });
 
 
+test('standard accounts do not receive hidden margin exposure caps', () => {
+  const plan = planMarketOpen({
+    account: account({ riskPolicy: { allowedSymbols: [] } }),
+    instrument: instrument(),
+    quote: quote({ bid: 1.14469, ask: 1.14471 }),
+    side: 'SELL',
+    volume: '15.2',
+    stopLoss: '1.14502',
+    takeProfit: '1.14278',
+    exposure: {
+      currentOpenPositions: 0,
+      currentSymbolPositions: 0,
+      currentTotalVolume: '0',
+      currentSymbolVolume: '0',
+      currentSymbolMargin: '0',
+      currentOpenRisk: '0',
+      unmeasuredRiskPositions: 0,
+    },
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.requiredMargin, '17399.288');
+});
+
 test('Funded explicit null margin policies do not inherit hidden platform exposure caps', () => {
   const fundedAccount = account({
     riskPolicy: {
