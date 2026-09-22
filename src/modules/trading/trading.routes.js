@@ -7,6 +7,11 @@ const { AppError } = require('../../shared/errors/app-error');
 const { requireTraderSession, requireAccountGrant } = require('../auth/auth.middleware');
 const { Order } = require('./order.model');
 const { Position } = require('./position.model');
+const {
+  marketExecutionTimingMiddleware,
+  setExecutionContext,
+  timeAsync,
+} = require('../../shared/observability/execution-timing');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const decimalInput = z.union([z.string().min(1), z.number().finite()]).transform(value => String(value));
@@ -30,6 +35,7 @@ function createTradingRouter(runtime, authService) {
   const router = express.Router();
   router.get('/status', (_req, res) => res.json(runtime.health()));
   router.use(requireEnabled(runtime));
+  router.use(marketExecutionTimingMiddleware());
   router.use(requireTraderSession(authService));
   router.use(rateLimit({
     windowMs: 60 * 1000,
@@ -48,7 +54,20 @@ function createTradingRouter(runtime, authService) {
   router.get('/accounts/:accountId/history/deals', historyHandler(runtime, 'deals'));
   router.get('/accounts/:accountId/history/positions', historyHandler(runtime, 'positions'));
 
-  router.post('/orders/market', async (req, res) => { const command = parse(openSchema, req.body); requireAccountGrant(req.traderPrincipal, command.accountId); const result = await runtime.marketOrderService.openMarketOrder(command); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.post('/orders/market', async (req, res) => {
+    const command = parse(openSchema, req.body);
+    requireAccountGrant(req.traderPrincipal, command.accountId);
+    setExecutionContext(req.executionTiming, {
+      accountId: command.accountId,
+      symbol: command.symbol,
+      clientOrderId: command.clientOrderId,
+    });
+    const result = await runtime.marketOrderService.openMarketOrder(command, {
+      timing: req.executionTiming,
+      requestId: req.id,
+    });
+    res.status(result.idempotentReplay ? 200 : 201).json(result);
+  });
   router.post('/orders/pending', async (req, res) => { const command = parse(pendingSchema, req.body); requireAccountGrant(req.traderPrincipal, command.accountId); const result = await runtime.pendingOrderService.placePendingOrder(command); res.status(result.idempotentReplay ? 200 : 201).json(result); });
   router.patch('/orders/:orderId', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(amendPendingSchema, req.body); const accountId = await orderAccountId(orderId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); res.json(await runtime.pendingOrderAmendService.amend({ ...command, orderId })); });
   router.post('/orders/:orderId/cancel', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(cancelPendingSchema, req.body); const accountId = await orderAccountId(orderId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); const result = await runtime.pendingOrderService.cancelPendingOrder({ ...command, orderId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
@@ -58,10 +77,32 @@ function createTradingRouter(runtime, authService) {
   router.patch('/positions/:positionId/protection', positionCommand(positionProtectionCommand(runtime, 'updateProtection'), protectionSchema));
   router.post('/positions/:positionId/break-even', positionCommand(positionProtectionCommand(runtime, 'moveStopToBreakEven'), breakEvenSchema));
   router.patch('/positions/:positionId/trailing', positionCommand(async command => runtime.trailingStopService.configure(command), trailingSchema));
-  router.post('/positions/:positionId/close', positionCommand(async command => runtime.marketOrderService.closeMarketPosition(command), closeSchema, true));
+  router.post('/positions/:positionId/close', positionCommand(
+    async (command, context) => runtime.marketOrderService.closeMarketPosition(command, context),
+    closeSchema,
+    true,
+  ));
 
   function historyHandlerFactory(method) { return async (req, res) => { const accountId = parseObjectId(req.params.accountId); requireAccountGrant(req.traderPrincipal, accountId); res.json(await runtime.tradingHistoryService[method](accountId, parse(historyQuerySchema, req.query || {}))); }; }
-  function positionCommand(executor, schema, createdResponse = false) { return async (req, res) => { const positionId = parseObjectId(req.params.positionId); const command = parse(schema, req.body); const accountId = await positionAccountId(positionId); assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); const result = await executor({ ...command, positionId }); res.status(createdResponse && !result.idempotentReplay ? 201 : 200).json(result); }; }
+  function positionCommand(executor, schema, createdResponse = false) {
+    return async (req, res) => {
+      const positionId = parseObjectId(req.params.positionId);
+      const command = parse(schema, req.body);
+      const accountId = await timeAsync(req.executionTiming, 'resource_auth_read', () => positionAccountId(positionId));
+      assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH');
+      requireAccountGrant(req.traderPrincipal, accountId);
+      setExecutionContext(req.executionTiming, {
+        accountId,
+        positionId,
+        clientOrderId: command.clientOrderId || command.clientRequestId,
+      });
+      const result = await executor(
+        { ...command, positionId },
+        { timing: req.executionTiming, requestId: req.id },
+      );
+      res.status(createdResponse && !result.idempotentReplay ? 201 : 200).json(result);
+    };
+  }
   function historyHandler(_runtime, method) { return historyHandlerFactory(method); }
   return router;
 }

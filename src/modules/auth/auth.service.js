@@ -2,6 +2,7 @@
 
 const mongoose = require('mongoose');
 const crypto = require('crypto');
+const { timeAsync } = require('../../shared/observability/execution-timing');
 const { promisify } = require('util');
 const { AppError } = require('../../shared/errors/app-error');
 const { Tenant } = require('../tenancy/tenant.model');
@@ -219,16 +220,16 @@ class AuthService {
     }
   }
 
-  async authenticateSessionToken(token) {
+  async authenticateSessionToken(token, { timing = null } = {}) {
     const now = this.now();
     const tokenHash = hashToken(requiredString(token, 'accessToken'));
-    const session = await this.sessionModel.findOne({
+    const session = await timeAsync(timing, 'auth_lookup', () => this.sessionModel.findOne({
       revokedAt: null,
       $or: [
         { tokenHash },
         { previousTokenHash: tokenHash },
       ],
-    }).lean();
+    }).lean());
     const usingCurrentToken = Boolean(session && session.tokenHash === tokenHash);
     const usingPreviousToken = Boolean(session && session.previousTokenHash === tokenHash);
     const accessExpiresAt = usingCurrentToken
@@ -253,7 +254,7 @@ class AuthService {
       session.expiresAt.getTime(),
       now.getTime() + this.idleTimeoutSeconds * 1000,
     ));
-    await this.sessionModel.updateOne(
+    await timeAsync(timing, 'auth_touch', () => this.sessionModel.updateOne(
       {
         _id: session._id,
         revokedAt: null,
@@ -263,7 +264,7 @@ class AuthService {
         ],
       },
       { $set: { lastSeenAt: now, idleExpiresAt: nextIdleExpiresAt } },
-    );
+    ));
 
     return sessionPrincipal(session, accessExpiresAt, nextIdleExpiresAt);
   }

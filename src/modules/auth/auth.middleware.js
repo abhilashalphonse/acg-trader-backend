@@ -1,12 +1,17 @@
 'use strict';
 
 const { AppError } = require('../../shared/errors/app-error');
+const { timeAsync } = require('../../shared/observability/execution-timing');
 
 function requireTraderSession(authService) {
   return async (req, _res, next) => {
     try {
       const token = bearerToken(req);
-      req.traderPrincipal = await authService.authenticateSessionToken(token);
+      req.traderPrincipal = await timeAsync(
+        req.executionTiming,
+        'auth_total',
+        () => authService.authenticateSessionToken(token, { timing: req.executionTiming }),
+      );
       next();
     } catch (error) { next(error); }
   };

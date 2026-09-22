@@ -1,6 +1,13 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const {
+  timeAsync,
+  addDuration,
+  setDuration,
+  setExecutionContext,
+  nowMs: timingNowMs,
+} = require('../../shared/observability/execution-timing');
 const { AppError } = require('../../shared/errors/app-error');
 const {
   normalizeDecimal,
@@ -61,27 +68,66 @@ class MarketOrderService {
     });
   }
 
-  async openMarketOrder(command) {
+  async openMarketOrder(command, { timing = null, requestId = null } = {}) {
     const normalized = normalizeOpenCommand(command);
-    const reservation = await this.#reserve(normalized.accountId, 'MARKET_OPEN', normalized.clientOrderId, normalized);
+    setExecutionContext(timing, {
+      requestId,
+      accountId: normalized.accountId,
+      symbol: normalized.symbol,
+      clientOrderId: normalized.clientOrderId,
+    });
+
+    const reservation = await timeAsync(
+      timing,
+      'idempotency_reserve',
+      () => this.#reserve(normalized.accountId, 'MARKET_OPEN', normalized.clientOrderId, normalized),
+    );
     const replay = this.#resolveReservation(reservation, normalized.accountId);
     if (replay) return replay;
 
     try {
+      const queuedAt = timingNowMs();
       const result = await this.commandQueue.run(normalized.accountId, async () => {
-        const quoteSnapshot = await this.#resolveExecutableQuote(normalized.symbol, 'market-open');
+        addDuration(timing, 'queue_wait', timingNowMs() - queuedAt);
+        const quoteSnapshot = await timeAsync(
+          timing,
+          'quote_recovery',
+          () => this.#resolveExecutableQuote(normalized.symbol, 'market-open'),
+        );
+        setExecutionContext(timing, {
+          quoteSource: quoteSnapshot?.source || null,
+          quoteAgeMs: Number.isFinite(Number(quoteSnapshot?.receivedAtMs))
+            ? Math.max(0, Date.now() - Number(quoteSnapshot.receivedAtMs))
+            : null,
+        });
+
         const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
-          const account = await this.accountModel.findById(normalized.accountId).session(session);
+          const account = await timeAsync(
+            timing,
+            'account_read',
+            () => this.accountModel.findById(normalized.accountId).session(session),
+          );
           if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
-          const instrument = await this.instrumentModel.findOne({ symbol: normalized.symbol }).session(session);
+
+          const instrument = await timeAsync(
+            timing,
+            'instrument_read',
+            () => this.instrumentModel.findOne({ symbol: normalized.symbol }).session(session),
+          );
+
           const exposure = hasExposureLimits(account)
-            ? await loadOpenExposure(this.positionModel, normalized.accountId, session, {
-              account,
-              symbol: normalized.symbol,
-              nowMs,
-            })
+            ? await timeAsync(
+              timing,
+              'exposure_read',
+              () => loadOpenExposure(this.positionModel, normalized.accountId, session, {
+                account,
+                symbol: normalized.symbol,
+                nowMs,
+              }),
+            )
             : null;
+
           const plan = planMarketOpen({
             account,
             instrument,
@@ -93,47 +139,106 @@ class MarketOrderService {
             takeProfit: normalized.takeProfit,
             nowMs,
           });
-          return this.#persistOpen({ normalized, reservation, account, plan, quoteSnapshot, session, nowMs });
-        });
+
+          return timeAsync(
+            timing,
+            'persist_total',
+            () => this.#persistOpen({
+              normalized,
+              reservation,
+              account,
+              plan,
+              quoteSnapshot,
+              session,
+              nowMs,
+              timing,
+            }),
+          );
+        }, timing);
 
         this.#emitEvents(transactionResult.events);
         return transactionResult;
       });
       return this.#decorateResponse(result.response, normalized.accountId, false);
     } catch (error) {
-      await this.#recordFailure(reservation.record._id, error);
+      await timeAsync(timing, 'failure_record', () => this.#recordFailure(reservation.record._id, error));
       throw translateTransactionError(error);
     }
   }
 
-  async closeMarketPosition(command) {
+  async closeMarketPosition(command, { timing = null, requestId = null } = {}) {
     const normalized = normalizeCloseCommand(command);
     const scope = normalized.reason ? 'PROTECTIVE_CLOSE' : 'MARKET_CLOSE';
-    const reservation = await this.#reserve(normalized.accountId, scope, normalized.clientOrderId, normalized);
+    setExecutionContext(timing, {
+      requestId,
+      accountId: normalized.accountId,
+      positionId: normalized.positionId,
+      clientOrderId: normalized.clientOrderId,
+    });
+
+    const reservation = await timeAsync(
+      timing,
+      'idempotency_reserve',
+      () => this.#reserve(normalized.accountId, scope, normalized.clientOrderId, normalized),
+    );
     const replay = this.#resolveReservation(reservation, normalized.accountId);
     if (replay) return replay;
 
     try {
+      const queuedAt = timingNowMs();
       const result = await this.commandQueue.run(normalized.accountId, async () => {
+        addDuration(timing, 'queue_wait', timingNowMs() - queuedAt);
+
         let quoteSnapshot = null;
-        const previewPositionQuery = this.positionModel.findById(normalized.positionId);
-        const previewPosition = typeof previewPositionQuery?.lean === 'function'
-          ? await previewPositionQuery.lean()
-          : await previewPositionQuery;
+        const previewPosition = await timeAsync(timing, 'preview_position_read', async () => {
+          const query = this.positionModel.findById(normalized.positionId);
+          return typeof query?.lean === 'function' ? query.lean() : query;
+        });
+
         if (previewPosition?.symbol) {
-          quoteSnapshot = await this.#resolveExecutableQuote(previewPosition.symbol, normalized.reason ? 'protective-close' : 'market-close');
+          setExecutionContext(timing, { symbol: previewPosition.symbol });
+          quoteSnapshot = await timeAsync(
+            timing,
+            'quote_recovery',
+            () => this.#resolveExecutableQuote(
+              previewPosition.symbol,
+              normalized.reason ? 'protective-close' : 'market-close',
+            ),
+          );
         }
+
+        setExecutionContext(timing, {
+          quoteSource: quoteSnapshot?.source || null,
+          quoteAgeMs: Number.isFinite(Number(quoteSnapshot?.receivedAtMs))
+            ? Math.max(0, Date.now() - Number(quoteSnapshot.receivedAtMs))
+            : null,
+        });
+
         const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
-          const account = await this.accountModel.findById(normalized.accountId).session(session);
+          const account = await timeAsync(
+            timing,
+            'account_read',
+            () => this.accountModel.findById(normalized.accountId).session(session),
+          );
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+
           const valuationProjection = this.valuationEngine
             ? this.valuationEngine.overlayAccountDocument(account, { requireLive: false })
             : null;
 
-          const position = await this.positionModel.findById(normalized.positionId).session(session);
+          const position = await timeAsync(
+            timing,
+            'position_read',
+            () => this.positionModel.findById(normalized.positionId).session(session),
+          );
           if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
-          const instrument = await this.instrumentModel.findOne({ symbol: normalizeSymbol(position.symbol) }).session(session);
+
+          const instrument = await timeAsync(
+            timing,
+            'instrument_read',
+            () => this.instrumentModel.findOne({ symbol: normalizeSymbol(position.symbol) }).session(session),
+          );
           if (!quoteSnapshot) quoteSnapshot = this.quoteStore.get(position.symbol);
 
           const plan = planMarketClose({
@@ -144,25 +249,31 @@ class MarketOrderService {
             volume: normalized.volume,
             nowMs,
           });
-          return this.#persistClose({
-            normalized,
-            reservation,
-            account,
-            position,
-            plan,
-            quoteSnapshot,
-            session,
-            nowMs,
-            valuationComplete: valuationProjection ? valuationProjection.complete : true,
-          });
-        });
+
+          return timeAsync(
+            timing,
+            'persist_total',
+            () => this.#persistClose({
+              normalized,
+              reservation,
+              account,
+              position,
+              plan,
+              quoteSnapshot,
+              session,
+              nowMs,
+              valuationComplete: valuationProjection ? valuationProjection.complete : true,
+              timing,
+            }),
+          );
+        }, timing);
 
         this.#emitEvents(transactionResult.events);
         return transactionResult;
       });
       return this.#decorateResponse(result.response, normalized.accountId, false);
     } catch (error) {
-      await this.#recordFailure(reservation.record._id, error);
+      await timeAsync(timing, 'failure_record', () => this.#recordFailure(reservation.record._id, error));
       throw translateTransactionError(error);
     }
   }
@@ -176,7 +287,7 @@ class MarketOrderService {
     return this.quoteStore.get(symbol);
   }
 
-  async #persistOpen({ normalized, reservation, account, plan, quoteSnapshot, session, nowMs }) {
+  async #persistOpen({ normalized, reservation, account, plan, quoteSnapshot, session, nowMs, timing = null }) {
     const now = new Date(nowMs);
     const slippage = calculateAdverseSlippage({ side: plan.side, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice });
     const order = new this.orderModel({
@@ -257,19 +368,29 @@ class MarketOrderService {
       })));
     }
 
-    await order.save({ session });
-    await position.save({ session });
-    await deal.save({ session });
-    for (const ledger of ledgers) await ledger.save({ session });
-    await account.save({ session });
-    await this.platformEventRelay?.enqueueDeal({ account, deal, session });
+    await timeAsync(timing, 'order_write', () => order.save({ session }));
+    await timeAsync(timing, 'position_write', () => position.save({ session }));
+    await timeAsync(timing, 'deal_write', () => deal.save({ session }));
+    for (const ledger of ledgers) {
+      await timeAsync(timing, 'ledger_write', () => ledger.save({ session }));
+    }
+    await timeAsync(timing, 'account_write', () => account.save({ session }));
+    await timeAsync(
+      timing,
+      'outbox_write',
+      () => this.platformEventRelay?.enqueueDeal({ account, deal, session }),
+    );
 
     const response = executionResponse('OPEN', order, deal, position, account);
-    await this.#completeReservation(reservation.record._id, order.orderId, response, session);
+    await timeAsync(
+      timing,
+      'idempotency_complete',
+      () => this.#completeReservation(reservation.record._id, order.orderId, response, session),
+    );
     return { response, events: openEvents(response) };
   }
 
-  async #persistClose({ normalized, reservation, account, position, plan, quoteSnapshot, session, nowMs, valuationComplete }) {
+  async #persistClose({ normalized, reservation, account, position, plan, quoteSnapshot, session, nowMs, valuationComplete, timing = null }) {
     const now = new Date(nowMs);
     const slippage = calculateAdverseSlippage({ side: plan.closeSide, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice });
     const order = new this.orderModel({
@@ -330,16 +451,26 @@ class MarketOrderService {
       closeReason,
     });
 
-    await order.save({ session });
-    await deal.save({ session });
-    await position.save({ session });
-    for (const ledger of ledgers) await ledger.save({ session });
-    await account.save({ session });
-    await this.platformEventRelay?.enqueueDeal({ account, deal, session });
+    await timeAsync(timing, 'order_write', () => order.save({ session }));
+    await timeAsync(timing, 'deal_write', () => deal.save({ session }));
+    await timeAsync(timing, 'position_write', () => position.save({ session }));
+    for (const ledger of ledgers) {
+      await timeAsync(timing, 'ledger_write', () => ledger.save({ session }));
+    }
+    await timeAsync(timing, 'account_write', () => account.save({ session }));
+    await timeAsync(
+      timing,
+      'outbox_write',
+      () => this.platformEventRelay?.enqueueDeal({ account, deal, session }),
+    );
 
     const operation = normalized.reason || (plan.fullClose ? 'CLOSE' : 'PARTIAL_CLOSE');
     const response = executionResponse(operation, order, deal, position, account);
-    await this.#completeReservation(reservation.record._id, order.orderId, response, session);
+    await timeAsync(
+      timing,
+      'idempotency_complete',
+      () => this.#completeReservation(reservation.record._id, order.orderId, response, session),
+    );
     return { response, events: closeEvents(response, plan.fullClose) };
   }
 
@@ -637,17 +768,34 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
   };
 }
 
-async function runMongoTransaction(work) {
-  const session = await mongoose.startSession();
+async function runMongoTransaction(work, timing = null) {
+  const session = await timeAsync(timing, 'mongo_session_start', () => mongoose.startSession());
   let result;
+  let transactionWorkMs = 0;
+  let transactionAttempts = 0;
+  const transactionStartedAt = timingNowMs();
+
   try {
-    await session.withTransaction(async () => { result = await work(session); }, {
+    await session.withTransaction(async () => {
+      transactionAttempts += 1;
+      const workStartedAt = timingNowMs();
+      try {
+        result = await work(session);
+      } finally {
+        transactionWorkMs += timingNowMs() - workStartedAt;
+      }
+    }, {
       readConcern: { level: 'snapshot' },
       writeConcern: { w: 'majority' },
     });
     return result;
   } finally {
-    await session.endSession();
+    const transactionTotalMs = timingNowMs() - transactionStartedAt;
+    setDuration(timing, 'transaction_work', transactionWorkMs);
+    setDuration(timing, 'transaction_total', transactionTotalMs);
+    setDuration(timing, 'transaction_commit_overhead', Math.max(0, transactionTotalMs - transactionWorkMs));
+    setExecutionContext(timing, { transactionAttempts });
+    await timeAsync(timing, 'mongo_session_end', () => session.endSession());
   }
 }
 
