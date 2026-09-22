@@ -65,6 +65,7 @@ function createTradingRouter(runtime, authService) {
     const result = await runtime.marketOrderService.openMarketOrder(command, {
       timing: req.executionTiming,
       requestId: req.id,
+      tenantId: req.traderPrincipal?.tenantId || null,
     });
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
@@ -98,7 +99,11 @@ function createTradingRouter(runtime, authService) {
       });
       const result = await executor(
         { ...command, positionId },
-        { timing: req.executionTiming, requestId: req.id },
+        {
+          timing: req.executionTiming,
+          requestId: req.id,
+          tenantId: req.traderPrincipal?.tenantId || null,
+        },
       );
       res.status(createdResponse && !result.idempotentReplay ? 201 : 200).json(result);
     };
