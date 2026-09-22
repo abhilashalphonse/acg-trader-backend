@@ -13,8 +13,10 @@ const {
 const { normalizeSymbol } = require('../market-data/market.utils');
 
 const ACG_STANDARD_RISK_POLICY = Object.freeze({
-  maxRiskPerTradePercent: '1',
-  maxAggregateRiskPercent: '2',
+  // Percentage risk limits are ACG Funded product rules. They are disabled
+  // unless the account explicitly provisions them.
+  maxRiskPerTradePercent: null,
+  maxAggregateRiskPercent: null,
   maxMarginUsagePercent: '50',
   maxOpenPositions: 10,
   maxPositionsPerSymbol: 3,
@@ -34,6 +36,7 @@ const PRE_TRADE_REJECTION_CODES = Object.freeze({
   MAX_SYMBOL_PENDING: 'MAX_SYMBOL_PENDING',
   MAX_SINGLE_ORDER_EXPOSURE: 'MAX_SINGLE_ORDER_EXPOSURE',
   MAX_SYMBOL_EXPOSURE: 'MAX_SYMBOL_EXPOSURE',
+  STOP_LOSS_REQUIRED_FOR_RISK: 'STOP_LOSS_REQUIRED_FOR_RISK',
 });
 
 function rawPolicyValue(policy, key) {
@@ -162,8 +165,15 @@ function validateMeasuredRisk({
   const maxRiskPerTradePercent = enabledLimit(account, 'maxRiskPerTradePercent');
   const maxAggregateRiskPercent = enabledLimit(account, 'maxAggregateRiskPercent');
   const needsRiskMeasurement = maxRiskPerTradePercent != null || maxAggregateRiskPercent != null;
-  if (!needsRiskMeasurement || stopLoss === null || stopLoss === undefined || stopLoss === '') {
+  if (!needsRiskMeasurement) {
     return Object.freeze({ tradeRiskAmount: null, tradeRiskPercent: null, projectedAggregateRiskPercent: null });
+  }
+  if (stopLoss === null || stopLoss === undefined || stopLoss === '') {
+    throwLimit(
+      'A stop loss is required when percentage risk limits are enabled for this account',
+      PRE_TRADE_REJECTION_CODES.STOP_LOSS_REQUIRED_FOR_RISK,
+      { maxRiskPerTradePercent, maxAggregateRiskPercent, accountCurrency: account?.currency || null },
+    );
   }
 
   const tradeRiskAmount = calculateStopRiskAmount({

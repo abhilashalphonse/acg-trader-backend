@@ -122,6 +122,12 @@ if (
 }
 if (/</.test(raw.MONGODB_URI)) throw new Error('MONGODB_URI still contains an example placeholder');
 
+if (raw.NODE_ENV === 'production') {
+  if (raw.TRADING_API_ENABLED !== true) throw new Error('TRADING_API_ENABLED must be true in production');
+  if (raw.MARKET_GATEWAY_ENABLED !== true) throw new Error('MARKET_GATEWAY_ENABLED must be true in production');
+  if (resolvedPlatformEventsEnabled !== true) throw new Error('PLATFORM_EVENTS_ENABLED must resolve true in production');
+}
+
 const env = Object.freeze({
   nodeEnv: raw.NODE_ENV,
   isProduction: raw.NODE_ENV === 'production',

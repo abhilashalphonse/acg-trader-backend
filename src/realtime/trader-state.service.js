@@ -61,9 +61,14 @@ class TraderStateService {
       });
     }
 
+    const positionValuations = positions
+      .map(position => this.valuationEngine.getPositionSnapshot(position._id))
+      .filter(Boolean);
+
     return {
       account: serializeAccount(account),
       valuation,
+      positionValuations,
       positions: positions.map(serializePosition),
       orders: orders.map(serializeOrder),
       fills: deals.map(serializeDeal),

@@ -28,24 +28,21 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
     const lastFailure = Date.parse(platformEvents.lastDeliveryFailureAt || '');
     const deliveryCurrentlyHealthy = !Number.isFinite(lastFailure)
       || (Number.isFinite(lastSuccess) && lastSuccess >= lastFailure);
-    const platformEventsOperational = platformEvents.enabled !== true
-      || (
-        platformEvents.started === true
-        && platformEvents.webhookConfigured === true
-        && Number(platformEvents.deadEvents || 0) === 0
-        && deliveryCurrentlyHealthy
-      );
+    const platformEventsOperational = platformEvents.enabled === true
+      && platformEvents.started === true
+      && platformEvents.webhookConfigured === true
+      && Number(platformEvents.deadEvents || 0) === 0
+      && deliveryCurrentlyHealthy;
 
     const marketReadiness = evaluateMarketReadiness(market);
     const marketOperational = marketReadiness.operational;
 
-    const tradingReady = trading.enabled === false || (
-      trading.started === true
+    const tradingReady = trading.enabled === true
+      && trading.started === true
       && reconciliationOperational
       && recoveryConsistent
       && platformEventsOperational
-      && marketOperational
-    );
+      && marketOperational;
     const ready = Boolean(database.connected && marketOperational && tradingReady);
 
     res.status(ready ? 200 : 503).json({
@@ -74,9 +71,9 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
 function evaluateMarketReadiness(market) {
   if (market?.enabled !== true) {
     return {
-      operational: true,
-      gatewayLive: true,
-      symbolsConfigured: true,
+      operational: false,
+      gatewayLive: false,
+      symbolsConfigured: false,
       symbolCount: 0,
       subscriptionErrorCount: 0,
     };

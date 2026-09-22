@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const { z } = require('zod');
 const { AppError } = require('../../shared/errors/app-error');
 const { requireTraderSession, requireAccountGrant } = require('../auth/auth.middleware');
@@ -30,6 +31,14 @@ function createTradingRouter(runtime, authService) {
   router.get('/status', (_req, res) => res.json(runtime.health()));
   router.use(requireEnabled(runtime));
   router.use(requireTraderSession(authService));
+  router.use(rateLimit({
+    windowMs: 60 * 1000,
+    limit: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: req => ['GET', 'HEAD', 'OPTIONS'].includes(req.method),
+    keyGenerator: req => `session:${req.traderPrincipal.sessionId}`,
+  }));
 
   router.get('/accounts/:accountId/valuation', async (req, res) => { const accountId = parseObjectId(req.params.accountId); requireAccountGrant(req.traderPrincipal, accountId); const valuation = await runtime.valuationEngine.getOrLoadAccountSnapshot(accountId); if (!valuation) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' }); res.json(valuation); });
   router.get('/positions/:positionId/valuation', async (req, res) => { const positionId = parseObjectId(req.params.positionId); const accountId = await positionAccountId(positionId); requireAccountGrant(req.traderPrincipal, accountId); const valuation = runtime.valuationEngine.getPositionSnapshot(positionId); if (!valuation) throw new AppError('Open position valuation was not found', { statusCode: 404, code: 'POSITION_VALUATION_NOT_FOUND' }); res.json(valuation); });

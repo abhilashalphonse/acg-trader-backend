@@ -423,15 +423,18 @@ test('standard ACG policy enforces position, margin and exposure caps', () => {
   );
 });
 
-test('1% trade risk is enforced only when the trader supplies a stop loss', () => {
-  assert.doesNotThrow(() => planMarketOpen({
-    account: account({ riskPolicy: { allowedSymbols: [], maxRiskPerTradePercent: '1', maxAggregateRiskPercent: '2', maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
-    instrument: instrument(),
-    quote: quote(),
-    side: 'BUY',
-    volume: '1',
-    nowMs: 10_100,
-  }));
+test('explicit percentage risk rules require a stop loss so they cannot be bypassed', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({ riskPolicy: { allowedSymbols: [], maxRiskPerTradePercent: '1', maxAggregateRiskPercent: '2', maxSingleOrderMarginPercentOfFree: '100', maxSymbolMarginPercentOfPermitted: '100' } }),
+      instrument: instrument(),
+      quote: quote(),
+      side: 'BUY',
+      volume: '1',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'STOP_LOSS_REQUIRED_FOR_RISK',
+  );
 });
 
 

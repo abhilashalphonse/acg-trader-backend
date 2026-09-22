@@ -57,12 +57,15 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   app.use(express.json({ limit: '512kb' }));
 
   app.use('/health', createHealthRouter({ marketRuntime, tradingRuntime }));
-  app.use('/v1', rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: true, legacyHeaders: false }));
+  // Realtime valuation uses WebSocket. Keep a generous REST safety ceiling so
+  // normal authenticated trading is not exhausted by users sharing a NAT IP.
+  app.use('/v1', rateLimit({ windowMs: 15 * 60 * 1000, limit: 5000, standardHeaders: true, legacyHeaders: false }));
 
   app.get('/v1', (_req, res) => {
     res.json({ service: 'acg-trader-backend', apiVersion: 'v1', status: 'multi_tenant_execution_platform', market: marketRuntime.health(), trading: tradingRuntime.health() });
   });
 
+  app.use('/v1/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
   app.use('/v1/auth', createAuthRouter(authService));
   app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));

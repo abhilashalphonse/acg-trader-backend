@@ -208,6 +208,11 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
         state.syncingAccounts.delete(accountId);
         state.pendingAccountEvents = state.pendingAccountEvents.filter(item => item.accountId !== accountId);
         cancelScheduled(state.valuationPending, state.valuationTimers, accountId);
+        for (const key of [...state.valuationTimers.keys()]) {
+          if (String(key).startsWith(`position:${accountId}:`)) {
+            cancelScheduled(state.valuationPending, state.valuationTimers, key);
+          }
+        }
       }
     }
   }
@@ -291,7 +296,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     timerMap.set(key, timer);
   }
 
-  function routeAccountEvent(type, payload, { coalesceMs = 0 } = {}) {
+  function routeAccountEvent(type, payload, { coalesceMs = 0, coalesceKey = null } = {}) {
     const accountId = accountIdFromPayload(payload);
     if (!accountId) return;
     for (const socket of wss.clients) {
@@ -307,7 +312,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
           state,
           state.valuationPending,
           state.valuationTimers,
-          accountId,
+          typeof coalesceKey === 'function' ? coalesceKey(payload, accountId) : accountId,
           coalesceMs,
           () => send(socket, type, payload, { lossy: true }),
         );
@@ -367,6 +372,10 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     ['trading.position.closed', ['trading.position', payload => ({ event: 'closed', position: payload })]],
     ['trading.account.updated', ['trading.account', payload => ({ event: 'updated', account: payload })]],
     ['valuation.account.updated', ['trading.account.valuation', payload => payload, { coalesceMs: valuationCoalesceMs }]],
+    ['valuation.position.updated', ['trading.position.valuation', payload => payload, {
+      coalesceMs: valuationCoalesceMs,
+      coalesceKey: (payload, accountId) => `position:${accountId}:${payload?.id || payload?.positionId || 'unknown'}`,
+    }]],
     ['trading.account.balance.updated', ['trading.account.balance', payload => payload]],
     ['trading.account.paused', ['trading.account.control', payload => ({ event: 'paused', account: payload })]],
     ['trading.account.resumed', ['trading.account.control', payload => ({ event: 'resumed', account: payload })]],

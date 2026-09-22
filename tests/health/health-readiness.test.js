@@ -57,7 +57,9 @@ test('market readiness fails when every configured provider subscription is reje
   assert.equal(result.subscriptionErrorCount, 2);
 });
 
-test('disabled market gateway does not block application readiness', () => {
+test('disabled market gateway blocks trading readiness', () => {
   const result = evaluateMarketReadiness({ enabled: false, state: 'DISABLED', symbols: [] });
-  assert.equal(result.operational, true);
+  assert.equal(result.operational, false);
+  assert.equal(result.gatewayLive, false);
+  assert.equal(result.symbolsConfigured, false);
 });

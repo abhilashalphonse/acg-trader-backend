@@ -34,6 +34,10 @@ function fixtures({ account = accountFixture() } = {}) {
       calls.valuationAccountId = accountId;
       return { accountId, balance: '100000', equity: '100125', usedMargin: '250', freeMargin: '99875', floatingPnl: '125', marginLevel: '40050', positionCount: 1, valuationStatus: 'LIVE', complete: true, staleSymbols: [] };
     },
+    getPositionSnapshot(positionId) {
+      calls.positionValuationId = String(positionId);
+      return { id: String(positionId), accountId: ACCOUNT_ID, symbol: 'EURUSD', closePrice: '1.10125', floatingPnl: '125', valuationStatus: 'LIVE' };
+    },
   };
   return { accountModel, orderModel, positionModel, dealModel, valuationEngine, calls };
 }
@@ -51,6 +55,9 @@ test('snapshotAccount enforces tenant scope and returns reconnect-complete state
   assert.equal(snapshot.account.id, ACCOUNT_ID);
   assert.equal(snapshot.valuation.equity, '100125');
   assert.equal(snapshot.positions.length, 1);
+  assert.equal(snapshot.positionValuations.length, 1);
+  assert.equal(snapshot.positionValuations[0].floatingPnl, '125');
+  assert.equal(f.calls.positionValuationId, '64b000000000000000000030');
   assert.equal(snapshot.orders.length, 1);
   assert.equal(snapshot.fills.length, 1);
   assert.equal(snapshot.orders[0].accountId, ACCOUNT_ID);
