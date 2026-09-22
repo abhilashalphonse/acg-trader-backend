@@ -7,6 +7,7 @@ function createAuthRuntime() {
   const authService = new AuthService({
     sessionTtlSeconds: env.auth.sessionTtlSeconds,
     accessTokenTtlSeconds: env.auth.accessTokenTtlSeconds,
+    accessTokenGraceSeconds: env.auth.accessTokenGraceSeconds,
     refreshSessionTtlSeconds: env.auth.refreshSessionTtlSeconds,
     idleTimeoutSeconds: env.auth.idleTimeoutSeconds,
     federationTicketTtlSeconds: env.auth.federationTicketTtlSeconds,

@@ -30,6 +30,7 @@ const schema = z.object({
   RECONCILIATION_INTERVAL_MS: positiveInt(300000),
   AUTH_SESSION_TTL_SECONDS: positiveInt(3600),
   AUTH_ACCESS_TOKEN_TTL_SECONDS: positiveInt(900),
+  AUTH_ACCESS_TOKEN_GRACE_SECONDS: positiveInt(45),
   AUTH_REFRESH_SESSION_TTL_SECONDS: positiveInt(2592000),
   AUTH_IDLE_TIMEOUT_SECONDS: positiveInt(86400),
   AUTH_FEDERATION_TICKET_TTL_SECONDS: positiveInt(60),
@@ -144,6 +145,7 @@ const env = Object.freeze({
   auth: Object.freeze({
     sessionTtlSeconds: raw.AUTH_SESSION_TTL_SECONDS,
     accessTokenTtlSeconds: raw.AUTH_ACCESS_TOKEN_TTL_SECONDS,
+    accessTokenGraceSeconds: raw.AUTH_ACCESS_TOKEN_GRACE_SECONDS,
     refreshSessionTtlSeconds: raw.AUTH_REFRESH_SESSION_TTL_SECONDS,
     idleTimeoutSeconds: raw.AUTH_IDLE_TIMEOUT_SECONDS,
     federationTicketTtlSeconds: raw.AUTH_FEDERATION_TICKET_TTL_SECONDS,

@@ -23,6 +23,7 @@ class AuthService {
     federationTicketModel = FederationTicket,
     sessionTtlSeconds = 3600,
     accessTokenTtlSeconds = 900,
+    accessTokenGraceSeconds = 45,
     refreshSessionTtlSeconds = 30 * 24 * 60 * 60,
     idleTimeoutSeconds = 24 * 60 * 60,
     federationTicketTtlSeconds = 60,
@@ -39,6 +40,7 @@ class AuthService {
       federationTicketModel,
       sessionTtlSeconds,
       accessTokenTtlSeconds,
+      accessTokenGraceSeconds,
       refreshSessionTtlSeconds,
       idleTimeoutSeconds,
       federationTicketTtlSeconds,
@@ -220,8 +222,20 @@ class AuthService {
   async authenticateSessionToken(token) {
     const now = this.now();
     const tokenHash = hashToken(requiredString(token, 'accessToken'));
-    const session = await this.sessionModel.findOne({ tokenHash, revokedAt: null }).lean();
-    const accessExpiresAt = session?.accessExpiresAt || session?.expiresAt || null;
+    const session = await this.sessionModel.findOne({
+      revokedAt: null,
+      $or: [
+        { tokenHash },
+        { previousTokenHash: tokenHash },
+      ],
+    }).lean();
+    const usingCurrentToken = Boolean(session && session.tokenHash === tokenHash);
+    const usingPreviousToken = Boolean(session && session.previousTokenHash === tokenHash);
+    const accessExpiresAt = usingCurrentToken
+      ? (session?.accessExpiresAt || session?.expiresAt || null)
+      : usingPreviousToken
+        ? (session?.previousAccessExpiresAt || null)
+        : null;
     const idleExpiresAt = session?.idleExpiresAt || session?.expiresAt || null;
     if (
       !session
@@ -240,7 +254,14 @@ class AuthService {
       now.getTime() + this.idleTimeoutSeconds * 1000,
     ));
     await this.sessionModel.updateOne(
-      { _id: session._id, tokenHash, revokedAt: null },
+      {
+        _id: session._id,
+        revokedAt: null,
+        $or: [
+          { tokenHash },
+          { previousTokenHash: tokenHash },
+        ],
+      },
       { $set: { lastSeenAt: now, idleExpiresAt: nextIdleExpiresAt } },
     );
 
@@ -264,10 +285,13 @@ class AuthService {
       }
 
       const credentials = this.#nextCredentials(current.expiresAt);
+      const previousAccessExpiresAt = accessTokenGraceExpiry(current, now, this.accessTokenGraceSeconds);
       const updated = await this.sessionModel.findOneAndUpdate(
         { _id: current._id, refreshTokenHash, revokedAt: null },
         {
           $set: {
+            previousTokenHash: previousAccessExpiresAt ? current.tokenHash : null,
+            previousAccessExpiresAt,
             tokenHash: hashToken(credentials.accessToken),
             refreshTokenHash: hashToken(credentials.refreshToken),
             accessExpiresAt: credentials.accessExpiresAt,
@@ -295,6 +319,7 @@ class AuthService {
 
       const absoluteExpiresAt = new Date(now.getTime() + this.refreshSessionTtlSeconds * 1000);
       const credentials = this.#nextCredentials(absoluteExpiresAt);
+      const previousAccessExpiresAt = accessTokenGraceExpiry(current, now, this.accessTokenGraceSeconds);
       const updated = await this.sessionModel.findOneAndUpdate(
         {
           _id: current._id,
@@ -307,6 +332,8 @@ class AuthService {
         },
         {
           $set: {
+            previousTokenHash: previousAccessExpiresAt ? legacyTokenHash : null,
+            previousAccessExpiresAt,
             tokenHash: hashToken(credentials.accessToken),
             refreshTokenHash: hashToken(credentials.refreshToken),
             accessExpiresAt: credentials.accessExpiresAt,
@@ -326,7 +353,10 @@ class AuthService {
 
   async revokeSession({ accessToken = null, refreshToken = null } = {}) {
     const hashes = [];
-    if (accessToken) hashes.push({ tokenHash: hashToken(requiredString(accessToken, 'accessToken')) });
+    if (accessToken) {
+      const tokenHash = hashToken(requiredString(accessToken, 'accessToken'));
+      hashes.push({ tokenHash }, { previousTokenHash: tokenHash });
+    }
     if (refreshToken) hashes.push({ refreshTokenHash: hashToken(requiredString(refreshToken, 'refreshToken')) });
     if (!hashes.length) return false;
     const result = await this.sessionModel.updateOne(
@@ -423,6 +453,13 @@ function hashToken(token) { return crypto.createHash('sha256').update(String(tok
 function safeHashEquals(left, right) { const a = Buffer.from(String(left)); const b = Buffer.from(String(right)); return a.length === b.length && crypto.timingSafeEqual(a, b); }
 function requiredString(value, field) { const text = String(value ?? '').trim(); if (!text) throw new AppError(`${field} is required`, { statusCode: 400, code: 'INVALID_AUTH_REQUEST' }); return text; }
 function uniqueIds(values) { return [...new Set((Array.isArray(values) ? values : []).map(value => String(value).trim()).filter(Boolean))]; }
+function accessTokenGraceExpiry(session, now, graceSeconds) {
+  const currentExpiry = session?.accessExpiresAt || session?.expiresAt || null;
+  if (!currentExpiry || currentExpiry <= now) return null;
+  const graceMs = Math.max(1, Number(graceSeconds) || 0) * 1000;
+  const expiresAt = new Date(Math.min(currentExpiry.getTime(), now.getTime() + graceMs));
+  return expiresAt > now ? expiresAt : null;
+}
 function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null) {
   return {
     sessionId: String(session._id),
