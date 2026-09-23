@@ -14,7 +14,9 @@ const credentialSchema = z.object({
 }).strict();
 const ticketSchema = z.object({
   ownerExternalRef: z.string().trim().min(1).max(256),
+  ownerExternalRefs: z.array(z.string().trim().min(1).max(256)).max(100).optional(),
   accountIds: z.array(objectId).min(1).max(100),
+  selectedAccountId: objectId.optional(),
   metadata: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
 }).strict();
 
