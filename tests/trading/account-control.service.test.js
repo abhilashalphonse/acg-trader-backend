@@ -74,7 +74,7 @@ function createFakeModels() {
   };
 }
 
-function createService(models) {
+function createService(models, overrides = {}) {
   return new AccountControlService({
     accountModel: models.FakeAccount,
     ledgerModel: models.FakeLedger,
@@ -82,6 +82,7 @@ function createService(models) {
     orderModel: models.orderModel,
     positionModel: models.positionModel,
     runTransaction: async work => work(null),
+    ...overrides,
   });
 }
 
@@ -270,4 +271,29 @@ test('challenge policy sync accepts authoritative execution risk controls', () =
   assert.equal(parsed.riskPolicy.maxPositionsPerSymbol, 3);
   assert.equal(parsed.riskPolicy.maxPendingOrders, 10);
   assert.equal(parsed.riskPolicy.maxPendingOrdersPerSymbol, 3);
+});
+
+
+test('flatten pauses the account, cancels pending orders, and remains reversible', async () => {
+  const models = createFakeModels();
+  const service = createService(models, {
+    marketOrderService: { async closeMarketPosition() { throw new Error('No positions expected'); } },
+  });
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-final-check',
+    ownerExternalRef: 'user-final-check',
+    initialBalance: '100000',
+  });
+
+  const flattened = await service.flatten(created.account.id, { reason: 'PHASE_COMPLETION_CHECK' });
+  assert.equal(flattened.account.status, 'PAUSED');
+  assert.equal(flattened.account.tradingEnabled, false);
+  assert.equal(models.cancelled.length, 1);
+  assert.equal(models.lifecycleRecords.at(-1).type, 'PAUSED');
+
+  const resumed = await service.resume(created.account.id, { reason: 'PHASE_RECHECK_FAILED' });
+  assert.equal(resumed.account.status, 'ACTIVE');
+  assert.equal(resumed.account.tradingEnabled, true);
+  assert.equal(models.lifecycleRecords.at(-1).type, 'RESUMED');
 });
