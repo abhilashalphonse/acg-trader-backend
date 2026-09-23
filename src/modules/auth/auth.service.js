@@ -13,6 +13,7 @@ const { TraderSession } = require('./trader-session.model');
 const { FederationTicket } = require('./federation-ticket.model');
 
 const scryptAsync = promisify(crypto.scrypt);
+const FEDERATED_ACCOUNT_STATUSES = Object.freeze(['ACTIVE', 'PAUSED', 'BREACHED']);
 
 class AuthService {
   constructor({
@@ -87,7 +88,9 @@ class AuthService {
       tenantId: tenantRecord._id,
       authMethod: 'PASSWORD',
       ownerExternalRef: account.ownerExternalRef || null,
+      ownerExternalRefs: account.ownerExternalRef ? [account.ownerExternalRef] : [],
       accountIds: [account._id],
+      selectedAccountId: account._id,
       credentialId: credential._id,
     });
   }
@@ -131,15 +134,21 @@ class AuthService {
     };
   }
 
-  async createFederationTicket({ tenantId, ownerExternalRef, accountIds, metadata = {} }) {
+  async createFederationTicket({ tenantId, ownerExternalRef, ownerExternalRefs = [], accountIds, selectedAccountId = null, metadata = {} }) {
     const owner = requiredString(ownerExternalRef, 'ownerExternalRef');
+    const owners = uniqueIds([owner, ...ownerExternalRefs]);
     const ids = uniqueIds(accountIds);
     if (!ids.length) throw new AppError('At least one accountId is required', { statusCode: 400, code: 'ACCOUNT_GRANT_REQUIRED' });
+
+    const selected = selectedAccountId ? String(selectedAccountId) : ids[0];
+    if (!ids.includes(selected)) {
+      throw new AppError('selectedAccountId must be included in accountIds', { statusCode: 400, code: 'SELECTED_ACCOUNT_NOT_GRANTED' });
+    }
 
     const accounts = await Promise.all(ids.map(id => this.accountModel.findOne({
       _id: id,
       tenantId: String(tenantId),
-      ownerExternalRef: owner,
+      ownerExternalRef: { $in: owners },
     }).select('_id').lean()));
     if (accounts.some(account => !account)) {
       throw new AppError('One or more accounts are not owned by this tenant user', { statusCode: 403, code: 'ACCOUNT_GRANT_FORBIDDEN' });
@@ -151,11 +160,13 @@ class AuthService {
       tenantId,
       tokenHash: hashToken(ticket),
       ownerExternalRef: owner,
+      ownerExternalRefs: owners,
       accountIds: ids,
+      selectedAccountId: selected,
       expiresAt,
       metadata,
     });
-    return { ticket, expiresAt: expiresAt.toISOString() };
+    return { ticket, expiresAt: expiresAt.toISOString(), selectedAccountId: selected };
   }
 
   async exchangeFederationTicket(ticket) {
@@ -204,7 +215,10 @@ class AuthService {
         tenantId: record.tenantId,
         authMethod: 'FEDERATED',
         ownerExternalRef: record.ownerExternalRef,
+        ownerExternalRefs: record.ownerExternalRefs || [record.ownerExternalRef],
         accountIds: record.accountIds,
+        selectedAccountId: record.selectedAccountId || record.accountIds?.[0] || null,
+        metadata: record.metadata || {},
       });
     } catch (error) {
       try {
@@ -276,7 +290,7 @@ class AuthService {
       resolvedIdleExpiresAt = nextIdleExpiresAt;
     }
 
-    return sessionPrincipal(session, accessExpiresAt, resolvedIdleExpiresAt);
+    return this.#sessionPrincipal(session, accessExpiresAt, resolvedIdleExpiresAt);
   }
 
   async refreshSession({ refreshToken = null, legacyAccessToken = null } = {}) {
@@ -313,7 +327,7 @@ class AuthService {
         { new: true },
       );
       if (!updated) throw invalidTraderRefreshSession();
-      return authResponse(updated, credentials);
+      return this.#authResponse(updated, credentials);
     }
 
     if (legacyAccessToken) {
@@ -356,10 +370,28 @@ class AuthService {
         { new: true },
       );
       if (!updated) throw invalidTraderRefreshSession();
-      return authResponse(updated, credentials);
+      return this.#authResponse(updated, credentials);
     }
 
     throw invalidTraderRefreshSession();
+  }
+
+  async listGrantedAccounts(principal) {
+    const ids = uniqueIds(principal?.accountIds);
+    if (!ids.length) return { accounts: [], selectedAccountId: null };
+
+    const rows = await this.accountModel.find({
+      _id: { $in: ids },
+      tenantId: String(principal.tenantId),
+    }).select('accountCode accountType currency leverage status tradingEnabled state riskPolicy riskDayKey metadata').lean();
+
+    const byId = new Map(rows.map(row => [String(row._id), row]));
+    return {
+      accounts: ids.map(id => byId.get(id)).filter(Boolean).map(publicAccountGrant),
+      selectedAccountId: ids.includes(String(principal?.selectedAccountId || ''))
+        ? String(principal.selectedAccountId)
+        : ids[0],
+    };
   }
 
   async revokeSession({ accessToken = null, refreshToken = null } = {}) {
@@ -396,24 +428,72 @@ class AuthService {
     return { clientId: record.clientId, apiKey, scopes: [...record.scopes] };
   }
 
-  async #createSession({ tenantId, authMethod, ownerExternalRef, accountIds, credentialId = null }) {
+  async #createSession({ tenantId, authMethod, ownerExternalRef, ownerExternalRefs = [], accountIds, selectedAccountId = null, credentialId = null, metadata = {} }) {
     const now = this.now();
     const absoluteExpiresAt = new Date(now.getTime() + this.refreshSessionTtlSeconds * 1000);
     const credentials = this.#nextCredentials(absoluteExpiresAt);
+    const ids = uniqueIds(accountIds);
     const session = await this.sessionModel.create({
       tenantId,
       tokenHash: hashToken(credentials.accessToken),
       refreshTokenHash: hashToken(credentials.refreshToken),
       authMethod,
       ownerExternalRef,
-      accountIds: uniqueIds(accountIds),
+      ownerExternalRefs: uniqueIds([ownerExternalRef, ...ownerExternalRefs]),
+      accountIds: ids,
+      selectedAccountId: selectedAccountId ? String(selectedAccountId) : ids[0] || null,
       credentialId,
+      metadata,
       accessExpiresAt: credentials.accessExpiresAt,
       idleExpiresAt: credentials.idleExpiresAt,
       expiresAt: absoluteExpiresAt,
       lastSeenAt: now,
     });
-    return authResponse(session, credentials);
+    return this.#authResponse(session, credentials);
+  }
+
+  async #resolveSessionContext(session) {
+    const seedIds = uniqueIds(session?.accountIds);
+    if (String(session?.authMethod || '').toUpperCase() !== 'FEDERATED') {
+      const selected = seedIds.includes(String(session?.selectedAccountId || ''))
+        ? String(session.selectedAccountId)
+        : seedIds[0] || null;
+      return { accountIds: seedIds, selectedAccountId: selected };
+    }
+
+    const ownerRefs = uniqueIds([session?.ownerExternalRef, ...(session?.ownerExternalRefs || [])]);
+    const accessClauses = [];
+    if (seedIds.length) accessClauses.push({ _id: { $in: seedIds } });
+    if (ownerRefs.length) accessClauses.push({ ownerExternalRef: { $in: ownerRefs } });
+    if (!accessClauses.length) return { accountIds: [], selectedAccountId: null };
+
+    const rows = await this.accountModel.find({
+      tenantId: String(session.tenantId),
+      status: { $in: FEDERATED_ACCOUNT_STATUSES },
+      $or: accessClauses,
+    }).select('_id').lean();
+
+    const accessible = new Set(rows.map(row => String(row._id)));
+    const dynamicIds = rows.map(row => String(row._id));
+    const accountIds = [
+      ...seedIds.filter(id => accessible.has(id)),
+      ...dynamicIds.filter(id => !seedIds.includes(id)),
+    ];
+    const preferred = String(session?.selectedAccountId || '');
+    return {
+      accountIds,
+      selectedAccountId: accountIds.includes(preferred) ? preferred : accountIds[0] || null,
+    };
+  }
+
+  async #sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null) {
+    const context = await this.#resolveSessionContext(session);
+    return sessionPrincipal(session, accessExpiresAt, idleExpiresAt, context);
+  }
+
+  async #authResponse(session, credentials) {
+    const principal = await this.#sessionPrincipal(session, credentials.accessExpiresAt, credentials.idleExpiresAt);
+    return authResponse(session, credentials, principal);
   }
 
   #nextCredentials(absoluteExpiresAt) {
@@ -471,12 +551,17 @@ function accessTokenGraceExpiry(session, now, graceSeconds) {
   const expiresAt = new Date(Math.min(currentExpiry.getTime(), now.getTime() + graceMs));
   return expiresAt > now ? expiresAt : null;
 }
-function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null) {
+function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null, context = {}) {
+  const accountIds = uniqueIds(context.accountIds ?? session.accountIds);
+  const selectedAccountId = accountIds.includes(String(context.selectedAccountId ?? session.selectedAccountId ?? ''))
+    ? String(context.selectedAccountId ?? session.selectedAccountId)
+    : accountIds[0] || null;
   return {
     sessionId: String(session._id),
     tenantId: String(session.tenantId),
     ownerExternalRef: session.ownerExternalRef || null,
-    accountIds: (session.accountIds || []).map(String),
+    accountIds,
+    selectedAccountId,
     authMethod: session.authMethod,
     expiresAt: new Date(accessExpiresAt).toISOString(),
     refreshExpiresAt: session.expiresAt ? new Date(session.expiresAt).toISOString() : null,
@@ -484,7 +569,8 @@ function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null) {
   };
 }
 
-function authResponse(session, credentials) {
+function authResponse(session, credentials, principal = null) {
+  const resolved = principal || sessionPrincipal(session, credentials.accessExpiresAt, credentials.idleExpiresAt);
   return {
     accessToken: credentials.accessToken,
     refreshToken: credentials.refreshToken,
@@ -495,9 +581,37 @@ function authResponse(session, credentials) {
       id: String(session._id),
       tenantId: String(session.tenantId),
       ownerExternalRef: session.ownerExternalRef || null,
-      accountIds: (session.accountIds || []).map(String),
+      accountIds: resolved.accountIds,
+      selectedAccountId: resolved.selectedAccountId,
       authMethod: session.authMethod,
     },
+  };
+}
+
+function decimalString(value) {
+  if (value == null) return null;
+  return typeof value?.toString === 'function' ? value.toString() : String(value);
+}
+
+function publicAccountGrant(account) {
+  const metadata = account?.metadata instanceof Map
+    ? Object.fromEntries(account.metadata)
+    : (account?.metadata || {});
+  return {
+    id: String(account._id),
+    accountCode: account.accountCode || null,
+    accountType: account.accountType || null,
+    currency: account.currency || 'USD',
+    leverage: Number(account.leverage || 0) || null,
+    status: account.status || null,
+    tradingEnabled: account.tradingEnabled === true,
+    initialBalance: decimalString(account?.state?.initialBalance),
+    balance: decimalString(account?.state?.balance),
+    equity: decimalString(account?.state?.equity),
+    riskDayKey: account.riskDayKey || null,
+    fundedAccountId: metadata.fundedAccountId || null,
+    phase: metadata.phase || metadata.challengePhase || null,
+    challengeType: metadata.challengeType || null,
   };
 }
 
