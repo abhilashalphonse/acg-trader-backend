@@ -99,6 +99,15 @@ test('account control facts are inserted transactionally', async () => {
       externalRef: 'challenge-1',
       status: 'BREACHED',
       tradingEnabled: false,
+      riskDayKey: '2026-09-23',
+      state: {
+        balance: '95000',
+        equity: '94000',
+        floatingPnl: '-1000',
+        usedMargin: '0',
+        freeMargin: '94000',
+        dailyStartEquity: '99000',
+      },
       metadata: { fundedAccountId: 'FUNDED-1' },
     },
     sourceEvent: 'trading.account.breached',
@@ -109,6 +118,10 @@ test('account control facts are inserted transactionally', async () => {
   assert.equal(calls[0].options.session, session);
   assert.equal(calls[0].documents[0].eventType, 'ACCOUNT_CONTROLLED');
   assert.equal(calls[0].documents[0].payload.status, 'BREACHED');
+  assert.equal(calls[0].documents[0].payload.balance, '95000');
+  assert.equal(calls[0].documents[0].payload.equity, '94000');
+  assert.equal(calls[0].documents[0].payload.dailyStartEquity, '99000');
+  assert.equal(calls[0].documents[0].payload.riskDayKey, '2026-09-23');
 });
 
 
