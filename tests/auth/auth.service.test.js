@@ -29,6 +29,32 @@ test('account grants reject access outside the authenticated session', () => {
 });
 
 
+function fakeAccountModel(initialRows = []) {
+  let rows = initialRows.map(row => ({ status: 'ACTIVE', tenantId: 'tenant-1', ownerExternalRef: 'user-1', ...row }));
+
+  const matches = (row, query = {}) => Object.entries(query).every(([key, expected]) => {
+    if (key === '$or') return expected.some(item => matches(row, item));
+    if (expected && typeof expected === 'object' && Object.prototype.hasOwnProperty.call(expected, '$in')) {
+      return expected.$in.map(String).includes(String(row[key]));
+    }
+    return String(row[key]) === String(expected);
+  });
+
+  return {
+    setRows(nextRows) {
+      rows = nextRows.map(row => ({ status: 'ACTIVE', tenantId: 'tenant-1', ownerExternalRef: 'user-1', ...row }));
+    },
+    find(query) {
+      const result = rows.filter(row => matches(row, query));
+      return {
+        select() {
+          return { lean: async () => result.map(row => ({ ...row })) };
+        },
+      };
+    },
+  };
+}
+
 function fakeSessionModel(seed) {
   let session = { ...seed };
 
@@ -81,6 +107,7 @@ test('refresh sessions rotate both access and refresh credentials', async () => 
   });
   const service = new AuthService({
     sessionModel: model,
+    accountModel: fakeAccountModel([{ _id: 'account-1' }]),
     now: () => new Date(now),
     accessTokenTtlSeconds: 900,
     accessTokenGraceSeconds: 45,
@@ -117,6 +144,7 @@ test('legacy one-hour sessions can upgrade once into persistent refresh sessions
   });
   const service = new AuthService({
     sessionModel: model,
+    accountModel: fakeAccountModel([{ _id: 'account-1' }]),
     now: () => new Date(now),
     accessTokenTtlSeconds: 900,
     accessTokenGraceSeconds: 45,
@@ -151,6 +179,7 @@ test('rotated access tokens expire after the short overlap window', async () => 
   });
   const service = new AuthService({
     sessionModel: model,
+    accountModel: fakeAccountModel([{ _id: 'account-1' }]),
     now: () => new Date(nowMs),
     accessTokenTtlSeconds: 900,
     accessTokenGraceSeconds: 45,
@@ -192,6 +221,7 @@ test('session authentication throttles last-seen writes inside the touch interva
   };
   const service = new AuthService({
     sessionModel: model,
+    accountModel: fakeAccountModel([{ _id: 'account-1' }]),
     now: () => new Date(now),
     sessionTouchIntervalSeconds: 60,
   });
@@ -199,6 +229,54 @@ test('session authentication throttles last-seen writes inside the touch interva
   const principal = await service.authenticateSessionToken(access);
   assert.equal(principal.sessionId, 'session-touch');
   assert.equal(updateCalls, 0);
+});
+
+test('federated sessions dynamically add current owner accounts and drop disabled superseded accounts', async () => {
+  const now = new Date('2026-09-19T12:00:00.000Z');
+  const access = 'acg_ts_dynamic-grants';
+  const session = {
+    _id: 'session-dynamic',
+    tenantId: 'tenant-1',
+    tokenHash: hashToken(access),
+    authMethod: 'FEDERATED',
+    ownerExternalRef: 'user-1',
+    ownerExternalRefs: ['user-1', 'legacy-user-1'],
+    accountIds: ['account-1'],
+    selectedAccountId: 'account-1',
+    accessExpiresAt: new Date(now.getTime() + 15 * 60_000),
+    idleExpiresAt: new Date(now.getTime() + 23 * 60 * 60_000),
+    expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60_000),
+    lastSeenAt: new Date(now.getTime() - 15_000),
+    revokedAt: null,
+  };
+  const accountModel = fakeAccountModel([
+    { _id: 'account-1', ownerExternalRef: 'legacy-user-1', status: 'ACTIVE' },
+    { _id: 'account-2', ownerExternalRef: 'user-1', status: 'ACTIVE' },
+    { _id: 'account-old-phase', ownerExternalRef: 'user-1', status: 'DISABLED' },
+    { _id: 'account-other-user', ownerExternalRef: 'other-user', status: 'ACTIVE' },
+  ]);
+  const service = new AuthService({
+    sessionModel: {
+      findOne() { return { lean: async () => ({ ...session }) }; },
+      async updateOne() { return { modifiedCount: 1 }; },
+    },
+    accountModel,
+    now: () => new Date(now),
+  });
+
+  const first = await service.authenticateSessionToken(access);
+  assert.deepEqual(first.accountIds, ['account-1', 'account-2']);
+  assert.equal(first.selectedAccountId, 'account-1');
+
+  accountModel.setRows([
+    { _id: 'account-1', ownerExternalRef: 'legacy-user-1', status: 'DISABLED' },
+    { _id: 'account-2', ownerExternalRef: 'user-1', status: 'ACTIVE' },
+    { _id: 'account-3', ownerExternalRef: 'user-1', status: 'PAUSED' },
+  ]);
+
+  const second = await service.authenticateSessionToken(access);
+  assert.deepEqual(second.accountIds, ['account-2', 'account-3']);
+  assert.equal(second.selectedAccountId, 'account-2');
 });
 
 test('session authentication refreshes last-seen after the touch interval', async () => {
@@ -224,6 +302,7 @@ test('session authentication refreshes last-seen after the touch interval', asyn
   };
   const service = new AuthService({
     sessionModel: model,
+    accountModel: fakeAccountModel([{ _id: 'account-1' }]),
     now: () => new Date(now),
     sessionTouchIntervalSeconds: 60,
   });
