@@ -195,7 +195,11 @@ class AccountControlService {
       const result = await this.runTransaction(async session => {
         const account = await this.accountModel.findById(String(accountId)).session(session);
         if (!account) throw accountNotFound();
-        if (account.status === 'ACTIVE' && account.tradingEnabled === true) {
+        if (
+          account.status === 'ACTIVE'
+          && account.tradingEnabled === true
+          && account.federationEnabled !== false
+        ) {
           return { account, changed: false };
         }
         if (RESTRICTED_STATUSES.has(account.status)) {
