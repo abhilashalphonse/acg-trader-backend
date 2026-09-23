@@ -207,6 +207,14 @@ class AccountControlService {
     return { ...restricted, breachAction, liquidation };
   }
 
+  async flatten(accountId, { reason = 'ACCOUNT_FLATTENED_FOR_REVIEW' } = {}) {
+    const paused = await this.pause(accountId, { reason, cancelPending: true });
+    const liquidation = await this.#liquidate(accountId);
+    const account = await this.accountModel.findById(String(accountId));
+    if (!account) throw accountNotFound();
+    return { ...controlResult(account, { changed: paused.changed }), liquidation };
+  }
+
   async close(accountId, { reason = 'ACCOUNT_CLOSED', liquidate = true } = {}) {
     const account = await this.accountModel.findById(String(accountId));
     if (!account) throw accountNotFound();
