@@ -109,7 +109,7 @@ class AuthService {
       throw new AppError('Native trading credential already exists', { statusCode: 409, code: 'TRADING_CREDENTIAL_EXISTS' });
     }
 
-    const credential = existing || new this.credentialModel({ tenantId: account.tenantId, accountId: account._id });
+    let credential = existing || new this.credentialModel({ tenantId: account.tenantId, accountId: account._id });
     credential.login = resolvedLogin;
     credential.passwordSalt = salt;
     credential.passwordHash = hash;
@@ -118,9 +118,31 @@ class AuthService {
     credential.status = 'ACTIVE';
     credential.failedAttempts = 0;
     credential.lockedUntil = null;
-    await credential.save();
 
-    if (existing) await this.sessionModel.updateMany({ credentialId: existing._id, revokedAt: null }, { $set: { revokedAt: this.now() } });
+    try {
+      await credential.save();
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      const raced = await this.credentialModel.findOne({ tenantId: account.tenantId, accountId: account._id });
+      if (!rotate || !raced) {
+        throw new AppError('Native trading credential already exists', {
+          statusCode: 409,
+          code: 'TRADING_CREDENTIAL_EXISTS',
+        });
+      }
+      credential = raced;
+      credential.login = resolvedLogin;
+      credential.passwordSalt = salt;
+      credential.passwordHash = hash;
+      credential.passwordChangedAt = this.now();
+      credential.mustChangePassword = Boolean(mustChangePassword);
+      credential.status = 'ACTIVE';
+      credential.failedAttempts = 0;
+      credential.lockedUntil = null;
+      await credential.save();
+    }
+
+    if (existing || rotate) await this.sessionModel.updateMany({ credentialId: credential._id, revokedAt: null }, { $set: { revokedAt: this.now() } });
 
     return {
       credential: {
