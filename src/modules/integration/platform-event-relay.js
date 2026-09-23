@@ -61,6 +61,31 @@ class PlatformEventRelay {
         (groups || []).map(item => [String(item?._id || 'UNKNOWN'), Number(item?.count || 0)]),
       );
     }
+    if (
+      Number(this.deadEventsByType.DEAL_CREATED || 0) > 0
+      || Number(this.deadEventsByType.ACCOUNT_CONTROLLED || 0) > 0
+    ) {
+      const immutableDead = await this.outboxModel.find({
+        status: 'DEAD',
+        eventType: mongoose.trusted({ $in: ['DEAL_CREATED', 'ACCOUNT_CONTROLLED'] }),
+      })
+        .select('eventId aggregateId accountId eventType occurredAt attempts lastError payload.dealId payload.platformAccountId')
+        .sort({ occurredAt: 1, _id: 1 })
+        .lean();
+      this.logger?.warn?.({
+        deadImmutableEvents: (immutableDead || []).map(item => ({
+          eventId: item.eventId || null,
+          aggregateId: item.aggregateId || null,
+          accountId: item.accountId ? String(item.accountId) : null,
+          eventType: item.eventType || null,
+          occurredAt: item.occurredAt || null,
+          attempts: Number(item.attempts || 0),
+          dealId: item.payload?.dealId || null,
+          platformAccountId: item.payload?.platformAccountId || null,
+          lastError: item.lastError || null,
+        })),
+      }, 'Dead immutable platform events require review before replay');
+    }
     this.timer = setInterval(() => this.flush().catch(error => this.logger?.error({ err: error }, 'Platform event relay flush failed')), this.pollIntervalMs);
     this.timer.unref?.();
     await this.flush();
