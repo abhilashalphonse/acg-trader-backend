@@ -238,6 +238,39 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     }
   }
 
+  async function reconcileSocketAccountGrants(socket, principal) {
+    const state = subscriptions.get(socket);
+    if (!state) return;
+
+    const desired = new Set((principal?.accountIds || []).map(String));
+    const current = new Set([...state.accounts].map(String));
+    const { added, removed } = accountGrantDiff(current, desired);
+
+    for (const accountId of removed) {
+      state.accounts.delete(accountId);
+      state.syncingAccounts.delete(accountId);
+      state.pendingAccountEvents = state.pendingAccountEvents.filter(item => item.accountId !== accountId);
+      cancelScheduled(state.valuationPending, state.valuationTimers, accountId);
+      for (const key of [...state.valuationTimers.keys()]) {
+        if (String(key).startsWith(`position:${accountId}:`)) {
+          cancelScheduled(state.valuationPending, state.valuationTimers, key);
+        }
+      }
+    }
+
+    for (const accountId of added) state.accounts.add(accountId);
+
+    if (added.length) await syncAccounts(socket, added, 'grant-refresh');
+    if (added.length || removed.length) {
+      send(socket, 'trading.account.grants', {
+        accounts: [...desired],
+        selectedAccountId: principal?.selectedAccountId || null,
+        added,
+        removed,
+      });
+    }
+  }
+
   function validateAccountGrants(socket, accountIds) {
     const grants = new Set(socket.traderPrincipal.accountIds.map(String));
     const ids = [...new Set((accountIds || []).map(String).filter(Boolean))];
@@ -403,8 +436,9 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       if (new Date(socket.traderPrincipal.expiresAt).getTime() <= Date.now()) { socket.close(4001, 'Trading session expired'); continue; }
       if (Date.now() - socket.lastAuthCheckAt >= AUTH_REVALIDATE_MS) {
         socket.lastAuthCheckAt = Date.now();
-        void authService.authenticateSessionToken(socket.traderAccessToken).then(principal => {
+        void authService.authenticateSessionToken(socket.traderAccessToken).then(async principal => {
           socket.traderPrincipal = principal;
+          await reconcileSocketAccountGrants(socket, principal);
         }).catch(() => socket.close(4001, 'Trading session invalid'));
       }
       socket.isAlive = false;
@@ -496,4 +530,13 @@ function rejectUpgrade(socket, status, message) {
   socket.destroy();
 }
 
-module.exports = { createMarketWebSocketServer, accountIdFromPayload, websocketAccessToken };
+function accountGrantDiff(currentValues, desiredValues) {
+  const current = currentValues instanceof Set ? currentValues : new Set((currentValues || []).map(String));
+  const desired = desiredValues instanceof Set ? desiredValues : new Set((desiredValues || []).map(String));
+  return {
+    added: [...desired].filter(id => !current.has(id)),
+    removed: [...current].filter(id => !desired.has(id)),
+  };
+}
+
+module.exports = { createMarketWebSocketServer, accountIdFromPayload, websocketAccessToken, accountGrantDiff };
