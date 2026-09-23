@@ -631,14 +631,20 @@ function assertProvisionReplay(account, input) {
   if (storedContractHash && storedContractHash !== input.provisioningContractHash) {
     mismatches.push('provisioningContract');
   } else if (!storedContractHash) {
-    if (canonicalJson(normalizeExistingRiskPolicy(account.riskPolicy || {})) !== canonicalJson(input.riskPolicy || {})) {
+    if (
+      input.riskPolicy
+      && canonicalJson(normalizeExistingRiskPolicy(account.riskPolicy || {})) !== canonicalJson(input.riskPolicy)
+    ) {
       mismatches.push('riskPolicy');
     }
     const currentMetadata = account.metadata instanceof Map ? Object.fromEntries(account.metadata) : (account.metadata || {});
     for (const [key, value] of Object.entries(input.metadata || {})) {
       if (String(currentMetadata[key] ?? '') !== String(value)) mismatches.push(`metadata.${key}`);
     }
-    if (String(account.riskTimezone || 'UTC') !== String(input.riskTimezone || 'UTC')) mismatches.push('riskTimezone');
+    if (
+      input.riskTimezone
+      && String(account.riskTimezone || 'UTC') !== String(input.riskTimezone)
+    ) mismatches.push('riskTimezone');
   }
 
   if (mismatches.length) {
