@@ -4,7 +4,7 @@
   "private": true,
   "description": "Independent multi-tenant ACG Trader execution backend",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "npm run replay:launch-deals && node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
     "seed:instruments": "node scripts/seed-instruments.js",
@@ -12,7 +12,8 @@
     "diagnostic:twelve": "node diagnostics/twelve-data-ws.js",
     "db:indexes": "node scripts/ensure-indexes.js",
     "maintenance:candles": "node scripts/compact-candles.js",
-    "test:runtime": "node scripts/runtime-smoke.js"
+    "test:runtime": "node scripts/runtime-smoke.js",
+    "replay:launch-deals": "node scripts/replay-launch-deals.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
