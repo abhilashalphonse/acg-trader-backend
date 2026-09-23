@@ -13,7 +13,7 @@ const { TraderSession } = require('./trader-session.model');
 const { FederationTicket } = require('./federation-ticket.model');
 
 const scryptAsync = promisify(crypto.scrypt);
-const FEDERATED_ACCOUNT_STATUSES = Object.freeze(['ACTIVE', 'PAUSED', 'BREACHED']);
+const FEDERATED_ACCOUNT_STATUSES = Object.freeze(['ACTIVE', 'BREACHED']);
 
 class AuthService {
   constructor({
@@ -109,7 +109,7 @@ class AuthService {
       throw new AppError('Native trading credential already exists', { statusCode: 409, code: 'TRADING_CREDENTIAL_EXISTS' });
     }
 
-    const credential = existing || new this.credentialModel({ tenantId: account.tenantId, accountId: account._id });
+    let credential = existing || new this.credentialModel({ tenantId: account.tenantId, accountId: account._id });
     credential.login = resolvedLogin;
     credential.passwordSalt = salt;
     credential.passwordHash = hash;
@@ -118,9 +118,31 @@ class AuthService {
     credential.status = 'ACTIVE';
     credential.failedAttempts = 0;
     credential.lockedUntil = null;
-    await credential.save();
 
-    if (existing) await this.sessionModel.updateMany({ credentialId: existing._id, revokedAt: null }, { $set: { revokedAt: this.now() } });
+    try {
+      await credential.save();
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      const raced = await this.credentialModel.findOne({ tenantId: account.tenantId, accountId: account._id });
+      if (!rotate || !raced) {
+        throw new AppError('Native trading credential already exists', {
+          statusCode: 409,
+          code: 'TRADING_CREDENTIAL_EXISTS',
+        });
+      }
+      credential = raced;
+      credential.login = resolvedLogin;
+      credential.passwordSalt = salt;
+      credential.passwordHash = hash;
+      credential.passwordChangedAt = this.now();
+      credential.mustChangePassword = Boolean(mustChangePassword);
+      credential.status = 'ACTIVE';
+      credential.failedAttempts = 0;
+      credential.lockedUntil = null;
+      await credential.save();
+    }
+
+    if (existing || rotate) await this.sessionModel.updateMany({ credentialId: credential._id, revokedAt: null }, { $set: { revokedAt: this.now() } });
 
     return {
       credential: {
@@ -149,7 +171,9 @@ class AuthService {
       _id: id,
       tenantId: String(tenantId),
       ownerExternalRef: { $in: owners },
-    }).select('_id').lean()));
+      status: { $in: FEDERATED_ACCOUNT_STATUSES },
+      federationEnabled: { $ne: false },
+    }).select('_id status tradingEnabled federationEnabled').lean()));
     if (accounts.some(account => !account)) {
       throw new AppError('One or more accounts are not owned by this tenant user', { statusCode: 403, code: 'ACCOUNT_GRANT_FORBIDDEN' });
     }
@@ -470,6 +494,7 @@ class AuthService {
     const rows = await this.accountModel.find({
       tenantId: String(session.tenantId),
       status: { $in: FEDERATED_ACCOUNT_STATUSES },
+      federationEnabled: { $ne: false },
       $or: accessClauses,
     }).select('_id').lean();
 
@@ -605,6 +630,7 @@ function publicAccountGrant(account) {
     leverage: Number(account.leverage || 0) || null,
     status: account.status || null,
     tradingEnabled: account.tradingEnabled === true,
+    federationEnabled: account.federationEnabled !== false,
     initialBalance: decimalString(account?.state?.initialBalance),
     balance: decimalString(account?.state?.balance),
     equity: decimalString(account?.state?.equity),

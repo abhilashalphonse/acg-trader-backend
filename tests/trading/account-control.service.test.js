@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { AccountControlService, normalizeProvisionCommand, buildInitialState } = require('../../src/modules/trading/account-control.service');
+const { AccountControlService, normalizeProvisionCommand, buildInitialState, assertProvisionReplay } = require('../../src/modules/trading/account-control.service');
 const { dayKeyInTimezone } = require('../../src/modules/trading/risk-day-engine');
 const { challengeSyncSchema } = require('../../src/modules/trading/account-control.routes');
 
@@ -296,4 +296,108 @@ test('flatten pauses the account, cancels pending orders, and remains reversible
   assert.equal(resumed.account.status, 'ACTIVE');
   assert.equal(resumed.account.tradingEnabled, true);
   assert.equal(models.lifecycleRecords.at(-1).type, 'RESUMED');
+});
+
+
+test('staged provisioning is non-tradable and hidden from federation until activation', async () => {
+  const models = createFakeModels();
+  const service = createService(models);
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-staged',
+    ownerExternalRef: 'user-staged',
+    initialBalance: '100000',
+    activate: false,
+  });
+  assert.equal(created.account.status, 'PAUSED');
+  assert.equal(created.account.tradingEnabled, false);
+  assert.equal(created.account.federationEnabled, false);
+
+  await assert.rejects(
+    () => service.resume(created.account.id, { reason: 'WRONG_ACTIVATION_PATH' }),
+    error => error.code === 'ACCOUNT_ACTIVATION_REQUIRED',
+  );
+
+  const activated = await service.activate(created.account.id, { reason: 'LIFECYCLE_COMMITTED' });
+  assert.equal(activated.account.status, 'ACTIVE');
+  assert.equal(activated.account.tradingEnabled, true);
+  assert.equal(activated.account.federationEnabled, true);
+});
+
+test('breached account remains breached when pause, stage, disable, or flatten is requested', async () => {
+  const models = createFakeModels();
+  models.positionModel.find = () => ({ select() { return { async lean() { return []; } }; } });
+  const service = createService(models, {
+    marketOrderService: { async closeMarketPosition() { throw new Error('No positions expected'); } },
+  });
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-terminal-breach',
+    ownerExternalRef: 'user-terminal',
+    initialBalance: '100000',
+  });
+  await service.breach(created.account.id, { reason: 'MAX_LOSS', action: 'LOCK_ONLY' });
+
+  for (const operation of [
+    () => service.pause(created.account.id, { reason: 'PAUSE_AFTER_BREACH' }),
+    () => service.stage(created.account.id, { reason: 'STAGE_AFTER_BREACH' }),
+    () => service.disable(created.account.id, { reason: 'DISABLE_AFTER_BREACH' }),
+    () => service.flatten(created.account.id, { reason: 'FLATTEN_AFTER_BREACH' }),
+  ]) {
+    const result = await operation();
+    assert.equal(result.account.status, 'BREACHED');
+    assert.equal(result.account.tradingEnabled, false);
+  }
+
+  await assert.rejects(
+    () => service.resume(created.account.id, { reason: 'RESUME_AFTER_BREACH' }),
+    error => error.code === 'ACCOUNT_RESUME_FORBIDDEN',
+  );
+});
+
+test('provision replay rejects immutable risk-policy contract drift', () => {
+  const first = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'contract-risk',
+    ownerExternalRef: 'user-risk',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      profitTarget: '10000',
+    },
+    metadata: { fundedAccountId: 'F-1', phase: 1 },
+  });
+  const existing = {
+    tenantId: TENANT_ID,
+    ownerExternalRef: 'user-risk',
+    userId: null,
+    accountType: 'CHALLENGE',
+    currency: 'USD',
+    leverage: 100,
+    state: { initialBalance: '100000' },
+    riskTimezone: 'UTC',
+    riskPolicy: first.riskPolicy,
+    metadata: first.metadata,
+    provisioningContractHash: first.provisioningContractHash,
+  };
+
+  const changed = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'contract-risk',
+    ownerExternalRef: 'user-risk',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '5000' },
+      maxLoss: { limit: '10000' },
+      profitTarget: '10000',
+    },
+    metadata: { fundedAccountId: 'F-1', phase: 1 },
+  });
+
+  assert.throws(
+    () => assertProvisionReplay(existing, changed),
+    error => error.code === 'ACCOUNT_PROVISIONING_CONFLICT'
+      && error.details.mismatches.includes('provisioningContract'),
+  );
 });

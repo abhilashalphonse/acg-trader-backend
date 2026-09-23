@@ -59,6 +59,8 @@ const tradingAccountSchema = new Schema({
   riskDayKey: { type: String, required: true, index: true },
   riskTimezone: { type: String, default: 'UTC' },
   tradingEnabled: { type: Boolean, default: true, index: true },
+  federationEnabled: { type: Boolean, default: true, index: true },
+  provisioningContractHash: { type: String, default: null, immutable: true },
   breachedAt: { type: Date, default: null },
   closedAt: { type: Date, default: null },
   metadata: { type: Map, of: String, default: {} },
@@ -76,6 +78,7 @@ tradingAccountSchema.index({ tenantId: 1, accountCode: 1 }, { unique: true });
 tradingAccountSchema.index({ tenantId: 1, externalRef: 1 }, { unique: true });
 tradingAccountSchema.index({ tenantId: 1, ownerExternalRef: 1, status: 1 });
 tradingAccountSchema.index({ tenantId: 1, status: 1, tradingEnabled: 1 });
+tradingAccountSchema.index({ tenantId: 1, ownerExternalRef: 1, federationEnabled: 1, status: 1 });
 
 const TradingAccount = mongoose.models.TradingAccount || mongoose.model('TradingAccount', tradingAccountSchema);
 

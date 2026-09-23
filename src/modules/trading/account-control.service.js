@@ -61,6 +61,7 @@ class AccountControlService {
           const raced = await this.accountModel.findOne(scope).session(session);
           if (raced) return assertProvisionReplay(raced, input);
 
+          const activateImmediately = input.activate !== false;
           const created = new this.accountModel({
             tenantId: input.tenantId,
             accountCode: input.accountCode || generateAccountCode(),
@@ -70,8 +71,10 @@ class AccountControlService {
             accountType: input.accountType,
             currency: input.currency,
             leverage: input.leverage,
-            status: 'ACTIVE',
-            tradingEnabled: true,
+            status: activateImmediately ? 'ACTIVE' : 'PAUSED',
+            tradingEnabled: activateImmediately,
+            federationEnabled: activateImmediately,
+            provisioningContractHash: input.provisioningContractHash,
             state: buildInitialState(input.initialBalance),
             riskPolicy: input.riskPolicy,
             riskDayKey: input.riskDayKey,
@@ -100,10 +103,10 @@ class AccountControlService {
           await this.#recordLifecycle(created, {
             type: 'PROVISIONED',
             fromStatus: null,
-            toStatus: 'ACTIVE',
+            toStatus: activateImmediately ? 'ACTIVE' : 'PAUSED',
             tradingEnabledBefore: null,
-            tradingEnabledAfter: true,
-            reason: 'ACCOUNT_PROVISIONED',
+            tradingEnabledAfter: activateImmediately,
+            reason: activateImmediately ? 'ACCOUNT_PROVISIONED' : 'ACCOUNT_PROVISIONED_STAGED',
           }, session);
 
           return created;
@@ -136,12 +139,67 @@ class AccountControlService {
     });
   }
 
+  async stage(accountId, { reason = 'ACCOUNT_STAGED', cancelPending = true } = {}) {
+    return this.#restrict(accountId, {
+      status: 'PAUSED',
+      reason,
+      cancelPending,
+      federationEnabled: false,
+      event: 'trading.account.paused',
+      lifecycleType: 'PAUSED',
+    });
+  }
+
+  async activate(accountId, { reason = 'ACCOUNT_ACTIVATED' } = {}) {
+    return this.commandQueue.run(String(accountId), async () => {
+      const result = await this.runTransaction(async session => {
+        const account = await this.accountModel.findById(String(accountId)).session(session);
+        if (!account) throw accountNotFound();
+        if (RESTRICTED_STATUSES.has(account.status)) {
+          throw new AppError('Terminal trading account cannot be activated', {
+            statusCode: 409,
+            code: 'ACCOUNT_ACTIVATION_FORBIDDEN',
+            details: { status: account.status },
+          });
+        }
+        if (account.status === 'ACTIVE' && account.tradingEnabled === true && account.federationEnabled !== false) {
+          return { account, changed: false };
+        }
+
+        const fromStatus = account.status;
+        const tradingEnabledBefore = account.tradingEnabled;
+        account.status = 'ACTIVE';
+        account.tradingEnabled = true;
+        account.federationEnabled = true;
+        setControlMetadata(account, reason, this.now());
+        await account.save({ session });
+        await this.#recordLifecycle(account, {
+          type: 'RESUMED',
+          fromStatus,
+          toStatus: 'ACTIVE',
+          tradingEnabledBefore,
+          tradingEnabledAfter: true,
+          reason,
+        }, session);
+        await this.platformEventRelay?.enqueueControl({ account, sourceEvent: 'trading.account.resumed', session });
+        return { account, changed: true };
+      });
+
+      if (result.changed) this.#emit('trading.account.resumed', serializeControlledAccount(result.account));
+      return controlResult(result.account, { changed: result.changed });
+    });
+  }
+
   async resume(accountId, { reason = 'MANUAL_RESUME' } = {}) {
     return this.commandQueue.run(String(accountId), async () => {
       const result = await this.runTransaction(async session => {
         const account = await this.accountModel.findById(String(accountId)).session(session);
         if (!account) throw accountNotFound();
-        if (account.status === 'ACTIVE' && account.tradingEnabled === true) {
+        if (
+          account.status === 'ACTIVE'
+          && account.tradingEnabled === true
+          && account.federationEnabled !== false
+        ) {
           return { account, changed: false };
         }
         if (RESTRICTED_STATUSES.has(account.status)) {
@@ -149,6 +207,12 @@ class AccountControlService {
             statusCode: 409,
             code: 'ACCOUNT_RESUME_FORBIDDEN',
             details: { status: account.status },
+          });
+        }
+        if (account.federationEnabled === false) {
+          throw new AppError('Staged trading account requires lifecycle activation', {
+            statusCode: 409,
+            code: 'ACCOUNT_ACTIVATION_REQUIRED',
           });
         }
 
@@ -273,30 +337,34 @@ class AccountControlService {
     });
   }
 
-  async #restrict(accountId, { status, reason, cancelPending, breach = false, event, lifecycleType }) {
+  async #restrict(accountId, { status, reason, cancelPending, breach = false, federationEnabled = null, event, lifecycleType }) {
     return this.commandQueue.run(String(accountId), async () => {
       const result = await this.runTransaction(async session => {
         const account = await this.accountModel.findById(String(accountId)).session(session);
         if (!account) throw accountNotFound();
-        if (account.status === 'CLOSED' && status !== 'CLOSED') {
-          throw new AppError('Closed trading account cannot change lifecycle state', {
-            statusCode: 409,
-            code: 'ACCOUNT_CLOSED',
-          });
+        const now = this.now();
+        const terminalPreserved = RESTRICTED_STATUSES.has(account.status) && account.status !== status;
+        let cancelledPending = 0;
+        if (terminalPreserved) {
+          if (cancelPending) cancelledPending = await this.#cancelPending(account._id, reason, now, session);
+          return { account, changed: false, cancelledPending, terminalPreserved: true };
         }
 
-        const now = this.now();
-        const alreadyApplied = account.status === status && account.tradingEnabled === false;
+        const federationAlreadyApplied = federationEnabled === null
+          || account.federationEnabled === federationEnabled;
+        const alreadyApplied = account.status === status
+          && account.tradingEnabled === false
+          && federationAlreadyApplied;
         const fromStatus = account.status;
         const tradingEnabledBefore = account.tradingEnabled;
 
         account.status = status;
         account.tradingEnabled = false;
+        if (federationEnabled !== null) account.federationEnabled = federationEnabled;
         if (breach && !account.breachedAt) account.breachedAt = now;
         setControlMetadata(account, reason, now);
         await account.save({ session });
 
-        let cancelledPending = 0;
         if (cancelPending) cancelledPending = await this.#cancelPending(account._id, reason, now, session);
 
         if (!alreadyApplied) {
@@ -318,6 +386,7 @@ class AccountControlService {
       return controlResult(result.account, {
         changed: result.changed,
         cancelledPending: result.cancelledPending,
+        terminalPreserved: result.terminalPreserved === true,
       });
     });
   }
@@ -454,8 +523,9 @@ function normalizeProvisionCommand(command) {
 
   const riskTimezone = String(command?.riskTimezone || 'UTC').trim() || 'UTC';
   const provisionDayKey = dayKeyInTimezone(new Date(), riskTimezone);
-
-  return {
+  const riskPolicy = normalizeRiskPolicy(command?.riskPolicy);
+  const metadata = normalizeMetadata(command?.metadata);
+  const input = {
     tenantId,
     externalRef,
     ownerExternalRef,
@@ -465,13 +535,15 @@ function normalizeProvisionCommand(command) {
     currency: String(command?.currency || 'USD').toUpperCase(),
     leverage,
     initialBalance,
-    riskPolicy: normalizeRiskPolicy(command?.riskPolicy),
+    activate: command?.activate !== false,
+    riskPolicy,
     riskDayKey: String(command?.riskDayKey || provisionDayKey).trim(),
     riskTimezone,
-    metadata: normalizeMetadata(command?.metadata),
+    metadata,
   };
+  input.provisioningContractHash = provisioningContractHash(input);
+  return input;
 }
-
 function normalizeRiskPolicy(policy = {}) {
   const dailyLimit = normalizeDecimal(policy?.dailyLoss?.limit ?? '0');
   const maxLimit = normalizeDecimal(policy?.maxLoss?.limit ?? '0');
@@ -559,16 +631,90 @@ function assertProvisionReplay(account, input) {
   if (normalizeDecimal(account.state?.initialBalance ?? '0') !== input.initialBalance) mismatches.push('initialBalance');
   if (input.accountCode && String(account.accountCode || '') !== input.accountCode) mismatches.push('accountCode');
 
+  const storedContractHash = String(account.provisioningContractHash || '').trim();
+  if (storedContractHash && storedContractHash !== input.provisioningContractHash) {
+    mismatches.push('provisioningContract');
+  } else if (!storedContractHash) {
+    if (
+      input.riskPolicy
+      && canonicalJson(normalizeExistingRiskPolicy(account.riskPolicy || {})) !== canonicalJson(input.riskPolicy)
+    ) {
+      mismatches.push('riskPolicy');
+    }
+    const currentMetadata = account.metadata instanceof Map ? Object.fromEntries(account.metadata) : (account.metadata || {});
+    for (const [key, value] of Object.entries(input.metadata || {})) {
+      if (String(currentMetadata[key] ?? '') !== String(value)) mismatches.push(`metadata.${key}`);
+    }
+    if (
+      input.riskTimezone
+      && String(account.riskTimezone || 'UTC') !== String(input.riskTimezone)
+    ) mismatches.push('riskTimezone');
+  }
+
   if (mismatches.length) {
     throw new AppError('externalRef is already provisioned with different account parameters', {
       statusCode: 409,
       code: 'ACCOUNT_PROVISIONING_CONFLICT',
-      details: { externalRef: input.externalRef, mismatches },
+      details: { externalRef: input.externalRef, mismatches: [...new Set(mismatches)] },
     });
   }
   return account;
 }
 
+function provisioningContractHash(input) {
+  const contract = {
+    tenantId: String(input.tenantId || ''),
+    ownerExternalRef: String(input.ownerExternalRef || ''),
+    userId: String(input.userId || ''),
+    accountType: String(input.accountType || ''),
+    currency: String(input.currency || ''),
+    leverage: Number(input.leverage || 0),
+    initialBalance: normalizeDecimal(input.initialBalance ?? '0'),
+    riskPolicy: input.riskPolicy || {},
+    riskTimezone: String(input.riskTimezone || 'UTC'),
+    metadata: input.metadata || {},
+  };
+  return crypto.createHash('sha256').update(canonicalJson(contract)).digest('hex');
+}
+
+function normalizeExistingRiskPolicy(policy = {}) {
+  const read = value => value == null ? null : normalizeDecimal(value);
+  return {
+    dailyLoss: {
+      limit: read(policy?.dailyLoss?.limit ?? '0'),
+      reference: String(policy?.dailyLoss?.reference || 'DAILY_START_EQUITY'),
+    },
+    maxLoss: {
+      limit: read(policy?.maxLoss?.limit ?? '0'),
+      reference: String(policy?.maxLoss?.reference || 'INITIAL_BALANCE'),
+    },
+    profitTarget: read(policy?.profitTarget ?? '0'),
+    breachAction: String(policy?.breachAction || 'LIQUIDATE_AND_LOCK').toUpperCase(),
+    maxOpenPositions: policy?.maxOpenPositions ?? null,
+    maxPositionsPerSymbol: policy?.maxPositionsPerSymbol ?? null,
+    maxPendingOrders: policy?.maxPendingOrders ?? null,
+    maxPendingOrdersPerSymbol: policy?.maxPendingOrdersPerSymbol ?? null,
+    maxPositionVolume: read(policy?.maxPositionVolume),
+    maxSymbolVolume: read(policy?.maxSymbolVolume),
+    maxTotalVolume: read(policy?.maxTotalVolume),
+    maxRiskPerTradePercent: read(policy?.maxRiskPerTradePercent),
+    maxAggregateRiskPercent: read(policy?.maxAggregateRiskPercent),
+    maxMarginUsagePercent: read(policy?.maxMarginUsagePercent),
+    maxSingleOrderMarginPercentOfFree: read(policy?.maxSingleOrderMarginPercentOfFree),
+    maxSymbolMarginPercentOfPermitted: read(policy?.maxSymbolMarginPercentOfPermitted),
+    allowedSymbols: Array.isArray(policy?.allowedSymbols)
+      ? policy.allowedSymbols.map(value => String(value).replace('/', '').toUpperCase())
+      : [],
+  };
+}
+
+function canonicalJson(value) {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const plain = value instanceof Map ? Object.fromEntries(value) : value;
+  return `{${Object.keys(plain).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(plain[key])}`).join(',')}}`;
+}
 function setControlMetadata(account, reason, at) {
   if (!(account.metadata instanceof Map)) account.metadata = new Map(Object.entries(account.metadata || {}));
   account.metadata.set('lastControlReason', String(reason));
@@ -583,6 +729,8 @@ function serializeControlledAccount(account) {
     externalRef: account.externalRef || null,
     riskDayKey: account.riskDayKey || null,
     riskTimezone: account.riskTimezone || 'UTC',
+    federationEnabled: account.federationEnabled !== false,
+    provisioningContractHash: account.provisioningContractHash || null,
     breachedAt: account.breachedAt ? new Date(account.breachedAt).toISOString() : null,
     closedAt: account.closedAt ? new Date(account.closedAt).toISOString() : null,
   };
