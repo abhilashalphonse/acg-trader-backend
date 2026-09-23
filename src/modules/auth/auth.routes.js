@@ -45,6 +45,12 @@ function createAuthRouter(authService) {
     res.json({ principal: req.traderPrincipal });
   });
 
+  router.get('/accounts', requireTraderSession(authService), async (req, res) => {
+    const result = await authService.listGrantedAccounts(req.traderPrincipal);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(result);
+  });
+
   router.post('/logout', async (req, res) => {
     requireRefreshIntent(req);
     await authService.revokeSession({
