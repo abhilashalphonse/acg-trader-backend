@@ -129,6 +129,8 @@ class PlatformEventRelay {
       platformAccountId: String(account._id || account.id || ''),
       status: account.status || null,
       tradingEnabled: Boolean(account.tradingEnabled),
+      reason: metadataValue(account.metadata, 'lastControlReason'),
+      breachedAt: account.breachedAt ? new Date(account.breachedAt).toISOString() : null,
       sourceEvent: sourceEvent || null,
     }, {
       phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
@@ -318,6 +320,8 @@ class PlatformEventRelay {
       platformAccountId: accountId,
       status: payload?.status || account.status,
       tradingEnabled: payload?.tradingEnabled ?? account.tradingEnabled,
+      reason: metadataValue(account.metadata, 'lastControlReason'),
+      breachedAt: account.breachedAt ? new Date(account.breachedAt).toISOString() : null,
       sourceEvent,
     }, { phase: metadataValue(account.metadata, 'phase') });
   }
