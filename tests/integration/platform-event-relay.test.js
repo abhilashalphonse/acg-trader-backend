@@ -264,3 +264,50 @@ test('failed realtime snapshots keep at most one pending durable retry per accou
   assert.equal(relay.health().snapshotCoalesceMs, 1);
   await relay.stop();
 });
+
+
+test('dead outbox health is classified by event type', async () => {
+  const outboxModel = {
+    async countDocuments(query) {
+      assert.deepEqual(query, { status: 'DEAD' });
+      return 26;
+    },
+    async aggregate(pipeline) {
+      assert.deepEqual(pipeline, [
+        { $match: { status: 'DEAD' } },
+        { $group: { _id: '$eventType', count: { $sum: 1 } } },
+      ]);
+      return [
+        { _id: 'ACCOUNT_SNAPSHOT', count: 20 },
+        { _id: 'DEAL_CREATED', count: 4 },
+        { _id: 'ACCOUNT_CONTROLLED', count: 2 },
+      ];
+    },
+    find() {
+      return {
+        sort() {
+          return {
+            async limit() { return []; },
+          };
+        },
+      };
+    },
+  };
+
+  const relay = new PlatformEventRelay({
+    enabled: true,
+    eventBus: new EventEmitter(),
+    webhookUrl: 'https://funded.example.test/webhook',
+    webhookSecret: SECRET,
+    outboxModel,
+  });
+
+  await relay.start();
+  assert.equal(relay.health().deadEvents, 26);
+  assert.deepEqual(relay.health().deadEventsByType, {
+    ACCOUNT_SNAPSHOT: 20,
+    DEAL_CREATED: 4,
+    ACCOUNT_CONTROLLED: 2,
+  });
+  await relay.stop();
+});

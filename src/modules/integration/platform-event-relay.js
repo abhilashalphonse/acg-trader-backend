@@ -36,6 +36,7 @@ class PlatformEventRelay {
     this.lastDeliveryFailureAt = null;
     this.deliveryFailures = 0;
     this.deadEvents = 0;
+    this.deadEventsByType = {};
   }
 
   async start() {
@@ -50,6 +51,15 @@ class PlatformEventRelay {
     this.#listen('valuation.account.updated', payload => this.#queueSnapshot(payload));
     if (typeof this.outboxModel.countDocuments === 'function') {
       this.deadEvents = await this.outboxModel.countDocuments({ status: 'DEAD' });
+    }
+    if (typeof this.outboxModel.aggregate === 'function') {
+      const groups = await this.outboxModel.aggregate([
+        { $match: { status: 'DEAD' } },
+        { $group: { _id: '$eventType', count: { $sum: 1 } } },
+      ]);
+      this.deadEventsByType = Object.fromEntries(
+        (groups || []).map(item => [String(item?._id || 'UNKNOWN'), Number(item?.count || 0)]),
+      );
     }
     this.timer = setInterval(() => this.flush().catch(error => this.logger?.error({ err: error }, 'Platform event relay flush failed')), this.pollIntervalMs);
     this.timer.unref?.();
@@ -85,6 +95,7 @@ class PlatformEventRelay {
       lastDeliveryFailureAt: this.lastDeliveryFailureAt,
       deliveryFailures: this.deliveryFailures,
       deadEvents: this.deadEvents,
+      deadEventsByType: { ...this.deadEventsByType },
     };
   }
 
@@ -393,6 +404,7 @@ class PlatformEventRelay {
           this.snapshotRetryPending.delete(String(record.accountId || ''));
         }
         this.deadEvents += 1;
+        this.deadEventsByType[record.eventType] = Number(this.deadEventsByType[record.eventType] || 0) + 1;
       } else {
         record.nextAttemptAt = new Date(this.now().getTime() + retryDelayMs(record.attempts));
       }
