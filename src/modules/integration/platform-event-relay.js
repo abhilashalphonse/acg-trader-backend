@@ -131,6 +131,13 @@ class PlatformEventRelay {
       tradingEnabled: Boolean(account.tradingEnabled),
       reason: metadataValue(account.metadata, 'lastControlReason'),
       breachedAt: account.breachedAt ? new Date(account.breachedAt).toISOString() : null,
+      balance: decimal(account?.state?.balance),
+      equity: decimal(account?.state?.equity),
+      floatingProfit: decimal(account?.state?.floatingPnl),
+      margin: decimal(account?.state?.usedMargin),
+      marginFree: decimal(account?.state?.freeMargin),
+      dailyStartEquity: decimal(account?.state?.dailyStartEquity),
+      riskDayKey: account?.riskDayKey || null,
       sourceEvent: sourceEvent || null,
     }, {
       phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
@@ -322,6 +329,13 @@ class PlatformEventRelay {
       tradingEnabled: payload?.tradingEnabled ?? account.tradingEnabled,
       reason: metadataValue(account.metadata, 'lastControlReason'),
       breachedAt: account.breachedAt ? new Date(account.breachedAt).toISOString() : null,
+      balance: decimal(account?.state?.balance),
+      equity: decimal(account?.state?.equity),
+      floatingProfit: decimal(account?.state?.floatingPnl),
+      margin: decimal(account?.state?.usedMargin),
+      marginFree: decimal(account?.state?.freeMargin),
+      dailyStartEquity: decimal(account?.state?.dailyStartEquity),
+      riskDayKey: account?.riskDayKey || null,
       sourceEvent,
     }, { phase: metadataValue(account.metadata, 'phase') });
   }
