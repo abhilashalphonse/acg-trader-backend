@@ -13,7 +13,7 @@ const { TraderSession } = require('./trader-session.model');
 const { FederationTicket } = require('./federation-ticket.model');
 
 const scryptAsync = promisify(crypto.scrypt);
-const FEDERATED_ACCOUNT_STATUSES = Object.freeze(['ACTIVE', 'PAUSED', 'BREACHED']);
+const FEDERATED_ACCOUNT_STATUSES = Object.freeze(['ACTIVE', 'BREACHED']);
 
 class AuthService {
   constructor({
@@ -149,7 +149,9 @@ class AuthService {
       _id: id,
       tenantId: String(tenantId),
       ownerExternalRef: { $in: owners },
-    }).select('_id').lean()));
+      status: { $in: FEDERATED_ACCOUNT_STATUSES },
+      federationEnabled: { $ne: false },
+    }).select('_id status tradingEnabled federationEnabled').lean()));
     if (accounts.some(account => !account)) {
       throw new AppError('One or more accounts are not owned by this tenant user', { statusCode: 403, code: 'ACCOUNT_GRANT_FORBIDDEN' });
     }
@@ -470,6 +472,7 @@ class AuthService {
     const rows = await this.accountModel.find({
       tenantId: String(session.tenantId),
       status: { $in: FEDERATED_ACCOUNT_STATUSES },
+      federationEnabled: { $ne: false },
       $or: accessClauses,
     }).select('_id').lean();
 
@@ -605,6 +608,7 @@ function publicAccountGrant(account) {
     leverage: Number(account.leverage || 0) || null,
     status: account.status || null,
     tradingEnabled: account.tradingEnabled === true,
+    federationEnabled: account.federationEnabled !== false,
     initialBalance: decimalString(account?.state?.initialBalance),
     balance: decimalString(account?.state?.balance),
     equity: decimalString(account?.state?.equity),
