@@ -283,7 +283,33 @@ test('dead outbox health is classified by event type', async () => {
         { _id: 'ACCOUNT_CONTROLLED', count: 2 },
       ];
     },
-    find() {
+    find(query) {
+      if (query?.status === 'DEAD') {
+        return {
+          select() {
+            return {
+              sort() {
+                return {
+                  async lean() {
+                    return [
+                      {
+                        eventId: 'deal-event-1',
+                        aggregateId: 'FUNDED-1',
+                        accountId: '64b000000000000000000001',
+                        eventType: 'DEAL_CREATED',
+                        occurredAt: new Date('2026-09-18T12:00:00.000Z'),
+                        attempts: 12,
+                        lastError: 'HTTP 503',
+                        payload: { dealId: 'deal-1', platformAccountId: '64b000000000000000000001' },
+                      },
+                    ];
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
       return {
         sort() {
           return {
@@ -293,6 +319,7 @@ test('dead outbox health is classified by event type', async () => {
       };
     },
   };
+  const warnings = [];
 
   const relay = new PlatformEventRelay({
     enabled: true,
@@ -300,6 +327,7 @@ test('dead outbox health is classified by event type', async () => {
     webhookUrl: 'https://funded.example.test/webhook',
     webhookSecret: SECRET,
     outboxModel,
+    logger: { warn(payload, message) { warnings.push({ payload, message }); } },
   });
 
   await relay.start();
@@ -309,5 +337,9 @@ test('dead outbox health is classified by event type', async () => {
     DEAL_CREATED: 4,
     ACCOUNT_CONTROLLED: 2,
   });
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].message, 'Dead immutable platform events require review before replay');
+  assert.equal(warnings[0].payload.deadImmutableEvents[0].eventId, 'deal-event-1');
+  assert.equal(warnings[0].payload.deadImmutableEvents[0].dealId, 'deal-1');
   await relay.stop();
 });
