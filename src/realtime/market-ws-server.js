@@ -436,9 +436,12 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       if (new Date(socket.traderPrincipal.expiresAt).getTime() <= Date.now()) { socket.close(4001, 'Trading session expired'); continue; }
       if (Date.now() - socket.lastAuthCheckAt >= AUTH_REVALIDATE_MS) {
         socket.lastAuthCheckAt = Date.now();
-        void authService.authenticateSessionToken(socket.traderAccessToken).then(async principal => {
+        void authService.authenticateSessionToken(socket.traderAccessToken).then(principal => {
           socket.traderPrincipal = principal;
-          await reconcileSocketAccountGrants(socket, principal);
+          void reconcileSocketAccountGrants(socket, principal).catch(error => {
+            logger.warn({ err: error, sessionId: principal?.sessionId }, 'Trader WebSocket grant reconciliation failed');
+            send(socket, 'error', { code: error?.code || 'ACCOUNT_GRANT_SYNC_FAILED', message: 'Unable to synchronize updated account grants' });
+          });
         }).catch(() => socket.close(4001, 'Trading session invalid'));
       }
       socket.isAlive = false;
