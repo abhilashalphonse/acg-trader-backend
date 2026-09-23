@@ -37,6 +37,9 @@ function fakeAccountModel(initialRows = []) {
     if (expected && typeof expected === 'object' && Object.prototype.hasOwnProperty.call(expected, '$in')) {
       return expected.$in.map(String).includes(String(row[key]));
     }
+    if (expected && typeof expected === 'object' && Object.prototype.hasOwnProperty.call(expected, '$ne')) {
+      return String(row[key]) !== String(expected.$ne);
+    }
     return String(row[key]) === String(expected);
   });
 
@@ -252,6 +255,7 @@ test('federated sessions dynamically add current owner accounts and drop disable
   const accountModel = fakeAccountModel([
     { _id: 'account-1', ownerExternalRef: 'legacy-user-1', status: 'ACTIVE' },
     { _id: 'account-2', ownerExternalRef: 'user-1', status: 'ACTIVE' },
+    { _id: 'account-staged', ownerExternalRef: 'user-1', status: 'ACTIVE', federationEnabled: false },
     { _id: 'account-old-phase', ownerExternalRef: 'user-1', status: 'DISABLED' },
     { _id: 'account-other-user', ownerExternalRef: 'other-user', status: 'ACTIVE' },
   ]);
@@ -272,10 +276,11 @@ test('federated sessions dynamically add current owner accounts and drop disable
     { _id: 'account-1', ownerExternalRef: 'legacy-user-1', status: 'DISABLED' },
     { _id: 'account-2', ownerExternalRef: 'user-1', status: 'ACTIVE' },
     { _id: 'account-3', ownerExternalRef: 'user-1', status: 'PAUSED' },
+    { _id: 'account-staged', ownerExternalRef: 'user-1', status: 'ACTIVE', federationEnabled: false },
   ]);
 
   const second = await service.authenticateSessionToken(access);
-  assert.deepEqual(second.accountIds, ['account-2', 'account-3']);
+  assert.deepEqual(second.accountIds, ['account-2']);
   assert.equal(second.selectedAccountId, 'account-2');
 });
 
