@@ -19,6 +19,7 @@ const restrictSchema = z.object({ reason: z.string().trim().min(1).max(256).opti
 const disableSchema = restrictSchema.extend({ liquidate: z.boolean().optional() }).strict();
 const breachSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), action: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).nullable().optional() }).strict();
 const closeSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), liquidate: z.boolean().optional() }).strict();
+const flattenSchema = z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict();
 const lifecycleQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(500).optional().default(100) }).strict();
 const challengeSyncSchema = z.object({
   riskPolicy: riskPolicyPatch,
@@ -74,6 +75,7 @@ function createAccountControlRouter(runtime, authService) {
   router.post('/:accountId/resume', tenantCommand(runtime, 'resume', z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict()));
   router.post('/:accountId/disable', tenantCommand(runtime, 'disable', disableSchema));
   router.post('/:accountId/breach', tenantCommand(runtime, 'breach', breachSchema));
+  router.post('/:accountId/flatten', tenantCommand(runtime, 'flatten', flattenSchema));
   router.post('/:accountId/close', async (req, res) => { const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); const options = parse(closeSchema, req.body || {}); res.json(await runtime.accountControlService.close(accountId, options)); });
   return router;
 }
@@ -85,4 +87,4 @@ function parseId(value) { const result = objectId.safeParse(value); if (!result.
 function parse(schema, value) { const result = schema.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
 function validationError(error) { return new AppError('Invalid account control command', { statusCode: 400, code: 'INVALID_ACCOUNT_CONTROL_COMMAND', details: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) }); }
 
-module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema, lifecycleQuerySchema, challengeSyncSchema };
+module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema, flattenSchema, lifecycleQuerySchema, challengeSyncSchema };
