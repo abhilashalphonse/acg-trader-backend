@@ -2,8 +2,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const mongoose = require('mongoose');
 const { AuthService, hashPassword, verifyPassword, hashToken } = require('../../src/modules/auth/auth.service');
 const { requireAccountGrant } = require('../../src/modules/auth/auth.middleware');
+const { TradingAccount } = require('../../src/modules/accounts/trading-account.model');
+const { TraderSession } = require('../../src/modules/auth/trader-session.model');
 
 test('native trading passwords are salted and verifiable', async () => {
   const first = await hashPassword('StrongTradingPassword!123');
@@ -314,4 +317,148 @@ test('session authentication refreshes last-seen after the touch interval', asyn
 
   await service.authenticateSessionToken(access);
   assert.equal(updateCalls, 1);
+});
+
+
+function castWithSanitize(model, query) {
+  mongoose.sanitizeFilter(query);
+  model.find(query).cast(model);
+}
+
+test('trusted auth filters survive sanitizeFilter and cast cleanly', async () => {
+  const previous = mongoose.get('sanitizeFilter');
+  mongoose.set('sanitizeFilter', true);
+  const tenantId = new mongoose.Types.ObjectId();
+  const accountId = new mongoose.Types.ObjectId();
+
+  const accountModel = {
+    findOne(query) {
+      castWithSanitize(TradingAccount, query);
+      return {
+        select() {
+          return {
+            lean: async () => ({
+              _id: accountId,
+              tenantId,
+              ownerExternalRef: 'user-1',
+              status: 'ACTIVE',
+              tradingEnabled: true,
+              federationEnabled: true,
+            }),
+          };
+        },
+      };
+    },
+  };
+  const federationTicketModel = {
+    async create(document) {
+      return { ...document, _id: new mongoose.Types.ObjectId() };
+    },
+  };
+
+  try {
+    const service = new AuthService({ accountModel, federationTicketModel });
+    const result = await service.createFederationTicket({
+      tenantId: String(tenantId),
+      ownerExternalRef: 'user-1',
+      ownerExternalRefs: ['legacy-user-1'],
+      accountIds: [String(accountId)],
+      selectedAccountId: String(accountId),
+    });
+    assert.equal(result.selectedAccountId, String(accountId));
+    assert.match(result.ticket, /^[A-Za-z0-9_-]+$/);
+  } finally {
+    mongoose.set('sanitizeFilter', previous);
+  }
+});
+
+test('trusted federated session filters remain castable with sanitizeFilter enabled', async () => {
+  const previous = mongoose.get('sanitizeFilter');
+  mongoose.set('sanitizeFilter', true);
+  const tenantId = new mongoose.Types.ObjectId();
+  const accountId = new mongoose.Types.ObjectId();
+  const now = new Date('2026-09-23T12:00:00.000Z');
+  const legacyAccess = 'acg_ts_sanitize-filter-legacy';
+  let session = {
+    _id: new mongoose.Types.ObjectId(),
+    tenantId,
+    tokenHash: hashToken(legacyAccess),
+    authMethod: 'FEDERATED',
+    ownerExternalRef: 'user-1',
+    ownerExternalRefs: ['user-1'],
+    accountIds: [accountId],
+    selectedAccountId: accountId,
+    accessExpiresAt: new Date(now.getTime() + 15 * 60_000),
+    idleExpiresAt: new Date(now.getTime() + 60 * 60_000),
+    expiresAt: new Date(now.getTime() + 60 * 60_000),
+    revokedAt: null,
+    lastSeenAt: now,
+  };
+
+  const sessionModel = {
+    findOne(query) {
+      mongoose.sanitizeFilter(query);
+      TraderSession.find(query).cast(TraderSession);
+      return { lean: async () => ({ ...session }) };
+    },
+    async findOneAndUpdate(query, update) {
+      mongoose.sanitizeFilter(query);
+      TraderSession.find(query).cast(TraderSession);
+      session = { ...session, ...(update.$set || {}) };
+      return { ...session };
+    },
+    async updateOne() {
+      return { modifiedCount: 1 };
+    },
+  };
+
+  const accountRow = {
+    _id: accountId,
+    tenantId,
+    accountCode: 'ACGTEST',
+    accountType: 'CHALLENGE',
+    ownerExternalRef: 'user-1',
+    currency: 'USD',
+    leverage: 100,
+    status: 'ACTIVE',
+    tradingEnabled: true,
+    federationEnabled: true,
+    state: { initialBalance: '10000', balance: '10000', equity: '10000' },
+    riskPolicy: {},
+    metadata: new Map([['fundedAccountId', 'ACG-TEST']]),
+  };
+  const accountModel = {
+    find(query) {
+      castWithSanitize(TradingAccount, query);
+      return {
+        select() {
+          return { lean: async () => [{ ...accountRow }] };
+        },
+      };
+    },
+  };
+
+  try {
+    const service = new AuthService({
+      sessionModel,
+      accountModel,
+      now: () => new Date(now),
+      accessTokenTtlSeconds: 900,
+      refreshSessionTtlSeconds: 2592000,
+      idleTimeoutSeconds: 86400,
+    });
+
+    const refreshed = await service.refreshSession({ legacyAccessToken: legacyAccess });
+    assert.match(refreshed.accessToken, /^acg_ts_/);
+    assert.deepEqual(refreshed.session.accountIds, [String(accountId)]);
+
+    const principal = await service.authenticateSessionToken(refreshed.accessToken);
+    assert.deepEqual(principal.accountIds, [String(accountId)]);
+
+    const granted = await service.listGrantedAccounts(principal);
+    assert.equal(granted.accounts.length, 1);
+    assert.equal(granted.accounts[0].id, String(accountId));
+  } finally {
+    mongoose.set('sanitizeFilter', previous);
+  }
 });

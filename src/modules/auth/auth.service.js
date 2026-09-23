@@ -170,9 +170,9 @@ class AuthService {
     const accounts = await Promise.all(ids.map(id => this.accountModel.findOne({
       _id: id,
       tenantId: String(tenantId),
-      ownerExternalRef: { $in: owners },
-      status: { $in: FEDERATED_ACCOUNT_STATUSES },
-      federationEnabled: { $ne: false },
+      ownerExternalRef: mongoose.trusted({ $in: owners }),
+      status: mongoose.trusted({ $in: FEDERATED_ACCOUNT_STATUSES }),
+      federationEnabled: mongoose.trusted({ $ne: false }),
     }).select('_id status tradingEnabled federationEnabled').lean()));
     if (accounts.some(account => !account)) {
       throw new AppError('One or more accounts are not owned by this tenant user', { statusCode: 403, code: 'ACCOUNT_GRANT_FORBIDDEN' });
@@ -360,7 +360,7 @@ class AuthService {
         tokenHash: legacyTokenHash,
         revokedAt: null,
         $or: [
-          { refreshTokenHash: { $exists: false } },
+          { refreshTokenHash: mongoose.trusted({ $exists: false }) },
           { refreshTokenHash: null },
         ],
       }).lean();
@@ -375,7 +375,7 @@ class AuthService {
           tokenHash: legacyTokenHash,
           revokedAt: null,
           $or: [
-            { refreshTokenHash: { $exists: false } },
+            { refreshTokenHash: mongoose.trusted({ $exists: false }) },
             { refreshTokenHash: null },
           ],
         },
@@ -405,7 +405,7 @@ class AuthService {
     if (!ids.length) return { accounts: [], selectedAccountId: null };
 
     const rows = await this.accountModel.find({
-      _id: { $in: ids },
+      _id: mongoose.trusted({ $in: ids }),
       tenantId: String(principal.tenantId),
     }).select('accountCode accountType currency leverage status tradingEnabled state riskPolicy riskDayKey metadata').lean();
 
@@ -487,14 +487,14 @@ class AuthService {
 
     const ownerRefs = uniqueIds([session?.ownerExternalRef, ...(session?.ownerExternalRefs || [])]);
     const accessClauses = [];
-    if (seedIds.length) accessClauses.push({ _id: { $in: seedIds } });
-    if (ownerRefs.length) accessClauses.push({ ownerExternalRef: { $in: ownerRefs } });
+    if (seedIds.length) accessClauses.push({ _id: mongoose.trusted({ $in: seedIds }) });
+    if (ownerRefs.length) accessClauses.push({ ownerExternalRef: mongoose.trusted({ $in: ownerRefs }) });
     if (!accessClauses.length) return { accountIds: [], selectedAccountId: null };
 
     const rows = await this.accountModel.find({
       tenantId: String(session.tenantId),
-      status: { $in: FEDERATED_ACCOUNT_STATUSES },
-      federationEnabled: { $ne: false },
+      status: mongoose.trusted({ $in: FEDERATED_ACCOUNT_STATUSES }),
+      federationEnabled: mongoose.trusted({ $ne: false }),
       $or: accessClauses,
     }).select('_id').lean();
 
