@@ -7,6 +7,7 @@ const { AppError } = require('../../shared/errors/app-error');
 const { requireTraderSession, requireAccountGrant } = require('../auth/auth.middleware');
 const { Order } = require('./order.model');
 const { Position } = require('./position.model');
+const { TradingAccount } = require('../accounts/trading-account.model');
 const {
   marketExecutionTimingMiddleware,
   setExecutionContext,
@@ -57,6 +58,7 @@ function createTradingRouter(runtime, authService) {
   router.post('/orders/market', async (req, res) => {
     const command = parse(openSchema, req.body);
     requireAccountGrant(req.traderPrincipal, command.accountId);
+    await assertCustomerTradingWritable(command.accountId);
     setExecutionContext(req.executionTiming, {
       accountId: command.accountId,
       symbol: command.symbol,
@@ -69,11 +71,11 @@ function createTradingRouter(runtime, authService) {
     });
     res.status(result.idempotentReplay ? 200 : 201).json(result);
   });
-  router.post('/orders/pending', async (req, res) => { const command = parse(pendingSchema, req.body); requireAccountGrant(req.traderPrincipal, command.accountId); const result = await runtime.pendingOrderService.placePendingOrder(command); res.status(result.idempotentReplay ? 200 : 201).json(result); });
-  router.patch('/orders/:orderId', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(amendPendingSchema, req.body); const accountId = await orderAccountId(orderId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); res.json(await runtime.pendingOrderAmendService.amend({ ...command, orderId })); });
-  router.post('/orders/:orderId/cancel', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(cancelPendingSchema, req.body); const accountId = await orderAccountId(orderId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); const result = await runtime.pendingOrderService.cancelPendingOrder({ ...command, orderId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
-  router.post('/accounts/:accountId/positions/close-all', async (req, res) => { const accountId = parseObjectId(req.params.accountId); const command = parse(closeAllSchema, req.body); assertResourceAccount(accountId, command.accountId, 'ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); const result = await runtime.tradingCommandService.closeAllPositions(command); res.status(result.complete ? 200 : 207).json(result); });
-  router.post('/positions/:positionId/reverse', async (req, res) => { const positionId = parseObjectId(req.params.positionId); const command = parse(reverseSchema, req.body); const accountId = await positionAccountId(positionId); assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); const result = await runtime.tradingCommandService.reversePosition({ ...command, positionId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.post('/orders/pending', async (req, res) => { const command = parse(pendingSchema, req.body); requireAccountGrant(req.traderPrincipal, command.accountId); await assertCustomerTradingWritable(command.accountId); const result = await runtime.pendingOrderService.placePendingOrder(command); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.patch('/orders/:orderId', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(amendPendingSchema, req.body); const accountId = await orderAccountId(orderId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); res.json(await runtime.pendingOrderAmendService.amend({ ...command, orderId })); });
+  router.post('/orders/:orderId/cancel', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(cancelPendingSchema, req.body); const accountId = await orderAccountId(orderId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); const result = await runtime.pendingOrderService.cancelPendingOrder({ ...command, orderId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.post('/accounts/:accountId/positions/close-all', async (req, res) => { const accountId = parseObjectId(req.params.accountId); const command = parse(closeAllSchema, req.body); assertResourceAccount(accountId, command.accountId, 'ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); const result = await runtime.tradingCommandService.closeAllPositions(command); res.status(result.complete ? 200 : 207).json(result); });
+  router.post('/positions/:positionId/reverse', async (req, res) => { const positionId = parseObjectId(req.params.positionId); const command = parse(reverseSchema, req.body); const accountId = await positionAccountId(positionId); assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); const result = await runtime.tradingCommandService.reversePosition({ ...command, positionId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
 
   router.patch('/positions/:positionId/protection', positionCommand(positionProtectionCommand(runtime, 'updateProtection'), protectionSchema));
   router.post('/positions/:positionId/break-even', positionCommand(positionProtectionCommand(runtime, 'moveStopToBreakEven'), breakEvenSchema));
@@ -92,6 +94,7 @@ function createTradingRouter(runtime, authService) {
       const accountId = await timeAsync(req.executionTiming, 'resource_auth_read', () => positionAccountId(positionId));
       assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH');
       requireAccountGrant(req.traderPrincipal, accountId);
+      await assertCustomerTradingWritable(accountId);
       setExecutionContext(req.executionTiming, {
         accountId,
         positionId,
@@ -115,6 +118,17 @@ function createTradingRouter(runtime, authService) {
 function positionProtectionCommand(runtime, method) { return command => runtime.positionProtectionService[method](command); }
 async function orderAccountId(orderId) { const order = await Order.findById(orderId).select('accountId').lean(); if (!order) throw new AppError('Order was not found', { statusCode: 404, code: 'ORDER_NOT_FOUND' }); return String(order.accountId); }
 async function positionAccountId(positionId) { const position = await Position.findById(positionId).select('accountId').lean(); if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' }); return String(position.accountId); }
+async function assertCustomerTradingWritable(accountId) {
+  const account = await TradingAccount.findById(accountId).select('status tradingEnabled').lean();
+  if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+  if (String(account.status || '').toUpperCase() !== 'ACTIVE' || account.tradingEnabled !== true) {
+    throw new AppError('This trading account is read-only', {
+      statusCode: 409,
+      code: 'ACCOUNT_READ_ONLY',
+      details: { status: account.status || null, tradingEnabled: account.tradingEnabled === true },
+    });
+  }
+}
 function assertResourceAccount(actual, requested, code) { if (String(actual) !== String(requested)) throw new AppError('Resource does not belong to this trading account', { statusCode: 403, code }); }
 function requireEnabled(runtime) { return (_req, _res, next) => runtime.enabled ? next() : next(new AppError('Trading API is disabled', { statusCode: 503, code: 'TRADING_API_DISABLED' })); }
 function parseObjectId(value) { const result = objectId.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
