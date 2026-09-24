@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const mongoose = require('mongoose');
 const { z } = require('zod');
 const { requireServicePrincipal } = require('../auth/auth.middleware');
 const { AppError } = require('../../shared/errors/app-error');
@@ -50,12 +51,12 @@ function createOperationsRouter(runtime, authService) {
     if (query.symbol) filter.symbol = String(query.symbol).toUpperCase();
     if (query.side) filter.side = query.side;
     if (query.type) filter.type = String(query.type).toUpperCase();
-    if (query.cursor) filter._id = require('mongoose').trusted({ $lt: query.cursor });
+    if (query.cursor) filter._id = mongoose.trusted({ $lt: query.cursor });
     if (query.from || query.to) {
       const range = {};
       if (query.from) range.$gte = new Date(query.from);
       if (query.to) range.$lte = new Date(query.to);
-      filter.executedAt = require('mongoose').trusted(range);
+      filter.executedAt = mongoose.trusted(range);
     }
 
     const docs = await Deal.find(filter).sort({ _id: -1 }).limit(query.limit + 1).lean();
@@ -63,7 +64,7 @@ function createOperationsRouter(runtime, authService) {
     const slice = hasMore ? docs.slice(0, query.limit) : docs;
     const accountIds = [...new Set(slice.map(item => String(item.accountId)))];
     const accounts = accountIds.length
-      ? await TradingAccount.find({ tenantId: req.servicePrincipal.tenantId, _id: { $in: accountIds } })
+      ? await TradingAccount.find({ tenantId: req.servicePrincipal.tenantId, _id: mongoose.trusted({ $in: accountIds }) })
         .select('_id accountCode externalRef ownerExternalRef accountType status')
         .lean()
       : [];
