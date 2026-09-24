@@ -155,7 +155,7 @@ class PlatformEventRelay {
     }, session);
   }
 
-  async enqueueControl({ account, sourceEvent, session = null } = {}) {
+  async enqueueControl({ account, sourceEvent, session = null, evidence = null } = {}) {
     if (!this.enabled || !account) return null;
     const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
     if (!fundedAccountId) return null;
@@ -167,13 +167,31 @@ class PlatformEventRelay {
       tradingEnabled: Boolean(account.tradingEnabled),
       reason: metadataValue(account.metadata, 'lastControlReason'),
       breachedAt: account.breachedAt ? new Date(account.breachedAt).toISOString() : null,
-      balance: decimal(account?.state?.balance),
-      equity: decimal(account?.state?.equity),
-      floatingProfit: decimal(account?.state?.floatingPnl),
-      margin: decimal(account?.state?.usedMargin),
-      marginFree: decimal(account?.state?.freeMargin),
-      dailyStartEquity: decimal(account?.state?.dailyStartEquity),
-      riskDayKey: account?.riskDayKey || null,
+      balance: decimal(evidence?.balance ?? account?.state?.balance),
+      equity: decimal(evidence?.equity ?? account?.state?.equity),
+      floatingProfit: decimal(evidence?.floatingPnl ?? account?.state?.floatingPnl),
+      margin: decimal(evidence?.usedMargin ?? account?.state?.usedMargin),
+      marginFree: decimal(evidence?.freeMargin ?? account?.state?.freeMargin),
+      dailyStartEquity: decimal(evidence?.dailyStartEquity ?? account?.state?.dailyStartEquity),
+      riskDayKey: evidence?.riskDayKey || account?.riskDayKey || null,
+      breachEvidence: evidence ? {
+        reason: evidence.reason || null,
+        rule: evidence.rule || null,
+        balance: decimal(evidence.balance),
+        equity: decimal(evidence.equity),
+        floatingPnl: decimal(evidence.floatingPnl),
+        usedMargin: decimal(evidence.usedMargin),
+        freeMargin: decimal(evidence.freeMargin),
+        dailyStartEquity: decimal(evidence.dailyStartEquity),
+        initialBalance: decimal(evidence.initialBalance),
+        limitAmount: decimal(evidence.limitAmount),
+        thresholdEquity: decimal(evidence.thresholdEquity),
+        actualLoss: decimal(evidence.actualLoss),
+        breachAmount: decimal(evidence.breachAmount),
+        riskDayKey: evidence.riskDayKey || null,
+        valuationSequence: numberOrNull(evidence.valuationSequence),
+        valuedAtMs: numberOrNull(evidence.valuedAtMs),
+      } : null,
       sourceEvent: sourceEvent || null,
     }, {
       phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
