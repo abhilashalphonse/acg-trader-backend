@@ -251,7 +251,7 @@ class AccountControlService {
     return { ...restricted, liquidation };
   }
 
-  async breach(accountId, { reason = 'RISK_BREACH', action = null } = {}) {
+  async breach(accountId, { reason = 'RISK_BREACH', action = null, evidence = null } = {}) {
     const account = await this.accountModel.findById(String(accountId));
     if (!account) throw accountNotFound();
     const breachAction = action || account.riskPolicy?.breachAction || 'LIQUIDATE_AND_LOCK';
@@ -266,6 +266,7 @@ class AccountControlService {
       breach: true,
       event: 'trading.account.breached',
       lifecycleType: 'BREACHED',
+      controlEvidence: evidence,
     });
     const liquidation = breachAction === 'LIQUIDATE_AND_LOCK' ? await this.#liquidate(accountId) : [];
     return { ...restricted, breachAction, liquidation };
@@ -337,7 +338,7 @@ class AccountControlService {
     });
   }
 
-  async #restrict(accountId, { status, reason, cancelPending, breach = false, federationEnabled = null, event, lifecycleType }) {
+  async #restrict(accountId, { status, reason, cancelPending, breach = false, federationEnabled = null, event, lifecycleType, controlEvidence = null }) {
     return this.commandQueue.run(String(accountId), async () => {
       const result = await this.runTransaction(async session => {
         const account = await this.accountModel.findById(String(accountId)).session(session);
@@ -376,7 +377,7 @@ class AccountControlService {
             tradingEnabledAfter: false,
             reason,
           }, session);
-          await this.platformEventRelay?.enqueueControl({ account, sourceEvent: event, session });
+          await this.platformEventRelay?.enqueueControl({ account, sourceEvent: event, session, evidence: controlEvidence });
         }
 
         return { account, changed: !alreadyApplied, cancelledPending };
