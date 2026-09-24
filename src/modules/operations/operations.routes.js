@@ -4,6 +4,9 @@ const express = require('express');
 const { z } = require('zod');
 const { requireServicePrincipal } = require('../auth/auth.middleware');
 const { AppError } = require('../../shared/errors/app-error');
+const { Deal } = require('../trading/deal.model');
+const { TradingAccount } = require('../accounts/trading-account.model');
+const { serializeDeal } = require('../trading/trading.serializer');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const reconcileSchema = z.object({
@@ -11,6 +14,16 @@ const reconcileSchema = z.object({
 }).strict();
 const listSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+}).strict();
+const tradeListSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional().default(100),
+  cursor: objectId.optional(),
+  accountId: objectId.optional(),
+  symbol: z.string().trim().min(1).max(32).optional(),
+  side: z.enum(['BUY', 'SELL']).optional(),
+  type: z.string().trim().min(1).max(32).optional(),
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
 function createOperationsRouter(runtime, authService) {
@@ -28,6 +41,56 @@ function createOperationsRouter(runtime, authService) {
 
   router.get('/recovery', (_req, res) => {
     res.json({ recovery: runtime.reconciliationService.health().recovery });
+  });
+
+  router.get('/trades', async (req, res) => {
+    const query = parse(tradeListSchema, req.query || {});
+    const filter = { tenantId: req.servicePrincipal.tenantId };
+    if (query.accountId) filter.accountId = query.accountId;
+    if (query.symbol) filter.symbol = String(query.symbol).toUpperCase();
+    if (query.side) filter.side = query.side;
+    if (query.type) filter.type = String(query.type).toUpperCase();
+    if (query.cursor) filter._id = require('mongoose').trusted({ $lt: query.cursor });
+    if (query.from || query.to) {
+      const range = {};
+      if (query.from) range.$gte = new Date(query.from);
+      if (query.to) range.$lte = new Date(query.to);
+      filter.executedAt = require('mongoose').trusted(range);
+    }
+
+    const docs = await Deal.find(filter).sort({ _id: -1 }).limit(query.limit + 1).lean();
+    const hasMore = docs.length > query.limit;
+    const slice = hasMore ? docs.slice(0, query.limit) : docs;
+    const accountIds = [...new Set(slice.map(item => String(item.accountId)))];
+    const accounts = accountIds.length
+      ? await TradingAccount.find({ tenantId: req.servicePrincipal.tenantId, _id: { $in: accountIds } })
+        .select('_id accountCode externalRef ownerExternalRef accountType status')
+        .lean()
+      : [];
+    const accountMap = new Map(accounts.map(item => [String(item._id), item]));
+
+    res.json({
+      items: slice.map(item => {
+        const deal = serializeDeal(item);
+        const account = accountMap.get(String(item.accountId));
+        return {
+          ...deal,
+          account: account ? {
+            id: String(account._id),
+            accountCode: account.accountCode,
+            externalRef: account.externalRef,
+            ownerExternalRef: account.ownerExternalRef,
+            accountType: account.accountType,
+            status: account.status,
+          } : null,
+        };
+      }),
+      page: {
+        limit: query.limit,
+        hasMore,
+        nextCursor: hasMore && slice.length ? String(slice[slice.length - 1]._id) : null,
+      },
+    });
   });
 
   router.post('/reconcile', async (req, res) => {
