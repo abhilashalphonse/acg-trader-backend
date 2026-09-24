@@ -111,6 +111,25 @@ test('account control facts are inserted transactionally', async () => {
       metadata: { fundedAccountId: 'FUNDED-1' },
     },
     sourceEvent: 'trading.account.breached',
+    evidence: {
+      reason: 'DAILY_LOSS_LIMIT_REACHED',
+      rule: 'DAILY_DRAWDOWN',
+      triggeredRules: ['DAILY_DRAWDOWN'],
+      balance: '51231.26',
+      equity: '49298',
+      floatingPnl: '-1933.26',
+      usedMargin: '1250',
+      freeMargin: '48048',
+      dailyStartEquity: '50798.12',
+      initialBalance: '50000',
+      limitAmount: '1500',
+      thresholdEquity: '49298.12',
+      actualLoss: '1500.12',
+      breachAmount: '0.12',
+      riskDayKey: '2026-09-23',
+      valuationSequence: 88,
+      valuedAtMs: Date.parse('2026-09-23T08:04:59.123Z'),
+    },
     session,
   });
 
@@ -122,6 +141,10 @@ test('account control facts are inserted transactionally', async () => {
   assert.equal(calls[0].documents[0].payload.equity, '94000');
   assert.equal(calls[0].documents[0].payload.dailyStartEquity, '99000');
   assert.equal(calls[0].documents[0].payload.riskDayKey, '2026-09-23');
+  assert.deepEqual(calls[0].documents[0].payload.breachEvidence.triggeredRules, ['DAILY_DRAWDOWN']);
+  assert.equal(calls[0].documents[0].payload.breachEvidence.equity, '49298');
+  assert.equal(calls[0].documents[0].payload.breachEvidence.thresholdEquity, '49298.12');
+  assert.equal(calls[0].documents[0].payload.breachEvidence.breachAmount, '0.12');
 });
 
 
