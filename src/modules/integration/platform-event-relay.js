@@ -177,6 +177,7 @@ class PlatformEventRelay {
       breachEvidence: evidence ? {
         reason: evidence.reason || null,
         rule: evidence.rule || null,
+        triggeredRules: Array.isArray(evidence.triggeredRules) ? evidence.triggeredRules.map(String) : [],
         balance: decimal(evidence.balance),
         equity: decimal(evidence.equity),
         floatingPnl: decimal(evidence.floatingPnl),
