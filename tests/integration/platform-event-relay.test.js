@@ -137,9 +137,9 @@ test('account control facts are inserted transactionally', async () => {
   assert.equal(calls[0].options.session, session);
   assert.equal(calls[0].documents[0].eventType, 'ACCOUNT_CONTROLLED');
   assert.equal(calls[0].documents[0].payload.status, 'BREACHED');
-  assert.equal(calls[0].documents[0].payload.balance, '95000');
-  assert.equal(calls[0].documents[0].payload.equity, '94000');
-  assert.equal(calls[0].documents[0].payload.dailyStartEquity, '99000');
+  assert.equal(calls[0].documents[0].payload.balance, '51231.26');
+  assert.equal(calls[0].documents[0].payload.equity, '49298');
+  assert.equal(calls[0].documents[0].payload.dailyStartEquity, '50798.12');
   assert.equal(calls[0].documents[0].payload.riskDayKey, '2026-09-23');
   assert.deepEqual(calls[0].documents[0].payload.breachEvidence.triggeredRules, ['DAILY_DRAWDOWN']);
   assert.equal(calls[0].documents[0].payload.breachEvidence.equity, '49298');
