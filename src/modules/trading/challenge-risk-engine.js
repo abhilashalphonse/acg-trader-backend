@@ -85,17 +85,18 @@ class ChallengeRiskEngine {
     const dailyLimit = normalizeDecimal(account.dailyLossLimit);
     const maxLimit = normalizeDecimal(account.maxLossLimit);
 
-    let reason = null;
-    if (compareDecimal(maxLimit, '0') > 0 && compareDecimal(equity, subtractDecimal(initial, maxLimit)) <= 0) {
-      reason = 'MAX_LOSS_LIMIT_REACHED';
-    } else if (compareDecimal(dailyLimit, '0') > 0 && compareDecimal(equity, subtractDecimal(dailyStart, dailyLimit)) <= 0) {
-      reason = 'DAILY_LOSS_LIMIT_REACHED';
-    }
+    const maxBreached = compareDecimal(maxLimit, '0') > 0
+      && compareDecimal(equity, subtractDecimal(initial, maxLimit)) <= 0;
+    const dailyBreached = compareDecimal(dailyLimit, '0') > 0
+      && compareDecimal(equity, subtractDecimal(dailyStart, dailyLimit)) <= 0;
 
-    if (!reason) return;
+    if (!maxBreached && !dailyBreached) return;
 
+    const reason = maxBreached ? 'MAX_LOSS_LIMIT_REACHED' : 'DAILY_LOSS_LIMIT_REACHED';
     const breachEvidence = buildBreachEvidence({
       reason,
+      maxBreached,
+      dailyBreached,
       valuation,
       account,
       equity,
@@ -143,10 +144,13 @@ function normalizeAccount(account) {
   };
 }
 
-function buildBreachEvidence({ reason, valuation, account, equity, dailyStart, initial, dailyLimit, maxLimit }) {
+function buildBreachEvidence({ reason, maxBreached, dailyBreached, valuation, account, equity, dailyStart, initial, dailyLimit, maxLimit }) {
   const maxBreach = reason === 'MAX_LOSS_LIMIT_REACHED';
   const reference = maxBreach ? initial : dailyStart;
   const limit = maxBreach ? maxLimit : dailyLimit;
+  const triggeredRules = [];
+  if (dailyBreached) triggeredRules.push('DAILY_DRAWDOWN');
+  if (maxBreached) triggeredRules.push('MAX_DRAWDOWN');
   const threshold = subtractDecimal(reference, limit);
   const rawLoss = subtractDecimal(reference, equity);
   const actualLoss = compareDecimal(rawLoss, '0') > 0 ? rawLoss : '0';
@@ -156,6 +160,7 @@ function buildBreachEvidence({ reason, valuation, account, equity, dailyStart, i
   return Object.freeze({
     reason,
     rule: maxBreach ? 'MAX_DRAWDOWN' : 'DAILY_DRAWDOWN',
+    triggeredRules,
     balance: value(valuation?.balance, account?.balance ?? '0'),
     equity,
     floatingPnl: value(valuation?.floatingPnl, '0'),
