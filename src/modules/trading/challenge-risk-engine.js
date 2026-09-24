@@ -94,12 +94,23 @@ class ChallengeRiskEngine {
 
     if (!reason) return;
 
+    const breachEvidence = buildBreachEvidence({
+      reason,
+      valuation,
+      account,
+      equity,
+      dailyStart,
+      initial,
+      dailyLimit,
+      maxLimit,
+    });
+
     // Prevent repeated breach calls while the durable lifecycle transaction is
     // running; the subsequent control event will refresh this cache as well.
     account.status = 'BREACHED';
     account.tradingEnabled = false;
     try {
-      await this.accountControlService.breach(accountId, { reason });
+      await this.accountControlService.breach(accountId, { reason, evidence: breachEvidence });
     } catch (error) {
       // Allow a later valuation to retry if the durable breach transaction
       // itself failed.
@@ -130,6 +141,36 @@ function normalizeAccount(account) {
     dailyLossLimit: value(policy.dailyLoss?.limit, '0'),
     maxLossLimit: value(policy.maxLoss?.limit, '0'),
   };
+}
+
+function buildBreachEvidence({ reason, valuation, account, equity, dailyStart, initial, dailyLimit, maxLimit }) {
+  const maxBreach = reason === 'MAX_LOSS_LIMIT_REACHED';
+  const reference = maxBreach ? initial : dailyStart;
+  const limit = maxBreach ? maxLimit : dailyLimit;
+  const threshold = subtractDecimal(reference, limit);
+  const rawLoss = subtractDecimal(reference, equity);
+  const actualLoss = compareDecimal(rawLoss, '0') > 0 ? rawLoss : '0';
+  const rawBreachAmount = subtractDecimal(actualLoss, limit);
+  const breachAmount = compareDecimal(rawBreachAmount, '0') > 0 ? rawBreachAmount : '0';
+
+  return Object.freeze({
+    reason,
+    rule: maxBreach ? 'MAX_DRAWDOWN' : 'DAILY_DRAWDOWN',
+    balance: value(valuation?.balance, account?.balance ?? '0'),
+    equity,
+    floatingPnl: value(valuation?.floatingPnl, '0'),
+    usedMargin: value(valuation?.usedMargin, '0'),
+    freeMargin: value(valuation?.freeMargin, '0'),
+    dailyStartEquity: dailyStart,
+    initialBalance: initial,
+    limitAmount: limit,
+    thresholdEquity: threshold,
+    actualLoss,
+    breachAmount,
+    riskDayKey: account?.riskDayKey || null,
+    valuationSequence: Number.isFinite(Number(valuation?.sequence)) ? Number(valuation.sequence) : null,
+    valuedAtMs: Number.isFinite(Number(valuation?.valuedAtMs)) ? Number(valuation.valuedAtMs) : Date.now(),
+  });
 }
 
 function value(input, fallback) {
