@@ -21,6 +21,7 @@ const breachSchema = z.object({ reason: z.string().trim().min(1).max(256).option
 const closeSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), liquidate: z.boolean().optional() }).strict();
 const flattenSchema = z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict();
 const lifecycleQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(500).optional().default(100) }).strict();
+const observabilityQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(200).optional().default(100) }).strict();
 const challengeSyncSchema = z.object({
   riskPolicy: riskPolicyPatch,
   dailyStartEquity: decimalInput.optional(),
@@ -43,6 +44,47 @@ function createAccountControlRouter(runtime, authService) {
     const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); const { limit } = parse(lifecycleQuerySchema, req.query || {});
     const events = await runtime.accountControlService.lifecycleModel.find({ tenantId: req.servicePrincipal.tenantId, accountId }).sort({ createdAt: -1, _id: -1 }).limit(limit).lean();
     res.json({ events: events.map(event => ({ id: String(event._id), eventId: event.eventId, type: event.type, fromStatus: event.fromStatus, toStatus: event.toStatus, tradingEnabledBefore: event.tradingEnabledBefore, tradingEnabledAfter: event.tradingEnabledAfter, reason: event.reason, actorType: event.actorType, actorRef: event.actorRef || null, metadata: event.metadata instanceof Map ? Object.fromEntries(event.metadata) : (event.metadata || {}), createdAt: event.createdAt ? new Date(event.createdAt).toISOString() : null })) });
+  });
+
+  router.get('/:accountId/admin-observability', async (req, res) => {
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    const { limit } = parse(observabilityQuerySchema, req.query || {});
+
+    const [account, openPositions, closedPositions, deals, orders, lifecycle] = await Promise.all([
+      runtime.accountControlService.getById(accountId),
+      runtime.tradingHistoryService.positions(accountId, { limit, status: 'OPEN' }),
+      runtime.tradingHistoryService.positions(accountId, { limit, status: 'CLOSED' }),
+      runtime.tradingHistoryService.deals(accountId, { limit }),
+      runtime.tradingHistoryService.orders(accountId, { limit }),
+      runtime.accountControlService.lifecycleModel
+        .find({ tenantId: req.servicePrincipal.tenantId, accountId })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(limit)
+        .lean(),
+    ]);
+
+    res.json({
+      account,
+      openPositions,
+      closedPositions,
+      deals,
+      orders,
+      lifecycle: lifecycle.map(event => ({
+        id: String(event._id),
+        eventId: event.eventId,
+        type: event.type,
+        fromStatus: event.fromStatus,
+        toStatus: event.toStatus,
+        tradingEnabledBefore: event.tradingEnabledBefore,
+        tradingEnabledAfter: event.tradingEnabledAfter,
+        reason: event.reason,
+        actorType: event.actorType,
+        actorRef: event.actorRef || null,
+        metadata: event.metadata instanceof Map ? Object.fromEntries(event.metadata) : (event.metadata || {}),
+        createdAt: event.createdAt ? new Date(event.createdAt).toISOString() : null,
+      })),
+    });
   });
 
   router.patch('/:accountId/challenge', async (req, res) => {
@@ -89,4 +131,4 @@ function parseId(value) { const result = objectId.safeParse(value); if (!result.
 function parse(schema, value) { const result = schema.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
 function validationError(error) { return new AppError('Invalid account control command', { statusCode: 400, code: 'INVALID_ACCOUNT_CONTROL_COMMAND', details: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) }); }
 
-module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema, flattenSchema, lifecycleQuerySchema, challengeSyncSchema };
+module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema, flattenSchema, lifecycleQuerySchema, observabilityQuerySchema, challengeSyncSchema };
