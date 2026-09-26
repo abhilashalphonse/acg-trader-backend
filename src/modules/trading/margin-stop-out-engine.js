@@ -179,7 +179,7 @@ class MarginStopOutEngine {
 
         account.marginStopOutState = 'ACTIVE';
         account.marginStopOutEpisodeId = jobId;
-        account.marginStopOutStartedAt = account.marginStopOutStartedAt || now;
+        account.marginStopOutStartedAt = now;
         account.marginStopOutRecoveredAt = null;
 
         await job.save({ session });
