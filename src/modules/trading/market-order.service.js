@@ -23,6 +23,7 @@ const { Deal } = require('./deal.model');
 const { Position } = require('./position.model');
 const { AccountLedger } = require('./account-ledger.model');
 const { AccountCommandQueue } = require('./account-command-queue');
+const { bumpFinancialRevision } = require('./account-revision');
 const { IdempotencyService } = require('./idempotency.service');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('./execution-planner');
 const {
@@ -558,6 +559,7 @@ function applyOpenAccountMutation(account, plan) {
   account.state.equity = equity;
   account.state.usedMargin = usedMargin;
   account.state.freeMargin = subtractDecimal(equity, usedMargin);
+  bumpFinancialRevision(account);
 }
 
 function applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel, now, valuationComplete = true, closeReason = 'MANUAL' }) {
@@ -624,6 +626,7 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
     position.closedAt = now;
     position.closeReason = closeReason;
   }
+  bumpFinancialRevision(account);
   return ledgers;
 }
 
