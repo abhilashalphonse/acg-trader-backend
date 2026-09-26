@@ -551,6 +551,7 @@ class MarketOrderService {
 }
 
 function applyOpenAccountMutation(account, plan) {
+  account.financialRevision = Number(account.financialRevision || 0) + 1;
   const balance = subtractDecimal(account.state.balance, plan.commission);
   const equity = subtractDecimal(account.state.equity, plan.commission);
   const usedMargin = addDecimal(account.state.usedMargin, plan.requiredMargin);
@@ -561,6 +562,7 @@ function applyOpenAccountMutation(account, plan) {
 }
 
 function applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel, now, valuationComplete = true, closeReason = 'MANUAL' }) {
+  account.financialRevision = Number(account.financialRevision || 0) + 1;
   const ledgers = [];
   let runningBalance = normalizeDecimal(account.state.balance);
 
