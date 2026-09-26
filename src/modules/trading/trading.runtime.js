@@ -23,6 +23,7 @@ const { TrailingStopService } = require('./trailing-stop.service');
 const { TrailingStopEngine } = require('./trailing-stop-engine');
 const { RiskDayEngine } = require('./risk-day-engine');
 const { ChallengeRiskEngine } = require('./challenge-risk-engine');
+const { RiskStreamService } = require('./risk-stream.service');
 
 function createTradingRuntime({ marketRuntime }) {
   const eventBus = marketRuntime.eventBus;
@@ -58,8 +59,9 @@ function createTradingRuntime({ marketRuntime }) {
   const positionProtectionService = new PositionProtectionService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
   const trailingStopService = new TrailingStopService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
   const trailingStopEngine = new TrailingStopEngine({ eventBus, trailingStopService, logger });
-  const riskDayEngine = new RiskDayEngine({ eventBus, commandQueue, logger });
-  const challengeRiskEngine = new ChallengeRiskEngine({ eventBus, accountControlService, logger });
+  const riskStreamService = new RiskStreamService();
+  const riskDayEngine = new RiskDayEngine({ eventBus, commandQueue, logger, externalOrdering: true });
+  const challengeRiskEngine = new ChallengeRiskEngine({ eventBus, accountControlService, riskStreamService, logger });
   const reconciliationService = new ReconciliationService({ commandQueue, valuationEngine, pendingOrderEngine, protectionTriggerEngine, trailingStopEngine, logger });
   let started = false;
 
@@ -68,7 +70,7 @@ function createTradingRuntime({ marketRuntime }) {
     try {
       await valuationEngine.start();
       riskDayEngine.start();
-      challengeRiskEngine.start();
+      await challengeRiskEngine.start();
       await platformEventRelay.start();
       await protectionTriggerEngine.start();
       await pendingOrderEngine.start();
@@ -203,6 +205,7 @@ function createTradingRuntime({ marketRuntime }) {
     trailingStopEngine,
     riskDayEngine,
     challengeRiskEngine,
+    riskStreamService,
     reconciliationService,
     commandQueue,
     start,
