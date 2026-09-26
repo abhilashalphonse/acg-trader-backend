@@ -26,6 +26,7 @@ const { ChallengeRiskEngine } = require('./challenge-risk-engine');
 const { RiskStreamService } = require('./risk-stream.service');
 const { PostFillRiskService } = require('./post-fill-risk.service');
 const { BreachCleanupEngine } = require('./breach-cleanup-engine');
+const { MarginStopOutEngine } = require('./margin-stop-out-engine');
 
 function createTradingRuntime({ marketRuntime }) {
   const eventBus = marketRuntime.eventBus;
@@ -54,6 +55,15 @@ function createTradingRuntime({ marketRuntime }) {
   const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
   const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger });
   const breachCleanupEngine = new BreachCleanupEngine({ accountControlService, logger });
+  const marginStopOutEngine = new MarginStopOutEngine({
+    eventBus,
+    valuationEngine,
+    quoteStore: marketRuntime.quoteStore,
+    currencyConverter: currencyConversionEngine,
+    marketOrderService,
+    accountControlService,
+    logger,
+  });
   const accountLedgerService = new AccountLedgerService({ eventBus, commandQueue, logger });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus, marketOrderService, logger });
   const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, logger });
@@ -77,6 +87,7 @@ function createTradingRuntime({ marketRuntime }) {
       await challengeRiskEngine.start();
       await platformEventRelay.start();
       await breachCleanupEngine.start();
+      await marginStopOutEngine.start();
       await protectionTriggerEngine.start();
       await pendingOrderEngine.start();
       await trailingStopEngine.start();
@@ -89,6 +100,7 @@ function createTradingRuntime({ marketRuntime }) {
       await trailingStopEngine.stop().catch(() => undefined);
       await pendingOrderEngine.stop().catch(() => undefined);
       await protectionTriggerEngine.stop().catch(() => undefined);
+      await marginStopOutEngine.stop().catch(() => undefined);
       await breachCleanupEngine.stop().catch(() => undefined);
       await challengeRiskEngine.stop().catch(() => undefined);
       await riskDayEngine.stop().catch(() => undefined);
@@ -107,6 +119,7 @@ function createTradingRuntime({ marketRuntime }) {
     await trailingStopEngine.stop();
     await pendingOrderEngine.stop();
     await protectionTriggerEngine.stop();
+    await marginStopOutEngine.stop();
     await breachCleanupEngine.stop();
     await challengeRiskEngine.stop();
     await riskDayEngine.stop();
@@ -133,6 +146,7 @@ function createTradingRuntime({ marketRuntime }) {
       riskDay: riskDayEngine.health(),
       riskEngine: challengeRiskEngine.health(),
       breachCleanup: breachCleanupEngine.health(),
+      marginStopOut: marginStopOutEngine.health(),
       platformEvents: platformEventRelay.health(),
       protection: protectionTriggerEngine.health(),
       pendingOrders: pendingOrderEngine.health(),
@@ -148,6 +162,8 @@ function createTradingRuntime({ marketRuntime }) {
         accountBreach: true,
         accountClose: true,
         accountLiquidation: true,
+        marginStopOut: true,
+        smartPartialStopOut: true,
         platformEventRelay: true,
         signedPlatformWebhooks: true,
         instrumentMaster: true,
@@ -201,6 +217,7 @@ function createTradingRuntime({ marketRuntime }) {
     accountControlService,
     postFillRiskService,
     breachCleanupEngine,
+    marginStopOutEngine,
     accountLedgerService,
     platformEventRelay,
     pendingOrderService,
