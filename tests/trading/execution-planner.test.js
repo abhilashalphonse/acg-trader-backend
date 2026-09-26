@@ -137,7 +137,7 @@ test('market execution enforces volume steps and free margin', () => {
           maxSingleOrderMarginPercentOfFree: '0',
           maxSymbolMarginPercentOfPermitted: '0',
         },
-        state: { ...account().state, freeMargin: '100' },
+        state: { ...account().state, usedMargin: '99900', freeMargin: '100' },
       }),
       instrument: instrument(),
       quote: quote(),
@@ -824,3 +824,95 @@ test('existing measured open risk includes projected stop-side commission', asyn
   assert.equal(exposure.unmeasuredRiskPositions, 0);
 });
 
+
+
+test('opening projection includes spread loss, commission and resulting authoritative margin state', () => {
+  const plan = planMarketOpen({
+    account: account({
+      state: {
+        ...account().state,
+        balance: '100000',
+        equity: '100000',
+        floatingPnl: '0',
+        usedMargin: '0',
+        freeMargin: '100000',
+      },
+    }),
+    instrument: instrument({ commissionPerLot: '3.5' }),
+    quote: quote({ bid: 1.1000, ask: 1.1002 }),
+    side: 'BUY',
+    volume: '1',
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.fillPrice, '1.1002');
+  assert.equal(plan.immediateOpeningPnl, '-20');
+  assert.equal(plan.commission, '3.5');
+  assert.equal(plan.requiredMargin, '1100.2');
+  assert.equal(plan.projectedAccountState.balance, '99996.5');
+  assert.equal(plan.projectedAccountState.floatingPnl, '-20');
+  assert.equal(plan.projectedAccountState.equity, '99976.5');
+  assert.equal(plan.projectedAccountState.usedMargin, '1100.2');
+  assert.equal(plan.projectedAccountState.freeMargin, '98876.3');
+});
+
+test('spread and commission can make an otherwise old-style affordable order financially unaffordable', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({
+        state: {
+          ...account().state,
+          balance: '1110',
+          equity: '1110',
+          floatingPnl: '0',
+          usedMargin: '0',
+          freeMargin: '1110',
+        },
+      }),
+      instrument: instrument({ commissionPerLot: '3.5' }),
+      quote: quote({ bid: 1.1000, ask: 1.1002 }),
+      side: 'BUY',
+      volume: '1',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'INSUFFICIENT_MARGIN'
+      && error.details.requiredMargin === '1100.2'
+      && error.details.commission === '3.5'
+      && error.details.immediateOpeningPnl === '-20'
+      && error.details.projectedFreeMargin === '-13.7',
+  );
+});
+
+test('immediate opening PnL uses the same account-currency conversion path as live valuation', () => {
+  const converter = {
+    convert(amount, from, to) {
+      assert.equal(from, 'USD');
+      assert.equal(to, 'EUR');
+      return String(Number(amount) * 0.8);
+    },
+  };
+
+  const plan = planMarketOpen({
+    account: account({
+      currency: 'EUR',
+      state: {
+        ...account().state,
+        balance: '100000',
+        equity: '100000',
+        floatingPnl: '0',
+        usedMargin: '0',
+        freeMargin: '100000',
+      },
+    }),
+    instrument: instrument({ marginCurrency: 'USD', quoteCurrency: 'USD' }),
+    quote: quote({ bid: 1.1000, ask: 1.1002 }),
+    side: 'BUY',
+    volume: '1',
+    currencyConverter: converter,
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.immediateOpeningPnl, '-16');
+  assert.equal(plan.requiredMargin, '880.16');
+  assert.equal(plan.projectedAccountState.floatingPnl, '-16');
+});
