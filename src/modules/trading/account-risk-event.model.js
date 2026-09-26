@@ -3,7 +3,7 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
-const RISK_EVENT_TYPES = Object.freeze(['VALUATION', 'RISK_DAY_ROLLOVER', 'POLICY_TRANSITION']);
+const RISK_EVENT_TYPES = Object.freeze(['VALUATION', 'RISK_DAY_ROLLOVER', 'POLICY_TRANSITION', 'EXECUTION_RESULT']);
 const RISK_EVENT_STATES = Object.freeze(['RECEIVED', 'EVALUATED', 'BREACHED', 'IGNORED']);
 
 const accountRiskEventSchema = new Schema({

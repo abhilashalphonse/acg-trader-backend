@@ -13,12 +13,12 @@ const { AccountLedger } = require('./account-ledger.model');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('./execution-planner');
-const { runMongoTransaction, applyOpenAccountMutation, applyCloseAccountAndPositionMutation, loadOpenExposure, hasExposureLimits } = require('./market-order.service');
+const { runMongoTransaction, applyOpenAccountMutation, applyCloseAccountAndPositionMutation, loadOpenExposure, hasExposureLimits, serializeOpenExecution } = require('./market-order.service');
 const { serializeOrder, serializeDeal, serializePosition, serializeAccount } = require('./trading.serializer');
 
 class AtomicReverseService {
-  constructor({ quoteStore, eventBus, valuationEngine, platformEventRelay = null, quoteRecovery = null, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, dealModel = Deal, positionModel = Position, ledgerModel = AccountLedger, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), runTransaction = runMongoTransaction }) {
-    Object.assign(this, { quoteStore, eventBus, valuationEngine, platformEventRelay, quoteRecovery, logger, accountModel, instrumentModel, orderModel, dealModel, positionModel, ledgerModel, commandQueue, idempotencyService, runTransaction });
+  constructor({ quoteStore, eventBus, valuationEngine, platformEventRelay = null, quoteRecovery = null, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, dealModel = Deal, positionModel = Position, ledgerModel = AccountLedger, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), postFillRiskService = null, runTransaction = runMongoTransaction }) {
+    Object.assign(this, { quoteStore, eventBus, valuationEngine, platformEventRelay, quoteRecovery, logger, accountModel, instrumentModel, orderModel, dealModel, positionModel, ledgerModel, commandQueue, idempotencyService, postFillRiskService, runTransaction });
   }
 
   async reversePosition(command) {
@@ -39,7 +39,7 @@ class AtomicReverseService {
         const transactionResult = await this.runTransaction(async session => {
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
-          const valuationProjection = this.valuationEngine ? this.valuationEngine.overlayAccountDocument(account, { requireLive: false }) : null;
+          const valuationProjection = this.valuationEngine ? this.valuationEngine.overlayAccountDocument(account, { requireLive: true }) : null;
           const position = await this.positionModel.findById(normalized.positionId).session(session);
           if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
           if (String(position.accountId) !== normalized.accountId) throw new AppError('Position does not belong to this trading account', { statusCode: 403, code: 'POSITION_ACCOUNT_MISMATCH' });
@@ -105,16 +105,20 @@ class AtomicReverseService {
     const position = new this.positionModel({ accountId: account._id, sourceOrderId: order._id, symbol: plan.symbol, side: plan.side, status: 'OPEN', initialVolume: plan.volume, openVolume: plan.volume, entryPrice: plan.fillPrice, stopLoss: plan.stopLoss, takeProfit: plan.takeProfit, contractSize: plan.contractSize, volumeStep: plan.volumeStep, quoteCurrency: plan.quoteCurrency, margin: plan.requiredMargin, realizedPnl: '0', commissionPaid: plan.commission, swapPaid: '0', openedAt: now });
     const deal = new this.dealModel({ accountId: account._id, orderId: order._id, positionId: position._id, symbol: plan.symbol, side: plan.side, type: 'OPEN', volume: plan.volume, price: plan.fillPrice, requestedPrice: normalized.requestedPrice, slippage: calculateAdverseSlippage({ side: plan.side, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice }), commission: plan.commission, swap: '0', realizedPnl: '0', quoteSequence: plan.quoteSequence, quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null, quoteSource: quote?.source || null, executedAt: now });
     applyOpenAccountMutation(account, plan);
+    const postFillRisk = this.postFillRiskService
+      ? await this.postFillRiskService.evaluateAndApply({ account, order, deal, session, now })
+      : null;
     const ledgers = [];
     if (compareDecimal(plan.commission, '0') > 0) ledgers.push(new this.ledgerModel({ accountId: account._id, type: 'COMMISSION', amount: subtractDecimal('0', plan.commission), balanceBefore: addDecimal(account.state.balance, plan.commission), balanceAfter: account.state.balance, currency: account.currency, referenceType: 'DEAL', referenceId: deal.dealId, idempotencyKey: `${clientOrderId}:commission`, reason: 'Execution commission' }));
     await order.save({ session }); await position.save({ session }); await deal.save({ session }); for (const ledger of ledgers) await ledger.save({ session }); await account.save({ session });
     await this.platformEventRelay?.enqueueDeal({ account, deal, session });
-    return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
+    return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account), execution: serializeOpenExecution(plan, account, postFillRisk) };
   }
 
   #emitCommitted(result) {
     const close = result.close; const open = result.open;
     const events = [['trading.order.accepted', close.order], ['trading.order.filled', close.order], ['trading.deal.created', close.deal], ['trading.position.closed', close.position], ['trading.order.accepted', open.order], ['trading.order.filled', open.order], ['trading.deal.created', open.deal], ['trading.position.opened', open.position], ['trading.account.updated', open.account]];
+    if (String(open.account?.status || '').toUpperCase() === 'BREACHED') events.push(['trading.account.breached', open.account]);
     for (const [name, payload] of events) { try { this.eventBus?.emit(name, payload); } catch (error) { this.logger?.error({ err: error, event: name }, 'Atomic reverse event listener failed after commit'); } }
   }
 

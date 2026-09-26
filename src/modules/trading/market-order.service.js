@@ -13,6 +13,8 @@ const {
   normalizeDecimal,
   addDecimal,
   subtractDecimal,
+  multiplyDecimal,
+  divideDecimal,
   compareDecimal,
 } = require('../../shared/decimal/decimal');
 const { normalizeSymbol } = require('../market-data/market.utils');
@@ -47,6 +49,7 @@ class MarketOrderService {
     ledgerModel = AccountLedger,
     commandQueue = new AccountCommandQueue(),
     idempotencyService = new IdempotencyService(),
+    postFillRiskService = null,
     runTransaction = runMongoTransaction,
   }) {
     Object.assign(this, {
@@ -64,6 +67,7 @@ class MarketOrderService {
       ledgerModel,
       commandQueue,
       idempotencyService,
+      postFillRiskService,
       runTransaction,
     });
   }
@@ -362,6 +366,9 @@ class MarketOrderService {
 
     const ledgers = [];
     applyOpenAccountMutation(account, plan);
+    const postFillRisk = this.postFillRiskService
+      ? await this.postFillRiskService.evaluateAndApply({ account, order, deal, session, now })
+      : null;
     if (compareDecimal(plan.commission, '0') > 0) {
       ledgers.push(new this.ledgerModel(buildCommissionLedger({
         account,
@@ -385,7 +392,7 @@ class MarketOrderService {
       () => this.platformEventRelay?.enqueueDeal({ account, deal, session }),
     );
 
-    const response = executionResponse('OPEN', order, deal, position, account);
+    const response = executionResponse('OPEN', order, deal, position, account, plan, postFillRisk);
     await timeAsync(
       timing,
       'idempotency_complete',
@@ -551,14 +558,20 @@ class MarketOrderService {
 }
 
 function applyOpenAccountMutation(account, plan) {
+  const projected = plan?.projectedAccountState;
+  if (!projected) {
+    throw new AppError('Projected account state is required for an opening fill', {
+      statusCode: 500,
+      code: 'PROJECTED_ACCOUNT_STATE_MISSING',
+    });
+  }
   account.financialRevision = Number(account.financialRevision || 0) + 1;
-  const balance = subtractDecimal(account.state.balance, plan.commission);
-  const equity = subtractDecimal(account.state.equity, plan.commission);
-  const usedMargin = addDecimal(account.state.usedMargin, plan.requiredMargin);
-  account.state.balance = balance;
-  account.state.equity = equity;
-  account.state.usedMargin = usedMargin;
-  account.state.freeMargin = subtractDecimal(equity, usedMargin);
+  account.state.balance = projected.balance;
+  account.state.floatingPnl = projected.floatingPnl;
+  account.state.equity = projected.equity;
+  account.state.usedMargin = projected.usedMargin;
+  account.state.freeMargin = projected.freeMargin;
+  account.state.marginLevel = projected.marginLevel;
 }
 
 function applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel, now, valuationComplete = true, closeReason = 'MANUAL' }) {
@@ -613,6 +626,7 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
   if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
   account.state.usedMargin = usedMargin;
   account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
+  account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
 
   position.openVolume = plan.remainingVolume;
   position.margin = subtractDecimal(position.margin, plan.releasedMargin);
@@ -645,24 +659,55 @@ function buildCommissionLedger({ account, amount, balanceAfter, referenceId, ide
   };
 }
 
-function executionResponse(operation, order, deal, position, account) {
+function serializeOpenExecution(plan, account, postFillRisk = null) {
+  if (!plan) return null;
+  return {
+    fillPrice: plan.fillPrice,
+    commission: plan.commission,
+    immediateOpeningPnl: plan.immediateOpeningPnl,
+    requiredMargin: plan.requiredMargin,
+    resultingAccount: {
+      balance: normalizeDecimal(account.state.balance),
+      floatingPnl: normalizeDecimal(account.state.floatingPnl),
+      equity: normalizeDecimal(account.state.equity),
+      usedMargin: normalizeDecimal(account.state.usedMargin),
+      freeMargin: normalizeDecimal(account.state.freeMargin),
+      marginLevel: account.state.marginLevel == null ? null : normalizeDecimal(account.state.marginLevel),
+      financialRevision: Number(account.financialRevision || 0),
+    },
+    breached: postFillRisk?.breached === true || String(account.status || '').toUpperCase() === 'BREACHED',
+    breachEvidence: postFillRisk?.outcome?.evidence || null,
+  };
+}
+
+function marginLevel(equity, usedMargin) {
+  if (compareDecimal(usedMargin, '0') <= 0) return null;
+  return multiplyDecimal(divideDecimal(equity, usedMargin, { scale: 8 }), '100');
+}
+
+function executionResponse(operation, order, deal, position, account, plan = null, postFillRisk = null) {
   return {
     operation,
     order: serializeOrder(order),
     deal: serializeDeal(deal),
     position: serializePosition(position),
     account: serializeAccount(account),
+    ...(operation === 'OPEN' && plan ? { execution: serializeOpenExecution(plan, account, postFillRisk) } : {}),
   };
 }
 
 function openEvents(response) {
-  return [
+  const events = [
     ['trading.order.accepted', response.order],
     ['trading.order.filled', response.order],
     ['trading.deal.created', response.deal],
     ['trading.position.opened', response.position],
     ['trading.account.updated', response.account],
   ];
+  if (String(response.account?.status || '').toUpperCase() === 'BREACHED') {
+    events.push(['trading.account.breached', response.account]);
+  }
+  return events;
 }
 
 function closeEvents(response, fullClose) {
@@ -855,4 +900,6 @@ module.exports = {
   normalizeCloseReason,
   loadOpenExposure,
   hasExposureLimits,
+  serializeOpenExecution,
+  marginLevel,
 };

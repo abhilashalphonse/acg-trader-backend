@@ -18,6 +18,7 @@ const { assertInstrumentSessionOpen } = require('../instruments/session-calendar
 const { executionPriceForVolume } = require('../market-data/execution-pricing');
 const { dayKeyInTimezone } = require('./risk-day-engine');
 const { calculateCommission: calculateTradingCommission, convertTradingCurrency } = require('./trading-costs');
+const { calculatePositionValuation } = require('./valuation-calculator');
 const {
   validatePreTradeRiskPolicy,
   validateActiveExposurePolicy,
@@ -67,14 +68,40 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     currencyConverter,
     nowMs,
   });
-  const totalRequirement = addDecimal(requiredMargin, commission);
-  const freeMargin = normalizeDecimal(account.state?.freeMargin ?? '0');
+  const immediateOpeningPnl = calculateImmediateOpeningPnl({
+    account,
+    instrument,
+    quote,
+    side: normalizedSide,
+    volume: normalizedVolume,
+    fillPrice,
+    currencyConverter,
+    nowMs,
+  });
+  const projectedAccountState = projectAccountAfterOpen({
+    account,
+    requiredMargin,
+    commission,
+    immediateOpeningPnl,
+  });
 
-  if (compareDecimal(freeMargin, totalRequirement) < 0) {
-    throw new AppError('Insufficient free margin for this order', {
+  if (compareDecimal(projectedAccountState.freeMargin, '0') < 0) {
+    throw new AppError('Insufficient projected free margin for this order', {
       statusCode: 409,
       code: 'INSUFFICIENT_MARGIN',
-      details: { freeMargin, requiredMargin, commission, accountCurrency: account.currency },
+      details: {
+        freeMargin: normalizeDecimal(account.state?.freeMargin ?? '0'),
+        requiredMargin,
+        commission,
+        immediateOpeningPnl,
+        projectedBalance: projectedAccountState.balance,
+        projectedFloatingPnl: projectedAccountState.floatingPnl,
+        projectedEquity: projectedAccountState.equity,
+        projectedUsedMargin: projectedAccountState.usedMargin,
+        projectedFreeMargin: projectedAccountState.freeMargin,
+        projectedMarginLevel: projectedAccountState.marginLevel,
+        accountCurrency: account.currency,
+      },
     });
   }
 
@@ -92,6 +119,8 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     estimatedCloseCommission: firmRisk.closingCommission ?? estimatedCloseCommission,
     commission,
     requiredMargin,
+    immediateOpeningPnl,
+    projectedAccountState: Object.freeze(projectedAccountState),
     projectedEquityAfterCommission: firmRisk.projectedEquityAfterCommission ?? null,
     marginCurrency: String(account.currency || '').toUpperCase(),
     contractSize: normalizeDecimal(instrument.contractSize),
@@ -327,6 +356,72 @@ function convertCurrency(amount, fromCurrency, toCurrency, currencyConverter = n
   return convertTradingCurrency(amount, fromCurrency, toCurrency, currencyConverter, nowMs);
 }
 
+function calculateImmediateOpeningPnl({
+  account,
+  instrument,
+  quote,
+  side,
+  volume,
+  fillPrice,
+  currencyConverter = null,
+  nowMs = Date.now(),
+}) {
+  const valuation = calculatePositionValuation({
+    position: {
+      id: 'projected-open',
+      accountId: account?._id || account?.id || '',
+      symbol: instrument?.symbol,
+      side,
+      status: 'OPEN',
+      openVolume: volume,
+      entryPrice: fillPrice,
+      contractSize: instrument?.contractSize,
+      quoteCurrency: instrument?.quoteCurrency,
+      margin: '0',
+    },
+    quote,
+  });
+
+  if (valuation.valuationStatus !== 'LIVE' || valuation.floatingPnl == null) {
+    throw new AppError('Immediate opening valuation is unavailable', {
+      statusCode: 409,
+      code: 'OPENING_VALUATION_UNAVAILABLE',
+    });
+  }
+
+  return convertTradingCurrency(
+    valuation.floatingPnl,
+    instrument?.quoteCurrency,
+    account?.currency,
+    currencyConverter,
+    nowMs,
+  );
+}
+
+function projectAccountAfterOpen({ account, requiredMargin, commission, immediateOpeningPnl }) {
+  const balance = normalizeDecimal(account.state?.balance ?? '0');
+  const floatingPnl = normalizeDecimal(account.state?.floatingPnl ?? '0');
+  const usedMargin = normalizeDecimal(account.state?.usedMargin ?? '0');
+
+  const projectedBalance = subtractDecimal(balance, commission);
+  const projectedFloatingPnl = addDecimal(floatingPnl, immediateOpeningPnl);
+  const projectedEquity = addDecimal(projectedBalance, projectedFloatingPnl);
+  const projectedUsedMargin = addDecimal(usedMargin, requiredMargin);
+  const projectedFreeMargin = subtractDecimal(projectedEquity, projectedUsedMargin);
+  const projectedMarginLevel = compareDecimal(projectedUsedMargin, '0') > 0
+    ? multiplyDecimal(divideDecimal(projectedEquity, projectedUsedMargin, { scale: 8, rounding: ROUNDING.HALF_UP }), '100')
+    : null;
+
+  return {
+    balance: projectedBalance,
+    floatingPnl: projectedFloatingPnl,
+    equity: projectedEquity,
+    usedMargin: projectedUsedMargin,
+    freeMargin: projectedFreeMargin,
+    marginLevel: projectedMarginLevel,
+  };
+}
+
 function validateOpenPosition(position, account) {
   if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
   if (String(position.accountId) !== String(account._id)) throw new AppError('Position does not belong to this trading account', { statusCode: 403, code: 'POSITION_ACCOUNT_MISMATCH' });
@@ -335,4 +430,4 @@ function validateOpenPosition(position, account) {
 function normalizeSide(side) { const value = String(side || '').toUpperCase(); if (!['BUY', 'SELL'].includes(value)) throw new AppError('Order side must be BUY or SELL', { statusCode: 400, code: 'INVALID_ORDER_SIDE' }); return value; }
 function calculateAdverseSlippage({ side, fillPrice, requestedPrice }) { if (requestedPrice == null || requestedPrice === '') return '0'; const requested = normalizeDecimal(requestedPrice); return side === 'BUY' ? subtractDecimal(fillPrice, requested) : subtractDecimal(requested, fillPrice); }
 
-module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, validateVolume, validateExposureLimits, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose };
+module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, calculateImmediateOpeningPnl, projectAccountAfterOpen, validateVolume, validateExposureLimits, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose };

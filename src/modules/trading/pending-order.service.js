@@ -29,6 +29,7 @@ const {
   applyOpenAccountMutation,
   loadOpenExposure,
   hasExposureLimits,
+  serializeOpenExecution,
 } = require('./market-order.service');
 const {
   serializeOrder,
@@ -81,6 +82,7 @@ class PendingOrderService {
     ledgerModel = AccountLedger,
     commandQueue = new AccountCommandQueue(),
     idempotencyService = new IdempotencyService(),
+    postFillRiskService = null,
     runTransaction = runMongoTransaction,
   }) {
     Object.assign(this, {
@@ -97,6 +99,7 @@ class PendingOrderService {
       ledgerModel,
       commandQueue,
       idempotencyService,
+      postFillRiskService,
       runTransaction,
     });
   }
@@ -369,6 +372,9 @@ class PendingOrderService {
         });
 
         applyOpenAccountMutation(account, plan);
+        const postFillRisk = this.postFillRiskService
+          ? await this.postFillRiskService.evaluateAndApply({ account, order, deal, session, now })
+          : null;
         const ledgers = [];
         if (compareDecimal(plan.commission, '0') > 0) {
           ledgers.push(new this.ledgerModel({
@@ -399,6 +405,7 @@ class PendingOrderService {
           deal: serializeDeal(deal),
           position: serializePosition(position),
           account: serializeAccount(account),
+          execution: serializeOpenExecution(plan, account, postFillRisk),
         };
       });
 
@@ -443,6 +450,9 @@ class PendingOrderService {
       this.#emit('trading.deal.created', result.deal);
       this.#emit('trading.position.opened', result.position);
       this.#emit('trading.account.updated', result.account);
+      if (String(result.account?.status || '').toUpperCase() === 'BREACHED') {
+        this.#emit('trading.account.breached', result.account);
+      }
     }
   }
 

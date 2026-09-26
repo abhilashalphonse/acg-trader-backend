@@ -11,7 +11,7 @@ const {
 const { TradingAccount } = require('./trading-account.model');
 const { AccountLedger } = require('../trading/account-ledger.model');
 const { AccountCommandQueue } = require('../trading/account-command-queue');
-const { runMongoTransaction } = require('../trading/market-order.service');
+const { runMongoTransaction, marginLevel } = require('../trading/market-order.service');
 const { serializeAccount } = require('../trading/trading.serializer');
 
 const MUTATION_TYPES = new Set(['DEPOSIT', 'WITHDRAWAL', 'ADJUSTMENT']);
@@ -99,6 +99,7 @@ class AccountLedgerService {
         account.state.balance = balanceAfter;
         account.state.equity = equityAfter;
         account.state.freeMargin = freeMarginAfter;
+        account.state.marginLevel = marginLevel(equityAfter, account.state.usedMargin);
 
         const ledger = new this.ledgerModel({
           tenantId: account.tenantId,
@@ -222,6 +223,7 @@ function serializeAccountState(account) {
     floatingPnl: normalizeDecimal(account.state.floatingPnl),
     usedMargin: normalizeDecimal(account.state.usedMargin),
     freeMargin: normalizeDecimal(account.state.freeMargin),
+    marginLevel: account.state.marginLevel == null ? null : normalizeDecimal(account.state.marginLevel),
     financialRevision: Number(account.financialRevision || 0),
   };
 }

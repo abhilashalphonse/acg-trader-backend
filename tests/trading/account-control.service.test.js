@@ -521,3 +521,64 @@ test('stale provisioning hash remains strict when a Funded account does not matc
   );
 });
 
+
+
+test('breach liquidation retries use stable position idempotency keys and only retry remaining open positions', async () => {
+  const models = createFakeModels();
+  let remaining = ['position-a', 'position-b'];
+  models.positionModel.find = () => ({
+    select() {
+      return {
+        async lean() {
+          return remaining.map(_id => ({ _id }));
+        },
+      };
+    },
+  });
+
+  const calls = [];
+  let failB = true;
+  const service = createService(models, {
+    marketOrderService: {
+      async closeMarketPosition(command) {
+        calls.push({ ...command });
+        if (command.positionId === 'position-b' && failB) {
+          failB = false;
+          throw Object.assign(new Error('temporary close failure'), { code: 'TEMPORARY_CLOSE_FAILURE' });
+        }
+        remaining = remaining.filter(id => id !== command.positionId);
+        return { operation: 'CLOSE', idempotentReplay: calls.filter(item => item.clientOrderId === command.clientOrderId).length > 1 };
+      },
+    },
+  });
+
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-liquidation-retry',
+    ownerExternalRef: 'user-liquidation-retry',
+    initialBalance: '100000',
+  });
+
+  await assert.rejects(
+    () => service.breach(created.account.id, { reason: 'DAILY_LOSS_LIMIT_REACHED' }),
+    error => error.code === 'ACCOUNT_LIQUIDATION_FAILED',
+  );
+
+  assert.deepEqual(
+    calls.map(item => item.clientOrderId),
+    ['control-liquidation:position-a', 'control-liquidation:position-b'],
+  );
+  assert.deepEqual(remaining, ['position-b']);
+
+  await service.breach(created.account.id, { reason: 'DAILY_LOSS_LIMIT_REACHED' });
+
+  assert.deepEqual(
+    calls.map(item => item.clientOrderId),
+    [
+      'control-liquidation:position-a',
+      'control-liquidation:position-b',
+      'control-liquidation:position-b',
+    ],
+  );
+  assert.deepEqual(remaining, []);
+});
