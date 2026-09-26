@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateChallengeRiskForOpen } = require('../../src/modules/trading/execution-planner');
+const { validateAccountForOpen, validateChallengeRiskForOpen } = require('../../src/modules/trading/execution-planner');
 
 const TEST_NOW = new Date('2026-09-18T12:00:00.000Z').getTime();
 
@@ -80,11 +80,11 @@ test('order execution cannot opportunistically roll the risk day forward', () =>
 
 test('unresolved risk history blocks new exposure', () => {
   assert.throws(
-    () => validateChallengeRiskForOpen(account({
+    () => validateAccountForOpen(account({
       riskProcessingState: 'RISK_UNRESOLVED',
       riskExpectedSequence: 104,
       riskNextAvailableSequence: 105,
-    }), TEST_NOW),
+    }), 'EURUSD', TEST_NOW),
     error => error.code === 'RISK_STATE_UNRESOLVED',
   );
 });
