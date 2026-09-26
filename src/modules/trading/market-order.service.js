@@ -124,6 +124,7 @@ class MarketOrderService {
                 account,
                 symbol: normalized.symbol,
                 nowMs,
+                instrumentModel: this.instrumentModel,
               }),
             )
             : null;
@@ -726,6 +727,7 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
   currencyConverter = null,
   nowMs = Date.now(),
   excludePositionId = null,
+  instrumentModel = null,
 } = {}) {
   const filter = { accountId: String(accountId), status: 'OPEN' };
   if (excludePositionId) filter._id = mongoose.trusted({ $ne: String(excludePositionId) });
@@ -734,6 +736,24 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
     .lean();
   if (session) query = query.session(session);
   const positions = await query;
+
+  const instrumentsBySymbol = new Map();
+  if (instrumentModel && positions.some(position => position.stopLoss !== null && position.stopLoss !== undefined && position.stopLoss !== '')) {
+    const symbols = [...new Set(positions.map(position => normalizeSymbol(position.symbol)).filter(Boolean))];
+    if (symbols.length) {
+      let instrumentQuery = instrumentModel.find({
+        symbol: mongoose.trusted({ $in: symbols }),
+      })
+        .select('symbol contractSize quoteCurrency pnlCurrency commissionPerLot commissionPerLotPerSide commissionRate')
+        .lean();
+      if (session) instrumentQuery = instrumentQuery.session(session);
+      const instruments = await instrumentQuery;
+      for (const instrument of instruments || []) {
+        instrumentsBySymbol.set(normalizeSymbol(instrument.symbol), instrument);
+      }
+    }
+  }
+
   const targetSymbol = normalizeSymbol(symbol);
   let currentTotalVolume = '0';
   let currentSymbolVolume = '0';
@@ -757,6 +777,7 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
       const risk = calculatePositionStopRiskAmount({
         account,
         position,
+        instrument: instrumentsBySymbol.get(normalizeSymbol(position.symbol)) || null,
         currencyConverter,
         nowMs,
       });
