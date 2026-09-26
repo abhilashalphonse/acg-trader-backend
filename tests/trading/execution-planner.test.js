@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('../../src/modules/trading/execution-planner');
+const { loadOpenExposure } = require('../../src/modules/trading/market-order.service');
 
 function account(overrides = {}) {
   return {
@@ -561,3 +562,98 @@ test('single-order exposure uses remaining capacity inside the 50% margin ceilin
       && Number(error.details.singleOrderMarginPercentOfAvailableCapacity) > 20,
   );
 });
+
+test('aggregate stop risk is evaluated from the selected account exposure only', () => {
+  const riskPolicy = {
+    allowedSymbols: [],
+    maxRiskPerTradePercent: '1',
+    maxAggregateRiskPercent: '2',
+  };
+  const proposed = {
+    instrument: instrument(),
+    quote: quote(),
+    side: 'BUY',
+    volume: '1',
+    stopLoss: '1.09705',
+    nowMs: 10_100,
+  };
+
+  assert.throws(
+    () => planMarketOpen({
+      ...proposed,
+      account: account({ _id: 'account-a', riskPolicy }),
+      exposure: {
+        currentOpenPositions: 1,
+        currentSymbolPositions: 1,
+        currentTotalVolume: '6',
+        currentSymbolVolume: '6',
+        currentSymbolMargin: '6600',
+        currentOpenRisk: '1800',
+        unmeasuredRiskPositions: 0,
+      },
+    }),
+    error => error.code === 'MAX_AGGREGATE_RISK',
+  );
+
+  const accepted = planMarketOpen({
+    ...proposed,
+    account: account({ _id: 'account-b', riskPolicy }),
+    exposure: {
+      currentOpenPositions: 1,
+      currentSymbolPositions: 1,
+      currentTotalVolume: '1',
+      currentSymbolVolume: '1',
+      currentSymbolMargin: '1100',
+      currentOpenRisk: '1000',
+      unmeasuredRiskPositions: 0,
+    },
+  });
+
+  assert.equal(accepted.riskAmount, '300');
+  assert.equal(accepted.projectedAggregateRiskPercent, '1.3');
+});
+
+test('open exposure loader never mixes positions from different trading accounts', async () => {
+  const rows = {
+    'account-a': [{
+      symbol: 'EURUSD',
+      side: 'BUY',
+      openVolume: '6',
+      entryPrice: '1.1',
+      stopLoss: '1.097',
+      contractSize: '100000',
+      quoteCurrency: 'USD',
+      margin: '6600',
+    }],
+    'account-b': [{
+      symbol: 'EURUSD',
+      side: 'BUY',
+      openVolume: '1',
+      entryPrice: '1.1',
+      stopLoss: '1.09',
+      contractSize: '100000',
+      quoteCurrency: 'USD',
+      margin: '1100',
+    }],
+  };
+  const positionModel = {
+    find(filter) {
+      const selected = rows[String(filter.accountId)] || [];
+      return {
+        select() { return this; },
+        async lean() { return selected; },
+      };
+    },
+  };
+
+  const accountA = account({ _id: 'account-a' });
+  const accountB = account({ _id: 'account-b' });
+  const exposureA = await loadOpenExposure(positionModel, 'account-a', null, { account: accountA, symbol: 'EURUSD', nowMs: 10_100 });
+  const exposureB = await loadOpenExposure(positionModel, 'account-b', null, { account: accountB, symbol: 'EURUSD', nowMs: 10_100 });
+
+  assert.equal(exposureA.currentOpenRisk, '1800');
+  assert.equal(exposureA.currentOpenPositions, 1);
+  assert.equal(exposureB.currentOpenRisk, '1000');
+  assert.equal(exposureB.currentOpenPositions, 1);
+});
+
