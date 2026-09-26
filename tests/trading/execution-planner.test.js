@@ -657,3 +657,170 @@ test('open exposure loader never mixes positions from different trading accounts
   assert.equal(exposureB.currentOpenPositions, 1);
 });
 
+test('projected percentage risk includes opening and stop-side commission', () => {
+  const btc = instrument({
+    symbol: 'BTCUSD',
+    quoteCurrency: 'USD',
+    tickSize: '0.01',
+    minVolume: '0.01',
+    maxVolume: '1000',
+    volumeStep: '0.01',
+    contractSize: '1',
+    defaultLeverage: 100,
+    commissionPerLot: '0',
+    commissionPerLotPerSide: '0',
+    commissionRate: '0.0002',
+  });
+  const btcQuote = quote({
+    symbol: 'BTCUSD',
+    bid: 83999,
+    ask: 84000,
+  });
+
+  const accepted = planMarketOpen({
+    account: account({
+      riskPolicy: {
+        allowedSymbols: [],
+        maxRiskPerTradePercent: '1',
+        maxAggregateRiskPercent: '2',
+      },
+    }),
+    instrument: btc,
+    quote: btcQuote,
+    side: 'SELL',
+    volume: '5',
+    stopLoss: '84160',
+    nowMs: 10_100,
+    exposure: {
+      currentOpenPositions: 0,
+      currentSymbolPositions: 0,
+      currentTotalVolume: '0',
+      currentSymbolVolume: '0',
+      currentSymbolMargin: '0',
+      currentOpenRisk: '0',
+      unmeasuredRiskPositions: 0,
+    },
+  });
+
+  assert.equal(accepted.rawStopRiskAmount, '805');
+  assert.equal(accepted.openingCommission, '83.999');
+  assert.equal(accepted.estimatedCloseCommission, '84.16');
+  assert.equal(accepted.riskAmount, '973.159');
+  assert.equal(accepted.riskPercent, '0.973159');
+
+  assert.throws(
+    () => planMarketOpen({
+      account: account({
+        riskPolicy: {
+          allowedSymbols: [],
+          maxRiskPerTradePercent: '1',
+          maxAggregateRiskPercent: '2',
+        },
+      }),
+      instrument: btc,
+      quote: btcQuote,
+      side: 'SELL',
+      volume: '5',
+      stopLoss: '84170',
+      nowMs: 10_100,
+      exposure: {
+        currentOpenPositions: 0,
+        currentSymbolPositions: 0,
+        currentTotalVolume: '0',
+        currentSymbolVolume: '0',
+        currentSymbolMargin: '0',
+        currentOpenRisk: '0',
+        unmeasuredRiskPositions: 0,
+      },
+    }),
+    error => error.code === 'MAX_TRADE_RISK'
+      && error.details.rawStopRiskAmount === '855'
+      && error.details.openingCommission === '83.999'
+      && error.details.closingCommission === '84.17',
+  );
+});
+
+test('50 percent margin cap is evaluated against post-opening-commission equity', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account({
+        state: {
+          ...account().state,
+          equity: '100000',
+          balance: '100000',
+          freeMargin: '100000',
+          usedMargin: '0',
+        },
+        riskPolicy: {
+          allowedSymbols: [],
+          maxMarginUsagePercent: '50',
+        },
+      }),
+      instrument: instrument({
+        quoteCurrency: 'USD',
+        contractSize: '100000',
+        defaultLeverage: 2,
+        commissionPerLotPerSide: '100',
+      }),
+      quote: quote({ bid: 0.99999, ask: 1 }),
+      side: 'BUY',
+      volume: '1',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'MAX_MARGIN_USAGE'
+      && error.details.openingCommission === '100'
+      && error.details.projectedEquity === '99900'
+      && Number(error.details.projectedMarginUsagePercent) > 50,
+  );
+});
+
+test('existing measured open risk includes projected stop-side commission', async () => {
+  const positionModel = {
+    find() {
+      return {
+        select() { return this; },
+        async lean() {
+          return [{
+            symbol: 'EURUSD',
+            side: 'BUY',
+            openVolume: '1',
+            entryPrice: '1.1',
+            stopLoss: '1.09',
+            contractSize: '100000',
+            quoteCurrency: 'USD',
+            margin: '1100',
+          }];
+        },
+      };
+    },
+  };
+  const instrumentModel = {
+    find(filter) {
+      assert.ok(filter.symbol);
+      return {
+        select() { return this; },
+        async lean() {
+          return [{
+            symbol: 'EURUSD',
+            contractSize: '100000',
+            quoteCurrency: 'USD',
+            commissionPerLot: '0',
+            commissionPerLotPerSide: '2.5',
+            commissionRate: '0',
+          }];
+        },
+      };
+    },
+  };
+
+  const exposure = await loadOpenExposure(positionModel, 'account-a', null, {
+    account: account({ _id: 'account-a' }),
+    symbol: 'EURUSD',
+    instrumentModel,
+    nowMs: 10_100,
+  });
+
+  assert.equal(exposure.currentOpenRisk, '1002.5');
+  assert.equal(exposure.unmeasuredRiskPositions, 0);
+});
+
