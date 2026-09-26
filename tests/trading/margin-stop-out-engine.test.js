@@ -198,11 +198,11 @@ test('projection includes adverse size-impact fill and closing commission before
   });
 
   assert.equal(clean.projection.equity, '500');
-  assert.equal(clean.projection.marginLevel, '55.55555556');
+  assert.equal(clean.projection.marginLevel, '55.555556');
   assert.equal(adverse.plan.fillPrice, '1.0995');
   assert.equal(adverse.plan.commission, '1');
   assert.equal(adverse.projection.equity, '494');
-  assert.equal(adverse.projection.marginLevel, '54.88888889');
+  assert.equal(adverse.projection.marginLevel, '54.888889');
   assert.equal(Number(adverse.projection.equity) < Number(clean.projection.equity), true);
 });
 
@@ -321,7 +321,7 @@ test('pending durable stop-out work is reclaimed after restart and uses the same
     positionModel,
     instrumentModel,
     jobModel: Job,
-    quoteStore: { get: () => quote() },
+    quoteStore: { get: () => quote({ receivedAtMs: Date.parse('2026-09-26T10:00:00Z') }) },
     valuationEngine: {
       overlayAccountDocument(doc) { return { complete: true, ...doc.state, valuationStatus: 'LIVE' }; },
       scheduleAccountRevalue() {},
