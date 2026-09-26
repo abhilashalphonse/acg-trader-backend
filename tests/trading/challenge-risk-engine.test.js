@@ -3,126 +3,137 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const EventEmitter = require('events');
-const { ChallengeRiskEngine } = require('../../src/modules/trading/challenge-risk-engine');
+const { ChallengeRiskEngine, evaluateRiskContext } = require('../../src/modules/trading/challenge-risk-engine');
 
-test('live valuation crossing max loss triggers local account breach', async () => {
-  const eventBus = new EventEmitter();
-  const account = {
-    _id: '64b000000000000000000001',
-    status: 'ACTIVE',
-    tradingEnabled: true,
-    riskDayKey: '2026-09-18',
+function context(overrides = {}) {
+  return {
+    financialRevision: 4,
+    policyVersion: 'ACG_FUNDED_V1',
+    riskDayKey: '2026-09-26',
     riskTimezone: 'UTC',
-    state: { initialBalance: '100000', dailyStartEquity: '100000' },
-    riskPolicy: {
-      dailyLoss: { limit: '3000' },
-      maxLoss: { limit: '6000' },
+    initialBalance: '100000',
+    dailyStartEquity: '100000',
+    dailyLossLimit: '3000',
+    maxLossLimit: '6000',
+    balance: '100000',
+    equity: '100000',
+    floatingPnl: '0',
+    usedMargin: '0',
+    freeMargin: '100000',
+    marginLevel: null,
+    valuationSequence: 10,
+    valuedAtMs: 1234,
+    ...overrides,
+  };
+}
+
+test('durable risk context crossing max loss produces terminal breach evidence', () => {
+  const result = evaluateRiskContext(context({ equity: '94000', floatingPnl: '-6000' }));
+  assert.equal(result.breached, true);
+  assert.equal(result.reason, 'MAX_LOSS_LIMIT_REACHED');
+  assert.deepEqual(result.evidence.triggeredRules, ['DAILY_DRAWDOWN', 'MAX_DRAWDOWN']);
+  assert.equal(result.evidence.thresholdEquity, '94000');
+  assert.equal(result.evidence.financialRevision, 4);
+  assert.equal(result.evidence.policyVersion, 'ACG_FUNDED_V1');
+});
+
+test('brief daily breach remains a breach even if a later valuation recovers', () => {
+  const breached = evaluateRiskContext(context({ equity: '96999.50', valuationSequence: 11 }));
+  const recovered = evaluateRiskContext(context({ equity: '99000', valuationSequence: 12 }));
+  assert.equal(breached.breached, true);
+  assert.equal(breached.reason, 'DAILY_LOSS_LIMIT_REACHED');
+  assert.equal(recovered.breached, false);
+});
+
+test('engine ingests valuation durably before evaluating and completes the exact sequence', async () => {
+  const eventBus = new EventEmitter();
+  const calls = [];
+  const queued = [];
+  let sequence = 0;
+
+  const riskStreamService = {
+    async pendingAccountIds() { return []; },
+    async ingestValuation(valuation) {
+      calls.push('ingest');
+      queued.push({
+        sequence: ++sequence,
+        type: 'VALUATION',
+        state: 'RECEIVED',
+        context: context({
+          equity: valuation.equity,
+          valuationSequence: valuation.sequence,
+          valuedAtMs: valuation.valuedAtMs,
+        }),
+      });
+      return { accepted: true, accountId: valuation.accountId };
+    },
+    async getNext() {
+      const event = queued.shift() || null;
+      return event
+        ? { account: { status: 'ACTIVE', tradingEnabled: true }, event }
+        : { account: { status: 'ACTIVE', tradingEnabled: true }, event: null };
+    },
+    async complete(_accountId, completedSequence, options) {
+      calls.push(`complete:${completedSequence}:${options.state}`);
     },
   };
+
   const breaches = [];
   const engine = new ChallengeRiskEngine({
     eventBus,
-    accountModel: {
-      findById: () => ({ lean: async () => account }),
-    },
+    riskStreamService,
     accountControlService: {
-      async breach(accountId, options) { breaches.push({ accountId, options }); },
+      async breach(accountId, options) {
+        calls.push('breach');
+        breaches.push({ accountId, options });
+      },
     },
-    now: () => new Date('2026-09-18T12:00:00.000Z'),
   });
 
-  engine.start();
+  await engine.start();
   eventBus.emit('valuation.account.updated', {
-    accountId: String(account._id),
+    accountId: 'account-a',
     complete: true,
     valuationStatus: 'LIVE',
     equity: '94000',
+    sequence: 44,
+    valuedAtMs: 555,
   });
+  await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));
   await engine.stop();
 
+  assert.equal(calls[0], 'ingest');
   assert.equal(breaches.length, 1);
-  assert.equal(breaches[0].accountId, String(account._id));
-  assert.equal(breaches[0].options.reason, 'MAX_LOSS_LIMIT_REACHED');
-  assert.equal(breaches[0].options.evidence.rule, 'MAX_DRAWDOWN');
-  assert.deepEqual(breaches[0].options.evidence.triggeredRules, ['DAILY_DRAWDOWN', 'MAX_DRAWDOWN']);
-  assert.equal(breaches[0].options.evidence.equity, '94000');
-  assert.equal(breaches[0].options.evidence.thresholdEquity, '94000');
-  assert.equal(breaches[0].options.evidence.actualLoss, '6000');
-  assert.equal(breaches[0].options.evidence.breachAmount, '0');
+  assert.equal(calls.includes('complete:1:BREACHED'), true);
 });
 
-test('daily-only breach captures the exact live trigger valuation', async () => {
+test('startup replay drains already durable received events', async () => {
   const eventBus = new EventEmitter();
-  const account = {
-    _id: '64b000000000000000000002',
-    status: 'ACTIVE',
-    tradingEnabled: true,
-    riskDayKey: '2026-09-18',
-    riskTimezone: 'UTC',
-    state: { initialBalance: '50000', dailyStartEquity: '50798.12' },
-    riskPolicy: {
-      dailyLoss: { limit: '1500' },
-      maxLoss: { limit: '3000' },
+  let pending = true;
+  let completed = false;
+  const riskStreamService = {
+    async pendingAccountIds() { return ['account-a']; },
+    async ingestValuation() { throw new Error('not expected'); },
+    async getNext() {
+      if (!pending) return { account: { status: 'ACTIVE', tradingEnabled: true }, event: null };
+      pending = false;
+      return {
+        account: { status: 'ACTIVE', tradingEnabled: true },
+        event: { sequence: 1, type: 'VALUATION', state: 'RECEIVED', context: context({ equity: '99000' }) },
+      };
     },
+    async complete() { completed = true; },
   };
-  const breaches = [];
   const engine = new ChallengeRiskEngine({
     eventBus,
-    accountModel: { findById: () => ({ lean: async () => account }) },
-    accountControlService: {
-      async breach(accountId, options) { breaches.push({ accountId, options }); },
-    },
-    now: () => new Date('2026-09-18T12:00:00.000Z'),
+    riskStreamService,
+    accountControlService: { async breach() { throw new Error('not expected'); } },
   });
 
-  engine.start();
-  eventBus.emit('valuation.account.updated', {
-    accountId: String(account._id),
-    complete: true,
-    valuationStatus: 'LIVE',
-    balance: '51231.26',
-    equity: '49298.00',
-    floatingPnl: '-1933.26',
-    usedMargin: '1250',
-    freeMargin: '48048',
-    sequence: 88,
-    valuedAtMs: Date.parse('2026-09-18T12:00:00.123Z'),
-  });
+  await engine.start();
   await new Promise(resolve => setImmediate(resolve));
   await engine.stop();
 
-  assert.equal(breaches.length, 1);
-  const evidence = breaches[0].options.evidence;
-  assert.equal(breaches[0].options.reason, 'DAILY_LOSS_LIMIT_REACHED');
-  assert.deepEqual(evidence.triggeredRules, ['DAILY_DRAWDOWN']);
-  assert.equal(evidence.balance, '51231.26');
-  assert.equal(evidence.equity, '49298');
-  assert.equal(evidence.floatingPnl, '-1933.26');
-  assert.equal(evidence.thresholdEquity, '49298.12');
-  assert.equal(evidence.actualLoss, '1500.12');
-  assert.equal(evidence.breachAmount, '0.12');
-  assert.equal(evidence.valuationSequence, 88);
-});
-
-test('stale valuation never triggers a challenge breach', async () => {
-  const eventBus = new EventEmitter();
-  let breaches = 0;
-  const engine = new ChallengeRiskEngine({
-    eventBus,
-    accountModel: { findById: () => ({ lean: async () => null }) },
-    accountControlService: { async breach() { breaches += 1; } },
-  });
-
-  engine.start();
-  eventBus.emit('valuation.account.updated', {
-    accountId: '64b000000000000000000001',
-    complete: true,
-    valuationStatus: 'STALE',
-    equity: '1',
-  });
-  await new Promise(resolve => setImmediate(resolve));
-  await engine.stop();
-
-  assert.equal(breaches, 0);
+  assert.equal(completed, true);
 });

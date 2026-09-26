@@ -170,6 +170,13 @@ function validateAccountForOpen(account, symbol, nowMs = Date.now()) {
   if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
   if (account.status !== 'ACTIVE') throw new AppError('Trading account is not active', { statusCode: 409, code: 'ACCOUNT_NOT_ACTIVE', details: { status: account.status } });
   if (account.tradingEnabled !== true) throw new AppError('Trading is disabled for this account', { statusCode: 409, code: 'ACCOUNT_TRADING_DISABLED' });
+  if (String(account.riskProcessingState || 'RESOLVED').toUpperCase() === 'RISK_UNRESOLVED') {
+    throw new AppError('New exposure is paused while account risk history is unresolved', {
+      statusCode: 409,
+      code: 'RISK_STATE_UNRESOLVED',
+      details: { reason: account.riskUnresolvedReason || null },
+    });
+  }
   validateChallengeRiskForOpen(account, nowMs);
   const allowed = account.riskPolicy?.allowedSymbols || [];
   const canonical = normalizeSymbol(symbol);
