@@ -13,6 +13,7 @@ const {
 } = require('./firm-risk-policy');
 const { serializePosition } = require('./trading.serializer');
 const { planPositionProtection } = require('./position-protection-planner');
+const { calculateCommission } = require('./execution-planner');
 
 class PositionProtectionService {
   constructor({
@@ -103,6 +104,13 @@ class PositionProtectionService {
             nowMs,
           });
 
+          const closingCommission = plan.stopLoss == null
+            ? '0'
+            : calculateCommission(instrument, position.openVolume, {
+              account,
+              fillPrice: plan.stopLoss,
+              nowMs,
+            });
           const firmRisk = validatePerOrderRiskPolicy({
             account,
             instrument,
@@ -110,6 +118,8 @@ class PositionProtectionService {
             entryPrice: position.entryPrice,
             volume: position.openVolume,
             stopLoss: plan.stopLoss,
+            openingCommission: '0',
+            closingCommission,
             nowMs,
             checkPositionVolume: false,
           });
@@ -120,6 +130,7 @@ class PositionProtectionService {
               symbol: position.symbol,
               nowMs,
               excludePositionId: position._id,
+              instrumentModel: this.instrumentModel,
             });
             validateAggregateRiskPolicy({
               account,
