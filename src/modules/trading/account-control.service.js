@@ -13,8 +13,19 @@ const { serializeAccount } = require('./trading.serializer');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { runMongoTransaction } = require('./market-order.service');
 const { dayKeyInTimezone } = require('./risk-day-engine');
+const { AccountRiskEvent } = require('./account-risk-event.model');
+const { AccountPolicyTransition } = require('./account-policy-transition.model');
 
 const RESTRICTED_STATUSES = new Set(['BREACHED', 'DISABLED', 'CLOSED']);
+const ACG_FUNDED_V1_POLICY_VERSION = 'ACG_FUNDED_V1';
+const ACG_FUNDED_V2_POLICY_VERSION = 'ACG_FUNDED_V2';
+const V2_DISABLED_EXECUTION_LIMITS = Object.freeze([
+  'maxRiskPerTradePercent',
+  'maxAggregateRiskPercent',
+  'maxMarginUsagePercent',
+  'maxSingleOrderMarginPercentOfFree',
+  'maxSymbolMarginPercentOfPermitted',
+]);
 
 class AccountControlService {
   constructor({
@@ -27,6 +38,8 @@ class AccountControlService {
     positionModel = Position,
     ledgerModel = AccountLedger,
     lifecycleModel = AccountLifecycleEvent,
+    riskEventModel = AccountRiskEvent,
+    policyTransitionModel = AccountPolicyTransition,
     commandQueue = new AccountCommandQueue(),
     runTransaction = runMongoTransaction,
     now = () => new Date(),
@@ -41,6 +54,8 @@ class AccountControlService {
       positionModel,
       ledgerModel,
       lifecycleModel,
+      riskEventModel,
+      policyTransitionModel,
       commandQueue,
       runTransaction,
       now,
@@ -127,6 +142,163 @@ class AccountControlService {
     const account = await this.accountModel.findById(String(accountId));
     if (!account) throw accountNotFound();
     return serializeControlledAccount(account);
+  }
+
+  async transitionRiskPolicy(accountId, command = {}) {
+    const input = normalizePolicyTransitionCommand(command);
+    const key = String(accountId);
+
+    return this.commandQueue.run(key, async () => {
+      const result = await this.runTransaction(async session => {
+        const account = await this.accountModel.findById(key).session(session);
+        if (!account) throw accountNotFound();
+
+        const existing = await this.policyTransitionModel
+          .findOne({ accountId: account._id, migrationId: input.migrationId })
+          .session(session);
+
+        if (existing) {
+          if (
+            String(existing.fromVersion) !== input.fromVersion
+            || String(existing.toVersion) !== input.toVersion
+          ) {
+            throw new AppError('Policy migration id was already used with different versions', {
+              statusCode: 409,
+              code: 'POLICY_TRANSITION_ID_REUSED',
+              details: {
+                migrationId: input.migrationId,
+                fromVersion: existing.fromVersion,
+                toVersion: existing.toVersion,
+              },
+            });
+          }
+          assertAuthorizedTransitionReplay(account, existing);
+          return { account, transition: existing, idempotentReplay: true };
+        }
+
+        if (!['DEMO', 'CHALLENGE', 'FUNDED'].includes(String(account.accountType || '').toUpperCase())) {
+          throw new AppError('Account type is not eligible for Funded V2 policy transition', {
+            statusCode: 409,
+            code: 'POLICY_TRANSITION_ACCOUNT_INELIGIBLE',
+            details: { accountType: account.accountType || null },
+          });
+        }
+
+        const metadata = account.metadata instanceof Map
+          ? account.metadata
+          : new Map(Object.entries(account.metadata || {}));
+        const currentVersion = String(metadata.get('riskPolicyVersion') || '').trim();
+        if (currentVersion !== input.fromVersion) {
+          throw new AppError('Account policy version does not match the expected migration source version', {
+            statusCode: 409,
+            code: 'POLICY_TRANSITION_VERSION_MISMATCH',
+            details: {
+              expectedVersion: input.fromVersion,
+              actualVersion: currentVersion || null,
+              targetVersion: input.toVersion,
+            },
+          });
+        }
+
+        const previousPolicy = normalizeExistingRiskPolicy(account.riskPolicy || {});
+        const nextPolicy = {
+          ...previousPolicy,
+          ...Object.fromEntries(V2_DISABLED_EXECUTION_LIMITS.map(field => [field, null])),
+        };
+        const beforeHash = policyTransitionInvariantHash(account);
+        const oldRiskSequence = Number(account.riskSequence || 0);
+        const effectiveRiskSequence = oldRiskSequence + 1;
+        const effectiveFinancialRevision = Number(account.financialRevision || 0);
+        const now = this.now();
+
+        for (const field of V2_DISABLED_EXECUTION_LIMITS) {
+          account.riskPolicy[field] = null;
+        }
+        metadata.set('riskPolicyVersion', input.toVersion);
+        metadata.set('policyTransitionMigrationId', input.migrationId);
+        metadata.set('policyTransitionFromVersion', input.fromVersion);
+        metadata.set('policyTransitionToVersion', input.toVersion);
+        metadata.set('policyTransitionOriginalProvisioningHash', String(account.provisioningContractHash || ''));
+        metadata.set('policyTransitionEffectiveRiskSequence', String(effectiveRiskSequence));
+        account.metadata = metadata;
+        account.riskSequence = effectiveRiskSequence;
+        if (Number(account.lastEvaluatedRiskSequence || 0) === oldRiskSequence) {
+          account.lastEvaluatedRiskSequence = effectiveRiskSequence;
+        }
+
+        const riskEvent = new this.riskEventModel({
+          accountId: account._id,
+          sequence: effectiveRiskSequence,
+          eventKey: `POLICY_TRANSITION:${input.migrationId}`,
+          type: 'POLICY_TRANSITION',
+          financialRevision: effectiveFinancialRevision,
+          policyVersion: input.toVersion,
+          riskDayKey: String(account.riskDayKey || dayKeyInTimezone(now, account.riskTimezone || 'UTC')),
+          riskTimezone: String(account.riskTimezone || 'UTC'),
+          valuedAtMs: now.getTime(),
+          sourceSequence: null,
+          context: {
+            migrationId: input.migrationId,
+            fromVersion: input.fromVersion,
+            toVersion: input.toVersion,
+            previousPolicy,
+            newPolicy: nextPolicy,
+            originalProvisioningContractHash: account.provisioningContractHash || null,
+            preservedRiskProcessingState: account.riskProcessingState || 'RESOLVED',
+            preservedMarginStopOutState: account.marginStopOutState || 'NONE',
+          },
+          state: 'EVALUATED',
+          result: {
+            applied: true,
+            migrationId: input.migrationId,
+            fromVersion: input.fromVersion,
+            toVersion: input.toVersion,
+          },
+          evaluatedAt: now,
+        });
+
+        await riskEvent.save({ session });
+        await account.save({ session });
+
+        const afterHash = policyTransitionInvariantHash(account);
+        if (beforeHash !== afterHash) {
+          throw new AppError('Policy transition changed protected account state', {
+            statusCode: 409,
+            code: 'POLICY_TRANSITION_INVARIANT_VIOLATION',
+            details: { migrationId: input.migrationId },
+          });
+        }
+
+        const transition = new this.policyTransitionModel({
+          tenantId: account.tenantId,
+          accountId: account._id,
+          migrationId: input.migrationId,
+          fromVersion: input.fromVersion,
+          toVersion: input.toVersion,
+          effectiveRiskSequence,
+          effectiveFinancialRevision,
+          originalProvisioningContractHash: account.provisioningContractHash || null,
+          previousPolicy,
+          newPolicy: nextPolicy,
+          preservedStateHashBefore: beforeHash,
+          preservedStateHashAfter: afterHash,
+          status: 'COMPLETED',
+          verifiedAt: now,
+        });
+        await transition.save({ session });
+
+        return { account, transition, idempotentReplay: false };
+      });
+
+      const serialized = serializeControlledAccount(result.account);
+      this.#emit('trading.account.updated', serialized);
+      return {
+        operation: 'POLICY_TRANSITION',
+        account: serialized,
+        transition: serializePolicyTransition(result.transition),
+        idempotentReplay: result.idempotentReplay,
+      };
+    });
   }
 
   async pause(accountId, { reason = 'MANUAL_PAUSE', cancelPending = false } = {}) {
@@ -486,6 +658,114 @@ class AccountControlService {
   }
 }
 
+function normalizePolicyTransitionCommand(command = {}) {
+  const migrationId = requiredString(command.migrationId, 'migrationId');
+  const fromVersion = requiredString(command.fromVersion, 'fromVersion');
+  const toVersion = requiredString(command.toVersion, 'toVersion');
+
+  if (fromVersion !== ACG_FUNDED_V1_POLICY_VERSION || toVersion !== ACG_FUNDED_V2_POLICY_VERSION) {
+    throw new AppError('Only the authorized ACG Funded V1 to V2 transition is supported', {
+      statusCode: 400,
+      code: 'POLICY_TRANSITION_UNSUPPORTED',
+      details: { fromVersion, toVersion },
+    });
+  }
+
+  const policy = command.riskPolicy;
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
+    throw new AppError('riskPolicy is required for policy transition', {
+      statusCode: 400,
+      code: 'INVALID_ACCOUNT_CONTROL_COMMAND',
+    });
+  }
+
+  const keys = Object.keys(policy).sort();
+  const expected = [...V2_DISABLED_EXECUTION_LIMITS].sort();
+  if (
+    keys.length !== expected.length
+    || keys.some((key, index) => key !== expected[index])
+    || V2_DISABLED_EXECUTION_LIMITS.some(key => policy[key] !== null)
+  ) {
+    throw new AppError('V2 policy transition may only clear the five authorized execution restrictions', {
+      statusCode: 400,
+      code: 'POLICY_TRANSITION_SCOPE_VIOLATION',
+      details: { allowedFields: V2_DISABLED_EXECUTION_LIMITS },
+    });
+  }
+
+  return { migrationId, fromVersion, toVersion, riskPolicy: policy };
+}
+
+function policyTransitionInvariantHash(account) {
+  const state = account?.state || {};
+  const protectedState = {
+    status: String(account?.status || ''),
+    tradingEnabled: Boolean(account?.tradingEnabled),
+    federationEnabled: account?.federationEnabled !== false,
+    provisioningContractHash: String(account?.provisioningContractHash || ''),
+    financialRevision: Number(account?.financialRevision || 0),
+    riskDayKey: account?.riskDayKey || null,
+    riskTimezone: account?.riskTimezone || 'UTC',
+    riskProcessingState: account?.riskProcessingState || 'RESOLVED',
+    riskUnresolvedReason: account?.riskUnresolvedReason || null,
+    riskUnresolvedSince: account?.riskUnresolvedSince ? new Date(account.riskUnresolvedSince).toISOString() : null,
+    marginStopOutState: account?.marginStopOutState || 'NONE',
+    marginStopOutEpisodeId: account?.marginStopOutEpisodeId || null,
+    marginStopOutStartedAt: account?.marginStopOutStartedAt ? new Date(account.marginStopOutStartedAt).toISOString() : null,
+    breachedAt: account?.breachedAt ? new Date(account.breachedAt).toISOString() : null,
+    closedAt: account?.closedAt ? new Date(account.closedAt).toISOString() : null,
+    state: {
+      initialBalance: state.initialBalance == null ? null : normalizeDecimal(state.initialBalance),
+      balance: state.balance == null ? null : normalizeDecimal(state.balance),
+      equity: state.equity == null ? null : normalizeDecimal(state.equity),
+      floatingPnl: state.floatingPnl == null ? null : normalizeDecimal(state.floatingPnl),
+      realizedPnlToday: state.realizedPnlToday == null ? null : normalizeDecimal(state.realizedPnlToday),
+      usedMargin: state.usedMargin == null ? null : normalizeDecimal(state.usedMargin),
+      freeMargin: state.freeMargin == null ? null : normalizeDecimal(state.freeMargin),
+      marginLevel: state.marginLevel == null ? null : normalizeDecimal(state.marginLevel),
+      dailyStartEquity: state.dailyStartEquity == null ? null : normalizeDecimal(state.dailyStartEquity),
+    },
+  };
+  return crypto.createHash('sha256').update(canonicalJson(protectedState)).digest('hex');
+}
+
+function assertAuthorizedTransitionReplay(account, transition) {
+  const metadata = account.metadata instanceof Map
+    ? Object.fromEntries(account.metadata)
+    : (account.metadata || {});
+  if (
+    String(metadata.riskPolicyVersion || '') !== String(transition.toVersion)
+    || String(metadata.policyTransitionMigrationId || '') !== String(transition.migrationId)
+    || String(metadata.policyTransitionOriginalProvisioningHash || '') !== String(account.provisioningContractHash || '')
+    || canonicalJson(normalizeExistingRiskPolicy(account.riskPolicy || {})) !== canonicalJson(transition.newPolicy || {})
+  ) {
+    throw new AppError('Recorded policy transition no longer matches the account state', {
+      statusCode: 409,
+      code: 'POLICY_TRANSITION_REPLAY_CONFLICT',
+      details: { migrationId: transition.migrationId },
+    });
+  }
+}
+
+function serializePolicyTransition(transition) {
+  if (!transition) return null;
+  return {
+    id: String(transition._id || transition.transitionId || ''),
+    transitionId: transition.transitionId || null,
+    migrationId: transition.migrationId,
+    fromVersion: transition.fromVersion,
+    toVersion: transition.toVersion,
+    effectiveRiskSequence: Number(transition.effectiveRiskSequence),
+    effectiveFinancialRevision: Number(transition.effectiveFinancialRevision),
+    originalProvisioningContractHash: transition.originalProvisioningContractHash || null,
+    preservedStateHashBefore: transition.preservedStateHashBefore,
+    preservedStateHashAfter: transition.preservedStateHashAfter,
+    status: transition.status,
+    verifiedAt: transition.verifiedAt ? new Date(transition.verifiedAt).toISOString() : null,
+    createdAt: transition.createdAt ? new Date(transition.createdAt).toISOString() : null,
+  };
+}
+
 function normalizeProvisionCommand(command) {
   const tenantId = requiredString(command?.tenantId, 'tenantId');
   const externalRef = requiredString(command?.externalRef, 'externalRef');
@@ -690,7 +970,20 @@ function isCompatibleFundedPolicyRepairReplay(account, input) {
     && String(account.riskTimezone || 'UTC') !== String(input.riskTimezone)
   ) return false;
 
-  return true;
+  const incomingVersion = String(input?.metadata?.riskPolicyVersion || '').trim();
+  if (incomingVersion === ACG_FUNDED_V2_POLICY_VERSION) {
+    const storedHash = String(account.provisioningContractHash || '').trim();
+    return Boolean(
+      storedHash
+      && String(currentMetadata.policyTransitionToVersion || '') === ACG_FUNDED_V2_POLICY_VERSION
+      && String(currentMetadata.policyTransitionFromVersion || '') === ACG_FUNDED_V1_POLICY_VERSION
+      && String(currentMetadata.policyTransitionMigrationId || '').trim()
+      && String(currentMetadata.policyTransitionOriginalProvisioningHash || '') === storedHash
+    );
+  }
+
+  // Preserve the historical V1 repair replay only for non-V2 contracts.
+  return incomingVersion !== ACG_FUNDED_V2_POLICY_VERSION;
 }
 
 function provisioningContractHash(input) {
@@ -808,4 +1101,10 @@ module.exports = {
   normalizeProvisionCommand,
   buildInitialState,
   assertProvisionReplay,
+  normalizePolicyTransitionCommand,
+  policyTransitionInvariantHash,
+  serializePolicyTransition,
+  V2_DISABLED_EXECUTION_LIMITS,
+  ACG_FUNDED_V1_POLICY_VERSION,
+  ACG_FUNDED_V2_POLICY_VERSION,
 };
