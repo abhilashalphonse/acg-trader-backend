@@ -610,7 +610,7 @@ test('aggregate stop risk is evaluated from the selected account exposure only',
   });
 
   assert.equal(accepted.riskAmount, '300');
-  assert.equal(accepted.projectedAggregateRiskPercent, '1.3');
+  assert.equal(accepted.riskPercent, '0.3');
 });
 
 test('open exposure loader never mixes positions from different trading accounts', async () => {
