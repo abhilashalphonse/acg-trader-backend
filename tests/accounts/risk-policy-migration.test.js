@@ -3,86 +3,78 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  normalizeLegacyFundedRiskDefaults,
+  FUNDED_ACCOUNT_RISK_POLICY,
+  repairFundedAccountRiskPolicy,
   metadataValue,
   decimalText,
   modifiedCount,
 } = require('../../src/modules/accounts/risk-policy-migration');
 
-test('legacy ACG Funded risk defaults are cleared without touching non-Funded accounts', async () => {
+test('missing ACG Funded account risk fields are repaired without touching non-Funded accounts', async () => {
   const updates = [];
-  const candidates = [
-    {
-      _id: '64b000000000000000000001',
-      metadata: { fundedAccountId: 'funded-1' },
-      riskPolicy: {
-        maxRiskPerTradePercent: '1',
-        maxAggregateRiskPercent: '2',
-        maxMarginUsagePercent: '50',
-        maxSingleOrderMarginPercentOfFree: '20',
-        maxSymbolMarginPercentOfPermitted: '30',
-      },
-    },
-    {
-      _id: '64b000000000000000000002',
-      metadata: new Map([['fundedAccountId', 'funded-2']]),
-      riskPolicy: {
-        maxRiskPerTradePercent: '1',
-        maxAggregateRiskPercent: null,
-        maxMarginUsagePercent: '50',
-        maxSingleOrderMarginPercentOfFree: '20',
-        maxSymbolMarginPercentOfPermitted: '30',
-      },
-    },
-    {
-      _id: '64b000000000000000000003',
-      metadata: {},
-      riskPolicy: {
-        maxRiskPerTradePercent: '1',
-        maxAggregateRiskPercent: '2',
-        maxMarginUsagePercent: '50',
-        maxSingleOrderMarginPercentOfFree: '20',
-        maxSymbolMarginPercentOfPermitted: '30',
-      },
-    },
-  ];
-
-  const expectedCounts = {
-    'riskPolicy.maxRiskPerTradePercent': 2,
-    'riskPolicy.maxAggregateRiskPercent': 1,
-    'riskPolicy.maxMarginUsagePercent': 2,
-    'riskPolicy.maxSingleOrderMarginPercentOfFree': 2,
-    'riskPolicy.maxSymbolMarginPercentOfPermitted': 2,
+  const funded = {
+    _id: '64b000000000000000000001',
+    metadata: { fundedAccountId: 'funded-1' },
+    riskPolicy: {},
+  };
+  const nonFunded = {
+    _id: '64b000000000000000000002',
+    metadata: {},
+    riskPolicy: {},
   };
 
   const accountModel = {
-    find() {
+    find(filter) {
+      const field = Object.keys(filter)[0];
+      assert.match(field, /^riskPolicy\./);
+      assert.equal(filter[field], null);
       return {
         select() { return this; },
-        async lean() { return candidates; },
+        async lean() { return [funded, nonFunded]; },
       };
     },
     async updateMany(filter, update) {
       updates.push({ filter, update });
-      const field = Object.keys(update.$set)[0];
-      return { modifiedCount: expectedCounts[field] || 0 };
+      assert.deepEqual(filter._id.$in, [funded._id]);
+      return { modifiedCount: 1 };
     },
   };
 
-  const result = await normalizeLegacyFundedRiskDefaults({ accountModel });
+  const result = await repairFundedAccountRiskPolicy({ accountModel });
 
-  assert.deepEqual(result, {
-    maxRiskPerTradeCleared: 2,
-    maxAggregateRiskCleared: 1,
-    maxMarginUsageCleared: 2,
-    maxSingleOrderMarginCleared: 2,
-    maxSymbolMarginCleared: 2,
-  });
-  assert.equal(updates.length, 5);
-  for (const update of updates) {
-    const field = Object.keys(update.update.$set)[0];
-    assert.equal(update.update.$set[field], null);
-  }
+  assert.equal(updates.length, FUNDED_ACCOUNT_RISK_POLICY.length);
+  assert.deepEqual(
+    updates.map(update => update.update.$set),
+    FUNDED_ACCOUNT_RISK_POLICY.map(item => ({ [`riskPolicy.${item.key}`]: item.value })),
+  );
+  assert.deepEqual(
+    result,
+    Object.fromEntries(FUNDED_ACCOUNT_RISK_POLICY.map(item => [item.resultKey, 1])),
+  );
+});
+
+test('repair preserves existing explicit policy values because it only queries null or missing fields', async () => {
+  const findFilters = [];
+  let updates = 0;
+  const accountModel = {
+    find(filter) {
+      findFilters.push(filter);
+      return {
+        select() { return this; },
+        async lean() { return []; },
+      };
+    },
+    async updateMany() {
+      updates += 1;
+      return { modifiedCount: 0 };
+    },
+  };
+
+  const result = await repairFundedAccountRiskPolicy({ accountModel });
+
+  assert.equal(findFilters.length, FUNDED_ACCOUNT_RISK_POLICY.length);
+  assert.equal(updates, 0);
+  assert.ok(Object.values(result).every(value => value === 0));
 });
 
 test('migration helpers normalize metadata and decimal representations', () => {
