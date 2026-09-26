@@ -5,6 +5,8 @@ const { Deal } = require('./deal.model');
 const { Position } = require('./position.model');
 const { AccountLedger } = require('./account-ledger.model');
 const { IdempotencyRecord } = require('./idempotency.model');
+const { AccountRiskEvent } = require('./account-risk-event.model');
+const { AccountRiskStreamService } = require('./account-risk-stream.service');
 const { IdempotencyService } = require('./idempotency.service');
 const { AccountCommandQueue } = require('./account-command-queue');
 const constants = require('./trading.constants');
@@ -15,6 +17,8 @@ module.exports = {
   Position,
   AccountLedger,
   IdempotencyRecord,
+  AccountRiskEvent,
+  AccountRiskStreamService,
   IdempotencyService,
   AccountCommandQueue,
   ...constants,
