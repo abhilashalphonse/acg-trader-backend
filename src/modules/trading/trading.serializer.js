@@ -54,9 +54,33 @@ function serializeAccount(doc) {
       allowedSymbols: Array.isArray(policy.allowedSymbols) ? policy.allowedSymbols : [],
     },
     challenge: { phase: metadata.phase || metadata.challengePhase || null, status: metadata.challengeStatus || null, externalChallengeId: metadata.challengeId || null, fundedAccountId: metadata.fundedAccountId || null, payoutStatus: metadata.payoutStatus || null, riskPolicyVersion: metadata.riskPolicyVersion || null },
+    capabilities: accountCapabilities({ account, policy, metadata }),
+  };
+}
+
+function accountCapabilities({ account, policy, metadata }) {
+  const policyVersion = metadata.riskPolicyVersion || null;
+  const v2LimitsDisabled = [
+    'maxRiskPerTradePercent',
+    'maxAggregateRiskPercent',
+    'maxMarginUsagePercent',
+    'maxSingleOrderMarginPercentOfFree',
+    'maxSymbolMarginPercentOfPermitted',
+  ].every(key => policy?.[key] == null);
+  const fundedV2Confirmed = policyVersion === 'ACG_FUNDED_V2' && v2LimitsDisabled;
+
+  return {
+    policyVersion,
+    fundedV2Confirmed,
+    optionalStopLoss: fundedV2Confirmed,
+    manualLotWithoutStopLoss: fundedV2Confirmed,
+    riskPercentSizing: true,
+    riskPercentSizingRequiresStopDistance: true,
+    marginStopOutLevelPercent: '50',
+    marginStopOutActive: String(account?.marginStopOutState || 'NONE').toUpperCase() === 'ACTIVE',
   };
 }
 
 function plain(doc) { return typeof doc?.toObject === 'function' ? doc.toObject({ getters: false, virtuals: false }) : doc; }
 
-module.exports = { serializeOrder, serializeDeal, serializePosition, serializeAccount, decimalString };
+module.exports = { serializeOrder, serializeDeal, serializePosition, serializeAccount, decimalString, accountCapabilities };
