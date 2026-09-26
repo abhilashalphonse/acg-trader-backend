@@ -800,35 +800,52 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
   };
 }
 
-async function runMongoTransaction(work, timing = null) {
-  const session = await timeAsync(timing, 'mongo_session_start', () => mongoose.startSession());
+async function runMongoTransaction(work, timing = null, {
+  startSession = () => mongoose.startSession(),
+  maxTransientRetries = 3,
+} = {}) {
+  const session = await timeAsync(timing, 'mongo_session_start', startSession);
   let result;
   let transactionWorkMs = 0;
   let transactionAttempts = 0;
+  let transientRetries = 0;
   const transactionStartedAt = timingNowMs();
 
   try {
-    await session.withTransaction(async () => {
-      transactionAttempts += 1;
-      const workStartedAt = timingNowMs();
+    while (true) {
       try {
-        result = await work(session);
-      } finally {
-        transactionWorkMs += timingNowMs() - workStartedAt;
+        await session.withTransaction(async () => {
+          transactionAttempts += 1;
+          const workStartedAt = timingNowMs();
+          try {
+            result = await work(session);
+          } finally {
+            transactionWorkMs += timingNowMs() - workStartedAt;
+          }
+        }, {
+          readConcern: { level: 'snapshot' },
+          writeConcern: { w: 'majority' },
+        });
+        return result;
+      } catch (error) {
+        if (!isTransientTransactionError(error) || transientRetries >= maxTransientRetries) throw error;
+        transientRetries += 1;
       }
-    }, {
-      readConcern: { level: 'snapshot' },
-      writeConcern: { w: 'majority' },
-    });
-    return result;
+    }
   } finally {
     const transactionTotalMs = timingNowMs() - transactionStartedAt;
     setDuration(timing, 'transaction_work', transactionWorkMs);
     setDuration(timing, 'transaction_total', transactionTotalMs);
     setDuration(timing, 'transaction_commit_overhead', Math.max(0, transactionTotalMs - transactionWorkMs));
-    setExecutionContext(timing, { transactionAttempts });
+    setExecutionContext(timing, { transactionAttempts, transactionTransientRetries: transientRetries });
     await timeAsync(timing, 'mongo_session_end', () => session.endSession());
   }
+}
+
+function isTransientTransactionError(error) {
+  if (!error) return false;
+  if (typeof error.hasErrorLabel === 'function' && error.hasErrorLabel('TransientTransactionError')) return true;
+  return Array.isArray(error.errorLabels) && error.errorLabels.includes('TransientTransactionError');
 }
 
 function translateTransactionError(error) {
