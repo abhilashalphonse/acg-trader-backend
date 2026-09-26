@@ -95,7 +95,7 @@ class AtomicReverseService {
     const ledgers = applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel: this.ledgerModel, now, valuationComplete, closeReason: 'REVERSE' });
     await order.save({ session }); await deal.save({ session }); await position.save({ session }); for (const ledger of ledgers) await ledger.save({ session }); await account.save({ session });
     await this.platformEventRelay?.enqueueDeal({ account, deal, session });
-    return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account), execution: serializeOpenExecution(plan, account, postFillRisk) };
+    return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
   }
 
   async #persistOpen({ account, plan, quote, normalized, session, nowMs }) {
@@ -112,7 +112,7 @@ class AtomicReverseService {
     if (compareDecimal(plan.commission, '0') > 0) ledgers.push(new this.ledgerModel({ accountId: account._id, type: 'COMMISSION', amount: subtractDecimal('0', plan.commission), balanceBefore: addDecimal(account.state.balance, plan.commission), balanceAfter: account.state.balance, currency: account.currency, referenceType: 'DEAL', referenceId: deal.dealId, idempotencyKey: `${clientOrderId}:commission`, reason: 'Execution commission' }));
     await order.save({ session }); await position.save({ session }); await deal.save({ session }); for (const ledger of ledgers) await ledger.save({ session }); await account.save({ session });
     await this.platformEventRelay?.enqueueDeal({ account, deal, session });
-    return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
+    return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account), execution: serializeOpenExecution(plan, account, postFillRisk) };
   }
 
   #emitCommitted(result) {
