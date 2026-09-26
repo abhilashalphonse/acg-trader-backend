@@ -95,6 +95,7 @@ class AccountLedgerService {
           });
         }
 
+        account.financialRevision = Number(account.financialRevision || 0) + 1;
         account.state.balance = balanceAfter;
         account.state.equity = equityAfter;
         account.state.freeMargin = freeMarginAfter;
@@ -221,6 +222,7 @@ function serializeAccountState(account) {
     floatingPnl: normalizeDecimal(account.state.floatingPnl),
     usedMargin: normalizeDecimal(account.state.usedMargin),
     freeMargin: normalizeDecimal(account.state.freeMargin),
+    financialRevision: Number(account.financialRevision || 0),
   };
 }
 
