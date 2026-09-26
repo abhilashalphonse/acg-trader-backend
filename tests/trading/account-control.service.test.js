@@ -2,7 +2,13 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { AccountControlService, normalizeProvisionCommand, buildInitialState, assertProvisionReplay } = require('../../src/modules/trading/account-control.service');
+const {
+  AccountControlService,
+  normalizeProvisionCommand,
+  buildInitialState,
+  assertProvisionReplay,
+  policyTransitionInvariantHash,
+} = require('../../src/modules/trading/account-control.service');
 const { dayKeyInTimezone } = require('../../src/modules/trading/risk-day-engine');
 const { challengeSyncSchema } = require('../../src/modules/trading/account-control.routes');
 
@@ -19,6 +25,8 @@ function createFakeModels() {
   const records = new Map();
   const ledgerRecords = [];
   const lifecycleRecords = [];
+  const riskEventRecords = [];
+  const policyTransitionRecords = [];
   let seq = 1;
 
   class FakeAccount {
@@ -49,6 +57,30 @@ function createFakeModels() {
     async save() { lifecycleRecords.push(this); return this; }
   }
 
+  class FakeRiskEvent {
+    constructor(input) { Object.assign(this, input); this._id = input._id || `risk-${riskEventRecords.length + 1}`; }
+    async save() { riskEventRecords.push(this); return this; }
+  }
+
+  class FakePolicyTransition {
+    constructor(input) {
+      Object.assign(this, input);
+      this._id = input._id || `transition-${policyTransitionRecords.length + 1}`;
+      this.transitionId = input.transitionId || `transition-id-${policyTransitionRecords.length + 1}`;
+      this.createdAt = input.createdAt || new Date('2026-09-26T20:00:00.000Z');
+    }
+    async save() {
+      policyTransitionRecords.push(this);
+      return this;
+    }
+    static findOne(filter) {
+      return query(() => policyTransitionRecords.find(row =>
+        (!filter.accountId || String(row.accountId) === String(filter.accountId))
+        && (!filter.migrationId || String(row.migrationId) === String(filter.migrationId))
+      ) || null);
+    }
+  }
+
   const cancelled = [];
   const orderModel = {
     async updateMany(filter, update) {
@@ -65,11 +97,15 @@ function createFakeModels() {
     FakeAccount,
     FakeLedger,
     FakeLifecycle,
+    FakeRiskEvent,
+    FakePolicyTransition,
     orderModel,
     positionModel,
     records,
     ledgerRecords,
     lifecycleRecords,
+    riskEventRecords,
+    policyTransitionRecords,
     cancelled,
   };
 }
@@ -79,6 +115,8 @@ function createService(models, overrides = {}) {
     accountModel: models.FakeAccount,
     ledgerModel: models.FakeLedger,
     lifecycleModel: models.FakeLifecycle,
+    riskEventModel: models.FakeRiskEvent,
+    policyTransitionModel: models.FakePolicyTransition,
     orderModel: models.orderModel,
     positionModel: models.positionModel,
     runTransaction: async work => work(null),
@@ -581,4 +619,311 @@ test('breach liquidation retries use stable position idempotency keys and only r
     ],
   );
   assert.deepEqual(remaining, []);
+});
+
+
+test('authorized V1 to V2 transition clears only the five restrictions and preserves account state', async () => {
+  const models = createFakeModels();
+  const service = createService(models, {
+    now: () => new Date('2026-09-26T20:00:00.000Z'),
+  });
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-policy-v2',
+    ownerExternalRef: 'user-policy-v2',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      profitTarget: '10000',
+      maxRiskPerTradePercent: 1,
+      maxAggregateRiskPercent: 2,
+      maxMarginUsagePercent: 50,
+      maxSingleOrderMarginPercentOfFree: 20,
+      maxSymbolMarginPercentOfPermitted: 30,
+      maxOpenPositions: 10,
+      maxPositionsPerSymbol: 3,
+      maxPendingOrders: 10,
+      maxPendingOrdersPerSymbol: 3,
+    },
+    metadata: {
+      fundedAccountId: 'F-V2-1',
+      phase: 1,
+      riskPolicyVersion: 'ACG_FUNDED_V1',
+    },
+  });
+
+  const account = models.records.get(created.account.id);
+  account.financialRevision = 9;
+  account.riskSequence = 12;
+  account.lastEvaluatedRiskSequence = 10;
+  account.riskProcessingState = 'RISK_UNRESOLVED';
+  account.riskUnresolvedReason = 'RISK_SEQUENCE_GAP';
+  account.marginStopOutState = 'ACTIVE';
+  account.marginStopOutEpisodeId = 'stopout-episode-1';
+  account.state.balance = '98765';
+  account.state.equity = '97000';
+  account.state.floatingPnl = '-1765';
+  account.state.usedMargin = '5000';
+  account.state.freeMargin = '92000';
+  account.state.dailyStartEquity = '99500';
+  const before = policyTransitionInvariantHash(account);
+  const originalHash = account.provisioningContractHash;
+
+  const result = await service.transitionRiskPolicy(created.account.id, {
+    migrationId: 'v2-rollout-2026-09:account-1',
+    fromVersion: 'ACG_FUNDED_V1',
+    toVersion: 'ACG_FUNDED_V2',
+    riskPolicy: {
+      maxRiskPerTradePercent: null,
+      maxAggregateRiskPercent: null,
+      maxMarginUsagePercent: null,
+      maxSingleOrderMarginPercentOfFree: null,
+      maxSymbolMarginPercentOfPermitted: null,
+    },
+  });
+
+  assert.equal(result.idempotentReplay, false);
+  assert.equal(result.account.challenge.riskPolicyVersion, 'ACG_FUNDED_V2');
+  assert.equal(result.account.capabilities.fundedV2Confirmed, true);
+  assert.equal(result.account.capabilities.optionalStopLoss, true);
+  assert.equal(result.account.capabilities.manualLotWithoutStopLoss, true);
+  assert.equal(result.account.riskPolicy.maxRiskPerTradePercent, null);
+  assert.equal(result.account.riskPolicy.maxAggregateRiskPercent, null);
+  assert.equal(result.account.riskPolicy.maxMarginUsagePercent, null);
+  assert.equal(result.account.riskPolicy.maxSingleOrderMarginPercentOfFree, null);
+  assert.equal(result.account.riskPolicy.maxSymbolMarginPercentOfPermitted, null);
+  assert.equal(result.account.riskPolicy.maxOpenPositions, 10);
+  assert.equal(result.account.riskPolicy.maxPositionsPerSymbol, 3);
+  assert.equal(result.account.status, 'ACTIVE');
+  assert.equal(result.account.riskProcessingState, 'RISK_UNRESOLVED');
+  assert.equal(result.account.marginStopOut.state, 'ACTIVE');
+
+  assert.equal(account.provisioningContractHash, originalHash);
+  assert.equal(account.financialRevision, 9);
+  assert.equal(account.riskSequence, 13);
+  assert.equal(account.lastEvaluatedRiskSequence, 10);
+  assert.equal(account.state.balance, '98765');
+  assert.equal(account.state.equity, '97000');
+  assert.equal(account.state.dailyStartEquity, '99500');
+  assert.equal(policyTransitionInvariantHash(account), before);
+
+  assert.equal(models.riskEventRecords.length, 1);
+  assert.equal(models.riskEventRecords[0].type, 'POLICY_TRANSITION');
+  assert.equal(models.riskEventRecords[0].sequence, 13);
+  assert.equal(models.riskEventRecords[0].policyVersion, 'ACG_FUNDED_V2');
+  assert.equal(models.policyTransitionRecords.length, 1);
+  assert.equal(models.policyTransitionRecords[0].effectiveRiskSequence, 13);
+  assert.equal(models.policyTransitionRecords[0].originalProvisioningContractHash, originalHash);
+  assert.equal(models.policyTransitionRecords[0].preservedStateHashBefore, before);
+  assert.equal(models.policyTransitionRecords[0].preservedStateHashAfter, before);
+});
+
+test('V2 transition does not reactivate a breached account or clear unresolved stop-out state', async () => {
+  const models = createFakeModels();
+  const service = createService(models);
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-policy-v2-breached',
+    ownerExternalRef: 'user-policy-v2-breached',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      maxRiskPerTradePercent: 1,
+      maxAggregateRiskPercent: 2,
+      maxMarginUsagePercent: 50,
+      maxSingleOrderMarginPercentOfFree: 20,
+      maxSymbolMarginPercentOfPermitted: 30,
+    },
+    metadata: { fundedAccountId: 'F-V2-B', riskPolicyVersion: 'ACG_FUNDED_V1' },
+  });
+  const account = models.records.get(created.account.id);
+  account.status = 'BREACHED';
+  account.tradingEnabled = false;
+  account.breachedAt = new Date('2026-09-26T19:00:00.000Z');
+  account.riskProcessingState = 'RISK_UNRESOLVED';
+  account.riskUnresolvedReason = 'RISK_SEQUENCE_GAP';
+  account.marginStopOutState = 'ACTIVE';
+  account.marginStopOutEpisodeId = 'episode-breached';
+
+  const result = await service.transitionRiskPolicy(created.account.id, {
+    migrationId: 'v2-rollout-2026-09:breached',
+    fromVersion: 'ACG_FUNDED_V1',
+    toVersion: 'ACG_FUNDED_V2',
+    riskPolicy: {
+      maxRiskPerTradePercent: null,
+      maxAggregateRiskPercent: null,
+      maxMarginUsagePercent: null,
+      maxSingleOrderMarginPercentOfFree: null,
+      maxSymbolMarginPercentOfPermitted: null,
+    },
+  });
+
+  assert.equal(result.account.status, 'BREACHED');
+  assert.equal(result.account.tradingEnabled, false);
+  assert.equal(result.account.riskProcessingState, 'RISK_UNRESOLVED');
+  assert.equal(result.account.marginStopOut.state, 'ACTIVE');
+  assert.equal(result.account.challenge.riskPolicyVersion, 'ACG_FUNDED_V2');
+});
+
+test('policy transition is idempotent by migration id and does not allocate a second risk sequence', async () => {
+  const models = createFakeModels();
+  const service = createService(models);
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-policy-v2-replay',
+    ownerExternalRef: 'user-policy-v2-replay',
+    initialBalance: '100000',
+    riskPolicy: {
+      maxRiskPerTradePercent: 1,
+      maxAggregateRiskPercent: 2,
+      maxMarginUsagePercent: 50,
+      maxSingleOrderMarginPercentOfFree: 20,
+      maxSymbolMarginPercentOfPermitted: 30,
+    },
+    metadata: { fundedAccountId: 'F-V2-R', riskPolicyVersion: 'ACG_FUNDED_V1' },
+  });
+  const command = {
+    migrationId: 'v2-rollout-2026-09:replay',
+    fromVersion: 'ACG_FUNDED_V1',
+    toVersion: 'ACG_FUNDED_V2',
+    riskPolicy: {
+      maxRiskPerTradePercent: null,
+      maxAggregateRiskPercent: null,
+      maxMarginUsagePercent: null,
+      maxSingleOrderMarginPercentOfFree: null,
+      maxSymbolMarginPercentOfPermitted: null,
+    },
+  };
+
+  const first = await service.transitionRiskPolicy(created.account.id, command);
+  const second = await service.transitionRiskPolicy(created.account.id, command);
+
+  assert.equal(first.idempotentReplay, false);
+  assert.equal(second.idempotentReplay, true);
+  assert.equal(models.riskEventRecords.length, 1);
+  assert.equal(models.policyTransitionRecords.length, 1);
+  assert.equal(models.records.get(created.account.id).riskSequence, 1);
+});
+
+test('policy transition rejects scope drift and non-V1 source versions', async () => {
+  const models = createFakeModels();
+  const service = createService(models);
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-policy-v2-strict',
+    ownerExternalRef: 'user-policy-v2-strict',
+    initialBalance: '100000',
+    metadata: { fundedAccountId: 'F-V2-S', riskPolicyVersion: 'ACG_FUNDED_V1' },
+  });
+
+  await assert.rejects(
+    () => service.transitionRiskPolicy(created.account.id, {
+      migrationId: 'bad-policy',
+      fromVersion: 'ACG_FUNDED_V1',
+      toVersion: 'ACG_FUNDED_V2',
+      riskPolicy: {
+        maxRiskPerTradePercent: null,
+        maxAggregateRiskPercent: null,
+        maxMarginUsagePercent: null,
+        maxSingleOrderMarginPercentOfFree: null,
+        maxSymbolMarginPercentOfPermitted: null,
+        maxOpenPositions: null,
+      },
+    }),
+    error => error.code === 'POLICY_TRANSITION_SCOPE_VIOLATION',
+  );
+
+  await assert.rejects(
+    () => service.transitionRiskPolicy(created.account.id, {
+      migrationId: 'wrong-version',
+      fromVersion: 'ACG_FUNDED_V0',
+      toVersion: 'ACG_FUNDED_V2',
+      riskPolicy: {
+        maxRiskPerTradePercent: null,
+        maxAggregateRiskPercent: null,
+        maxMarginUsagePercent: null,
+        maxSingleOrderMarginPercentOfFree: null,
+        maxSymbolMarginPercentOfPermitted: null,
+      },
+    }),
+    error => error.code === 'POLICY_TRANSITION_UNSUPPORTED',
+  );
+});
+
+test('migrated V1 provisioning replay accepts V2 only when an authorized transition marker exists', () => {
+  const legacy = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'contract-funded-v2-transition',
+    ownerExternalRef: 'user-funded-v2-transition',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      profitTarget: '10000',
+      maxRiskPerTradePercent: 1,
+      maxAggregateRiskPercent: 2,
+      maxMarginUsagePercent: 50,
+      maxSingleOrderMarginPercentOfFree: 20,
+      maxSymbolMarginPercentOfPermitted: 30,
+      maxOpenPositions: 10,
+      maxPositionsPerSymbol: 3,
+      maxPendingOrders: 10,
+      maxPendingOrdersPerSymbol: 3,
+    },
+    metadata: { fundedAccountId: 'F-V2-REPLAY', phase: 1, riskPolicyVersion: 'ACG_FUNDED_V1' },
+  });
+  const incomingV2 = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'contract-funded-v2-transition',
+    ownerExternalRef: 'user-funded-v2-transition',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      profitTarget: '10000',
+      maxRiskPerTradePercent: null,
+      maxAggregateRiskPercent: null,
+      maxMarginUsagePercent: null,
+      maxSingleOrderMarginPercentOfFree: null,
+      maxSymbolMarginPercentOfPermitted: null,
+      maxOpenPositions: 10,
+      maxPositionsPerSymbol: 3,
+      maxPendingOrders: 10,
+      maxPendingOrdersPerSymbol: 3,
+    },
+    metadata: { fundedAccountId: 'F-V2-REPLAY', phase: 1, riskPolicyVersion: 'ACG_FUNDED_V2' },
+  });
+
+  const transitioned = {
+    tenantId: TENANT_ID,
+    ownerExternalRef: 'user-funded-v2-transition',
+    userId: null,
+    accountType: 'CHALLENGE',
+    currency: 'USD',
+    leverage: 100,
+    state: { initialBalance: '100000' },
+    riskTimezone: 'UTC',
+    riskPolicy: incomingV2.riskPolicy,
+    metadata: new Map([
+      ['fundedAccountId', 'F-V2-REPLAY'],
+      ['phase', '1'],
+      ['riskPolicyVersion', 'ACG_FUNDED_V2'],
+      ['policyTransitionMigrationId', 'v2-rollout:replay'],
+      ['policyTransitionFromVersion', 'ACG_FUNDED_V1'],
+      ['policyTransitionToVersion', 'ACG_FUNDED_V2'],
+      ['policyTransitionOriginalProvisioningHash', legacy.provisioningContractHash],
+    ]),
+    provisioningContractHash: legacy.provisioningContractHash,
+  };
+
+  assert.equal(assertProvisionReplay(transitioned, incomingV2), transitioned);
+
+  transitioned.metadata.delete('policyTransitionMigrationId');
+  assert.throws(
+    () => assertProvisionReplay(transitioned, incomingV2),
+    error => error.code === 'ACCOUNT_PROVISIONING_CONFLICT'
+      && error.details.mismatches.includes('provisioningContract'),
+  );
 });

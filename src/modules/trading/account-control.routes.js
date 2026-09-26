@@ -22,6 +22,19 @@ const closeSchema = z.object({ reason: z.string().trim().min(1).max(256).optiona
 const flattenSchema = z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict();
 const lifecycleQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(500).optional().default(100) }).strict();
 const observabilityQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(200).optional().default(100) }).strict();
+const policyTransitionSchema = z.object({
+  migrationId: z.string().trim().min(1).max(256),
+  fromVersion: z.literal('ACG_FUNDED_V1'),
+  toVersion: z.literal('ACG_FUNDED_V2'),
+  riskPolicy: z.object({
+    maxRiskPerTradePercent: z.null(),
+    maxAggregateRiskPercent: z.null(),
+    maxMarginUsagePercent: z.null(),
+    maxSingleOrderMarginPercentOfFree: z.null(),
+    maxSymbolMarginPercentOfPermitted: z.null(),
+  }).strict(),
+}).strict();
+
 const challengeSyncSchema = z.object({
   riskPolicy: riskPolicyPatch,
   dailyStartEquity: decimalInput.optional(),
@@ -52,13 +65,18 @@ function createAccountControlRouter(runtime, authService) {
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const { limit } = parse(observabilityQuerySchema, req.query || {});
 
-    const [account, openPositions, closedPositions, deals, orders, lifecycle] = await Promise.all([
+    const [account, openPositions, closedPositions, deals, orders, lifecycle, policyTransitions] = await Promise.all([
       runtime.accountControlService.getById(accountId),
       runtime.tradingHistoryService.positions(accountId, { limit, status: 'OPEN' }),
       runtime.tradingHistoryService.positions(accountId, { limit, status: 'CLOSED' }),
       runtime.tradingHistoryService.deals(accountId, { limit }),
       runtime.tradingHistoryService.orders(accountId, { limit }),
       runtime.accountControlService.lifecycleModel
+        .find({ tenantId: req.servicePrincipal.tenantId, accountId })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(limit)
+        .lean(),
+      runtime.accountControlService.policyTransitionModel
         .find({ tenantId: req.servicePrincipal.tenantId, accountId })
         .sort({ createdAt: -1, _id: -1 })
         .limit(limit)
@@ -85,7 +103,29 @@ function createAccountControlRouter(runtime, authService) {
         metadata: event.metadata instanceof Map ? Object.fromEntries(event.metadata) : (event.metadata || {}),
         createdAt: event.createdAt ? new Date(event.createdAt).toISOString() : null,
       })),
+      policyTransitions: policyTransitions.map(transition => ({
+        id: String(transition._id),
+        transitionId: transition.transitionId || null,
+        migrationId: transition.migrationId,
+        fromVersion: transition.fromVersion,
+        toVersion: transition.toVersion,
+        effectiveRiskSequence: Number(transition.effectiveRiskSequence),
+        effectiveFinancialRevision: Number(transition.effectiveFinancialRevision),
+        originalProvisioningContractHash: transition.originalProvisioningContractHash || null,
+        preservedStateHashBefore: transition.preservedStateHashBefore,
+        preservedStateHashAfter: transition.preservedStateHashAfter,
+        status: transition.status,
+        verifiedAt: transition.verifiedAt ? new Date(transition.verifiedAt).toISOString() : null,
+        createdAt: transition.createdAt ? new Date(transition.createdAt).toISOString() : null,
+      })),
     });
+  });
+
+  router.post('/:accountId/policy-transitions', async (req, res) => {
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    const command = parse(policyTransitionSchema, req.body || {});
+    res.json(await runtime.accountControlService.transitionRiskPolicy(accountId, command));
   });
 
   router.patch('/:accountId/challenge', async (req, res) => {
@@ -132,4 +172,4 @@ function parseId(value) { const result = objectId.safeParse(value); if (!result.
 function parse(schema, value) { const result = schema.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
 function validationError(error) { return new AppError('Invalid account control command', { statusCode: 400, code: 'INVALID_ACCOUNT_CONTROL_COMMAND', details: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) }); }
 
-module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema, flattenSchema, lifecycleQuerySchema, observabilityQuerySchema, challengeSyncSchema };
+module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema, flattenSchema, lifecycleQuerySchema, observabilityQuerySchema, challengeSyncSchema, policyTransitionSchema };
