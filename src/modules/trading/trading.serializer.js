@@ -32,7 +32,7 @@ function serializeAccount(doc) {
   const policy = account.riskPolicy || {};
   const metadata = account.metadata instanceof Map ? Object.fromEntries(account.metadata) : (account.metadata || {});
   return {
-    id: String(account._id), accountCode: account.accountCode, accountType: account.accountType, currency: account.currency, leverage: account.leverage, status: account.status, tradingEnabled: Boolean(account.tradingEnabled), riskDayKey: account.riskDayKey || null, riskTimezone: account.riskTimezone || 'UTC',
+    id: String(account._id), accountCode: account.accountCode, accountType: account.accountType, currency: account.currency, leverage: account.leverage, status: account.status, tradingEnabled: Boolean(account.tradingEnabled), riskDayKey: account.riskDayKey || null, riskTimezone: account.riskTimezone || 'UTC', financialRevision: Number(account.financialRevision || 0), riskSequence: Number(account.riskSequence || 0), lastEvaluatedRiskSequence: Number(account.lastEvaluatedRiskSequence || 0), riskProcessingState: account.riskProcessingState || 'RESOLVED', riskUnresolvedReason: account.riskUnresolvedReason || null,
     state: { initialBalance: decimalString(state.initialBalance), balance: decimalString(state.balance), equity: decimalString(state.equity), floatingPnl: decimalString(state.floatingPnl), realizedPnlToday: decimalString(state.realizedPnlToday), usedMargin: decimalString(state.usedMargin), freeMargin: decimalString(state.freeMargin), dailyStartEquity: decimalString(state.dailyStartEquity) },
     riskPolicy: {
       dailyLoss: policy.dailyLoss ? { limit: decimalString(policy.dailyLoss.limit), reference: policy.dailyLoss.reference } : null,
