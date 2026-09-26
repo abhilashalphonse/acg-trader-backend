@@ -11,12 +11,14 @@ class RiskDayEngine {
     accountModel = TradingAccount,
     commandQueue = new AccountCommandQueue(),
     now = () => new Date(),
+    externalOrdering = false,
   } = {}) {
     this.eventBus = eventBus;
     this.logger = logger;
     this.accountModel = accountModel;
     this.commandQueue = commandQueue;
     this.now = now;
+    this.externalOrdering = externalOrdering;
     this.started = false;
     this.inFlight = new Map();
     this.dayCache = new Map();
@@ -26,12 +28,12 @@ class RiskDayEngine {
   start() {
     if (this.started) return;
     this.started = true;
-    this.eventBus?.on('valuation.account.updated', this.onValuation);
+    if (!this.externalOrdering) this.eventBus?.on('valuation.account.updated', this.onValuation);
   }
 
   async stop() {
     if (!this.started) return;
-    this.eventBus?.off('valuation.account.updated', this.onValuation);
+    if (!this.externalOrdering) this.eventBus?.off('valuation.account.updated', this.onValuation);
     this.started = false;
     await Promise.allSettled([...this.inFlight.values()]);
     this.inFlight.clear();
@@ -39,7 +41,7 @@ class RiskDayEngine {
   }
 
   health() {
-    return { started: this.started, inFlight: this.inFlight.size, cachedAccounts: this.dayCache.size };
+    return { started: this.started, inFlight: this.inFlight.size, cachedAccounts: this.dayCache.size, delegatedToDurableRiskStream: this.externalOrdering };
   }
 
   #schedule(valuation) {
