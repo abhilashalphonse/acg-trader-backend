@@ -133,17 +133,43 @@ class ValuationEngine {
   projectAccountDocument(account) {
     if (!account) return null;
     const accountId = String(account._id || account.id || '');
-    return aggregateAccountValuation({
-      account,
-      positionValuations: this.#valuationsForAccount(accountId),
-      currencyConverter: this.currencyConverter,
-      nowMs: Date.now(),
-    });
+    const base = this.accountBases.get(accountId);
+    const documentRevision = Number(account.financialRevision || 0);
+    const valuationRevision = Number(base?.financialRevision || 0);
+    if (base && valuationRevision !== documentRevision) {
+      return {
+        accountId,
+        complete: false,
+        valuationStatus: 'WAITING',
+        staleFinancialRevision: true,
+        financialRevision: valuationRevision,
+        currentFinancialRevision: documentRevision,
+      };
+    }
+    return {
+      ...aggregateAccountValuation({
+        account,
+        positionValuations: this.#valuationsForAccount(accountId),
+        currencyConverter: this.currencyConverter,
+        nowMs: Date.now(),
+      }),
+      financialRevision: documentRevision,
+    };
   }
 
   overlayAccountDocument(account, { requireLive = false } = {}) {
     const projection = this.projectAccountDocument(account);
     if (!projection) return null;
+    if (projection.staleFinancialRevision) {
+      throw new AppError('Account valuation was calculated from an older financial revision', {
+        statusCode: 409,
+        code: 'STALE_VALUATION_REVISION',
+        details: {
+          valuationRevision: projection.financialRevision,
+          currentFinancialRevision: projection.currentFinancialRevision,
+        },
+      });
+    }
     if (requireLive && projection.valuationStatus !== 'LIVE') {
       throw new AppError('Account valuation is not live; new exposure is paused until all open positions and currency conversions have executable quotes', {
         statusCode: 409,
@@ -285,6 +311,7 @@ class ValuationEngine {
         currencyConverter: this.currencyConverter,
         nowMs: Date.now(),
       }),
+      financialRevision: Number(base.financialRevision || 0),
       sequence: ++this.sequence,
       valuedAtMs: Date.now(),
     };
@@ -305,6 +332,7 @@ function normalizeAccount(account) {
     _id: account?._id,
     accountCode: account?.accountCode || null,
     currency: account?.currency || null,
+    financialRevision: Number(account?.financialRevision || 0),
     state: {
       balance: valueString(state.balance, '0'),
       realizedPnlToday: valueString(state.realizedPnlToday, '0'),
