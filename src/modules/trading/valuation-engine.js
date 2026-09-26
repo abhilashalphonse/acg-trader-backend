@@ -183,7 +183,8 @@ class ValuationEngine {
     account.state.equity = addDecimal(balance, projection.floatingPnl);
     account.state.usedMargin = projection.usedMargin;
     account.state.freeMargin = subtractDecimal(account.state.equity, projection.usedMargin);
-    return { ...projection, balance, equity: account.state.equity.toString(), freeMargin: account.state.freeMargin.toString() };
+    account.state.marginLevel = projection.marginLevel;
+    return { ...projection, balance, equity: account.state.equity.toString(), freeMargin: account.state.freeMargin.toString(), marginLevel: projection.marginLevel };
   }
 
   #safeEvent(event, callback) {
