@@ -62,12 +62,18 @@ class BreachCleanupEngine {
 
   async #claimNext() {
     const now = this.now();
-    const filter = mongoose.trusted({
+    const filter = {
       $or: [
-        { state: { $in: ['PENDING', 'RETRY'] }, nextAttemptAt: { $lte: now } },
-        { state: 'PROCESSING', leaseExpiresAt: { $lte: now } },
+        {
+          state: mongoose.trusted({ $in: ['PENDING', 'RETRY'] }),
+          nextAttemptAt: mongoose.trusted({ $lte: now }),
+        },
+        {
+          state: 'PROCESSING',
+          leaseExpiresAt: mongoose.trusted({ $lte: now }),
+        },
       ],
-    });
+    };
     return this.jobModel.findOneAndUpdate(
       filter,
       {
