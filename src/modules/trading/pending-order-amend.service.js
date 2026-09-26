@@ -40,6 +40,7 @@ class PendingOrderAmendService {
           account,
           symbol,
           nowMs: Date.now(),
+          instrumentModel: this.instrumentModel,
         });
         const pendingExposure = await loadPendingExposure(this.orderModel, normalized.accountId, symbol, session, normalized.orderId);
         const instrument = await this.instrumentModel.findOne({ symbol }).session(session);
