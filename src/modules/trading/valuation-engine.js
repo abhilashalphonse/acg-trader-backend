@@ -147,9 +147,11 @@ class ValuationEngine {
     if (!projection) return null;
 
     const accountRevision = Number(account?.financialRevision ?? 0);
-    const projectionRevision = Number(projection?.financialRevision ?? 0);
+    const accountId = String(account?._id || account?.id || '');
+    const valuationBase = this.accountBases.get(accountId);
+    const projectionRevision = Number(valuationBase?.financialRevision ?? 0);
     if (accountRevision !== projectionRevision) {
-      this.scheduleAccountRevalue(String(account?._id || account?.id || ''), 'financial-revision-mismatch');
+      this.scheduleAccountRevalue(accountId, 'financial-revision-mismatch');
       if (requireLive) {
         throw new AppError('Account valuation was calculated from an older financial revision', {
           statusCode: 409,
