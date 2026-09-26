@@ -11,6 +11,7 @@ const {
   compareDecimal,
 } = require('../../shared/decimal/decimal');
 const { normalizeSymbol } = require('../market-data/market.utils');
+const { calculateCommission } = require('./trading-costs');
 
 const ACG_STANDARD_RISK_POLICY = Object.freeze({
   // Percentage risk limits are ACG Funded product rules. They are disabled
@@ -143,27 +144,83 @@ function calculateStopRiskAmount({
   return convertRiskCurrency(riskInPnlCurrency, pnlCurrency, account?.currency, currencyConverter, nowMs);
 }
 
+function calculateProjectedStopRiskAmount({
+  account,
+  instrument,
+  side,
+  entryPrice,
+  volume,
+  stopLoss,
+  openingCommission = '0',
+  closingCommission = '0',
+  currencyConverter = null,
+  nowMs = Date.now(),
+}) {
+  const rawStopRiskAmount = calculateStopRiskAmount({
+    account,
+    instrument,
+    side,
+    entryPrice,
+    volume,
+    stopLoss,
+    currencyConverter,
+    nowMs,
+  });
+  if (rawStopRiskAmount == null) return null;
+  return addDecimal(
+    addDecimal(rawStopRiskAmount, normalizeNonNegativeCost(openingCommission)),
+    normalizeNonNegativeCost(closingCommission),
+  );
+}
+
 function calculatePositionStopRiskAmount({
   account,
   position,
+  instrument = null,
   currencyConverter = null,
   nowMs = Date.now(),
 }) {
   if (position?.stopLoss === null || position?.stopLoss === undefined || position?.stopLoss === '') return null;
-  return calculateStopRiskAmount({
+
+  const positionInstrument = instrument || {
+    contractSize: position.contractSize,
+    pnlCurrency: position.quoteCurrency,
+    quoteCurrency: position.quoteCurrency,
+    commissionPerLotPerSide: '0',
+    commissionPerLot: '0',
+    commissionRate: '0',
+  };
+  const closingCommission = instrument
+    ? calculateCommission(positionInstrument, position.openVolume, {
+      account,
+      fillPrice: position.stopLoss,
+      currencyConverter,
+      nowMs,
+    })
+    : '0';
+
+  return calculateProjectedStopRiskAmount({
     account,
     instrument: {
-      contractSize: position.contractSize,
-      pnlCurrency: position.quoteCurrency,
-      quoteCurrency: position.quoteCurrency,
+      ...positionInstrument,
+      contractSize: position.contractSize ?? positionInstrument.contractSize,
+      pnlCurrency: position.quoteCurrency || positionInstrument.pnlCurrency || positionInstrument.quoteCurrency,
+      quoteCurrency: position.quoteCurrency || positionInstrument.quoteCurrency,
     },
     side: position.side,
     entryPrice: position.entryPrice,
     volume: position.openVolume,
     stopLoss: position.stopLoss,
+    openingCommission: '0',
+    closingCommission,
     currencyConverter,
     nowMs,
   });
+}
+
+function normalizeNonNegativeCost(value) {
+  const normalized = normalizeDecimal(value ?? '0');
+  return compareDecimal(normalized, '0') > 0 ? normalized : '0';
 }
 
 function throwLimit(message, code, details) {
@@ -178,6 +235,8 @@ function validateMeasuredRisk({
   volume,
   stopLoss,
   exposure,
+  openingCommission = '0',
+  closingCommission = '0',
   currencyConverter,
   nowMs,
 }) {
@@ -195,7 +254,7 @@ function validateMeasuredRisk({
     );
   }
 
-  const tradeRiskAmount = calculateStopRiskAmount({
+  const rawStopRiskAmount = calculateStopRiskAmount({
     account,
     instrument,
     side,
@@ -205,10 +264,19 @@ function validateMeasuredRisk({
     currencyConverter,
     nowMs,
   });
+  const normalizedOpeningCommission = normalizeNonNegativeCost(openingCommission);
+  const normalizedClosingCommission = normalizeNonNegativeCost(closingCommission);
+  const tradeRiskAmount = addDecimal(
+    addDecimal(rawStopRiskAmount ?? '0', normalizedOpeningCommission),
+    normalizedClosingCommission,
+  );
   const tradeRiskPercent = riskPercent(tradeRiskAmount, account);
 
   if (maxRiskPerTradePercent && compareDecimal(tradeRiskPercent, maxRiskPerTradePercent) > 0) {
     throwLimit(`Order risk exceeds the ${maxRiskPerTradePercent}% ACG per-trade limit`, PRE_TRADE_REJECTION_CODES.MAX_TRADE_RISK, {
+      rawStopRiskAmount,
+      openingCommission: normalizedOpeningCommission,
+      closingCommission: normalizedClosingCommission,
       tradeRiskAmount,
       tradeRiskPercent,
       maxRiskPerTradePercent,
@@ -233,7 +301,14 @@ function validateMeasuredRisk({
     }
   }
 
-  return Object.freeze({ tradeRiskAmount, tradeRiskPercent, projectedAggregateRiskPercent });
+  return Object.freeze({
+    rawStopRiskAmount,
+    openingCommission: normalizedOpeningCommission,
+    closingCommission: normalizedClosingCommission,
+    tradeRiskAmount,
+    tradeRiskPercent,
+    projectedAggregateRiskPercent,
+  });
 }
 
 function validateLegacyVolumeLimits({ account, newVolume, exposure, checkPositionVolume }) {
@@ -315,6 +390,7 @@ function validateMarginExposure({
   symbol,
   requiredMargin,
   exposure,
+  openingCommission = '0',
 }) {
   if (requiredMargin === null || requiredMargin === undefined || requiredMargin === '') return Object.freeze({
     projectedMarginUsagePercent: null,
@@ -324,20 +400,36 @@ function validateMarginExposure({
 
   const margin = normalizeDecimal(requiredMargin);
   const equity = accountEquity(account);
+  const normalizedOpeningCommission = normalizeNonNegativeCost(openingCommission);
+  const projectedEquity = subtractDecimal(equity, normalizedOpeningCommission);
+  if (compareDecimal(projectedEquity, '0') <= 0) {
+    throwLimit('Opening commission would exhaust account equity', PRE_TRADE_REJECTION_CODES.MAX_MARGIN_USAGE, {
+      equity,
+      openingCommission: normalizedOpeningCommission,
+      projectedEquity,
+      accountCurrency: account?.currency || null,
+    });
+  }
   const usedMargin = normalizeDecimal(account?.state?.usedMargin ?? '0');
   const freeMargin = normalizeDecimal(account?.state?.freeMargin ?? subtractDecimal(equity, usedMargin));
+  const projectedFreeMargin = compareDecimal(freeMargin, normalizedOpeningCommission) > 0
+    ? subtractDecimal(freeMargin, normalizedOpeningCommission)
+    : '0';
   const projectedUsedMargin = addDecimal(usedMargin, margin);
 
   const maxMarginUsagePercent = enabledLimit(account, 'maxMarginUsagePercent');
   const permittedAccountMargin = maxMarginUsagePercent
-    ? divideDecimal(multiplyDecimal(equity, maxMarginUsagePercent), '100', { scale: 8, rounding: ROUNDING.HALF_UP })
-    : freeMargin;
+    ? divideDecimal(multiplyDecimal(projectedEquity, maxMarginUsagePercent), '100', { scale: 8, rounding: ROUNDING.HALF_UP })
+    : projectedFreeMargin;
   const remainingPermittedMargin = compareDecimal(permittedAccountMargin, usedMargin) > 0
     ? subtractDecimal(permittedAccountMargin, usedMargin)
     : '0';
-  const projectedMarginUsagePercent = divideDecimal(multiplyDecimal(projectedUsedMargin, '100'), equity, { scale: 8, rounding: ROUNDING.HALF_UP });
+  const projectedMarginUsagePercent = divideDecimal(multiplyDecimal(projectedUsedMargin, '100'), projectedEquity, { scale: 8, rounding: ROUNDING.HALF_UP });
   if (maxMarginUsagePercent && compareDecimal(projectedMarginUsagePercent, maxMarginUsagePercent) > 0) {
     throwLimit(`This order would increase margin usage above the ${maxMarginUsagePercent}% ACG limit`, PRE_TRADE_REJECTION_CODES.MAX_MARGIN_USAGE, {
+      equity,
+      openingCommission: normalizedOpeningCommission,
+      projectedEquity,
       usedMargin,
       requiredMargin: margin,
       projectedUsedMargin,
@@ -353,6 +445,9 @@ function validateMarginExposure({
     if (compareDecimal(remainingPermittedMargin, '0') <= 0) {
       throwLimit('No permitted margin capacity remains for new exposure', PRE_TRADE_REJECTION_CODES.MAX_SINGLE_ORDER_EXPOSURE, {
         freeMargin,
+        projectedFreeMargin,
+        projectedEquity,
+        openingCommission: normalizedOpeningCommission,
         permittedAccountMargin,
         usedMargin,
         remainingPermittedMargin,
@@ -364,6 +459,9 @@ function validateMarginExposure({
     if (compareDecimal(singleOrderMarginPercentOfAvailableCapacity, maxSingleOrderMarginPercentOfFree) > 0) {
       throwLimit(`This order exceeds ${maxSingleOrderMarginPercentOfFree}% of remaining permitted margin capacity`, PRE_TRADE_REJECTION_CODES.MAX_SINGLE_ORDER_EXPOSURE, {
         freeMargin,
+        projectedFreeMargin,
+        projectedEquity,
+        openingCommission: normalizedOpeningCommission,
         permittedAccountMargin,
         usedMargin,
         remainingPermittedMargin,
@@ -398,6 +496,7 @@ function validateMarginExposure({
   }
 
   return Object.freeze({
+    projectedEquityAfterCommission: projectedEquity,
     projectedMarginUsagePercent,
     singleOrderMarginPercentOfAvailableCapacity,
     projectedSymbolMarginPercentOfPermitted,
@@ -413,6 +512,8 @@ function validatePreTradeRiskPolicy({
   volume,
   stopLoss = null,
   requiredMargin = null,
+  openingCommission = '0',
+  closingCommission = '0',
   exposure = null,
   pendingExposure = null,
   orderKind = 'OPEN_EXECUTION',
@@ -431,6 +532,8 @@ function validatePreTradeRiskPolicy({
     volume,
     stopLoss,
     exposure,
+    openingCommission,
+    closingCommission,
     currencyConverter,
     nowMs,
   });
@@ -439,6 +542,7 @@ function validatePreTradeRiskPolicy({
     symbol,
     requiredMargin,
     exposure,
+    openingCommission,
   });
 
   return Object.freeze({ ...measuredRisk, ...marginExposure });
@@ -496,6 +600,7 @@ module.exports = {
   ACG_STANDARD_RISK_POLICY,
   PRE_TRADE_REJECTION_CODES,
   calculateStopRiskAmount,
+  calculateProjectedStopRiskAmount,
   calculatePositionStopRiskAmount,
   validatePreTradeRiskPolicy,
   validatePerOrderRiskPolicy,
