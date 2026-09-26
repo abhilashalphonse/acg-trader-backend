@@ -64,9 +64,10 @@ test('protective close realizes floating PnL without double-counting equity', ()
   assert.equal(ledgers[0].type, 'REALIZED_PNL');
 });
 
-test('only STOP_LOSS and TAKE_PROFIT are valid internal protective close reasons', () => {
+test('system close reasons include stop loss, take profit and margin stop-out', () => {
   assert.equal(normalizeCloseReason('stop_loss'), 'STOP_LOSS');
   assert.equal(normalizeCloseReason('take_profit'), 'TAKE_PROFIT');
+  assert.equal(normalizeCloseReason('margin_stop_out'), 'MARGIN_STOP_OUT');
   assert.equal(normalizeCloseReason(null), null);
   assert.throws(() => normalizeCloseReason('manual'), error => error.code === 'INVALID_CLOSE_REASON');
 });
