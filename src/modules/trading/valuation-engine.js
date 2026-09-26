@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const { addDecimal, subtractDecimal } = require('../../shared/decimal/decimal');
@@ -144,6 +145,28 @@ class ValuationEngine {
   overlayAccountDocument(account, { requireLive = false } = {}) {
     const projection = this.projectAccountDocument(account);
     if (!projection) return null;
+
+    const accountRevision = Number(account?.financialRevision ?? 0);
+    const projectionRevision = Number(projection?.financialRevision ?? 0);
+    if (accountRevision !== projectionRevision) {
+      this.scheduleAccountRevalue(String(account?._id || account?.id || ''), 'financial-revision-mismatch');
+      if (requireLive) {
+        throw new AppError('Account valuation was calculated from an older financial revision', {
+          statusCode: 409,
+          code: 'ACCOUNT_VALUATION_REVISION_STALE',
+          details: {
+            accountFinancialRevision: accountRevision,
+            valuationFinancialRevision: projectionRevision,
+          },
+        });
+      }
+      return {
+        ...projection,
+        valuationStatus: 'STALE_REVISION',
+        complete: false,
+      };
+    }
+
     if (requireLive && projection.valuationStatus !== 'LIVE') {
       throw new AppError('Account valuation is not live; new exposure is paused until all open positions and currency conversions have executable quotes', {
         statusCode: 409,
@@ -285,7 +308,9 @@ class ValuationEngine {
         currencyConverter: this.currencyConverter,
         nowMs: Date.now(),
       }),
+      eventId: crypto.randomUUID(),
       sequence: ++this.sequence,
+      financialRevision: Number(base.financialRevision || 0),
       valuedAtMs: Date.now(),
     };
     this.accountValuations.set(String(accountId), valuation);
@@ -305,6 +330,7 @@ function normalizeAccount(account) {
     _id: account?._id,
     accountCode: account?.accountCode || null,
     currency: account?.currency || null,
+    financialRevision: Number(account?.financialRevision || 0),
     state: {
       balance: valueString(state.balance, '0'),
       realizedPnlToday: valueString(state.realizedPnlToday, '0'),
