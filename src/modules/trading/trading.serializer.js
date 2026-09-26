@@ -53,7 +53,7 @@ function serializeAccount(doc) {
       maxSymbolMarginPercentOfPermitted: decimalString(policy.maxSymbolMarginPercentOfPermitted),
       allowedSymbols: Array.isArray(policy.allowedSymbols) ? policy.allowedSymbols : [],
     },
-    challenge: { phase: metadata.phase || metadata.challengePhase || null, status: metadata.challengeStatus || null, externalChallengeId: metadata.challengeId || null, fundedAccountId: metadata.fundedAccountId || null, payoutStatus: metadata.payoutStatus || null },
+    challenge: { phase: metadata.phase || metadata.challengePhase || null, status: metadata.challengeStatus || null, externalChallengeId: metadata.challengeId || null, fundedAccountId: metadata.fundedAccountId || null, payoutStatus: metadata.payoutStatus || null, riskPolicyVersion: metadata.riskPolicyVersion || null },
   };
 }
 
