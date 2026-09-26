@@ -27,12 +27,12 @@ function account(overrides = {}) {
     riskDayKey: '2026-09-26',
     riskTimezone: 'UTC',
     riskPolicy: {
-      dailyLoss: { limit: '3000' },
-      maxLoss: { limit: '6000' },
+      dailyLoss: { limit: '0' },
+      maxLoss: { limit: '0' },
       allowedSymbols: [],
     },
     state: {
-      initialBalance: '100000',
+      initialBalance: '1000',
       balance: '420',
       equity: '420',
       floatingPnl: '0',
@@ -40,7 +40,7 @@ function account(overrides = {}) {
       usedMargin: '1000',
       freeMargin: '-580',
       marginLevel: '42',
-      dailyStartEquity: '100000',
+      dailyStartEquity: '1000',
     },
     marginStopOutState: 'NONE',
     marginStopOutEpisodeId: null,
@@ -427,6 +427,11 @@ test('a later stop-out episode can start after the previous episode recovered', 
 
 test('simultaneous challenge breach supersedes margin stop-out and does not create a stop-out job', async () => {
   const a = account({
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      allowedSymbols: [],
+    },
     state: {
       ...account().state,
       initialBalance: '100000',
