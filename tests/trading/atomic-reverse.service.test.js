@@ -97,6 +97,10 @@ test('atomic reverse persists close and opposite open inside one transaction and
   assert.equal(f.saved.positions[0].openVolume, '1');
   assert.equal(f.saved.orders[0].savedSession, transactionSession);
   assert.equal(f.saved.orders[1].savedSession, transactionSession);
+  assert.equal(result.open.execution.immediateOpeningPnl, '-10');
+  assert.equal(result.open.execution.resultingAccount.floatingPnl, '-10');
+  assert.equal(result.open.execution.resultingAccount.equity, '100080');
+  assert.equal(result.open.execution.resultingAccount.usedMargin, '1100.95');
   assert.notEqual(f.saved.orders[0].clientOrderId, f.saved.orders[1].clientOrderId);
   assert.equal(events.some(([name]) => name === 'trading.position.closed'), true);
   assert.equal(events.some(([name]) => name === 'trading.position.opened'), true);
