@@ -656,7 +656,7 @@ test('authorized V1 to V2 transition clears only the five restrictions and prese
   const account = models.records.get(created.account.id);
   account.financialRevision = 9;
   account.riskSequence = 12;
-  account.lastEvaluatedRiskSequence = 12;
+  account.lastEvaluatedRiskSequence = 10;
   account.riskProcessingState = 'RISK_UNRESOLVED';
   account.riskUnresolvedReason = 'RISK_SEQUENCE_GAP';
   account.marginStopOutState = 'ACTIVE';
@@ -702,7 +702,7 @@ test('authorized V1 to V2 transition clears only the five restrictions and prese
   assert.equal(account.provisioningContractHash, originalHash);
   assert.equal(account.financialRevision, 9);
   assert.equal(account.riskSequence, 13);
-  assert.equal(account.lastEvaluatedRiskSequence, 13);
+  assert.equal(account.lastEvaluatedRiskSequence, 10);
   assert.equal(account.state.balance, '98765');
   assert.equal(account.state.equity, '97000');
   assert.equal(account.state.dailyStartEquity, '99500');
