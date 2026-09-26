@@ -49,6 +49,7 @@ class MarketOrderService {
     ledgerModel = AccountLedger,
     commandQueue = new AccountCommandQueue(),
     idempotencyService = new IdempotencyService(),
+    postFillRiskService = null,
     runTransaction = runMongoTransaction,
   }) {
     Object.assign(this, {
@@ -66,6 +67,7 @@ class MarketOrderService {
       ledgerModel,
       commandQueue,
       idempotencyService,
+      postFillRiskService,
       runTransaction,
     });
   }
@@ -364,6 +366,9 @@ class MarketOrderService {
 
     const ledgers = [];
     applyOpenAccountMutation(account, plan);
+    const postFillRisk = this.postFillRiskService
+      ? await this.postFillRiskService.evaluateAndApply({ account, order, deal, session, now })
+      : null;
     if (compareDecimal(plan.commission, '0') > 0) {
       ledgers.push(new this.ledgerModel(buildCommissionLedger({
         account,
@@ -387,7 +392,7 @@ class MarketOrderService {
       () => this.platformEventRelay?.enqueueDeal({ account, deal, session }),
     );
 
-    const response = executionResponse('OPEN', order, deal, position, account, plan);
+    const response = executionResponse('OPEN', order, deal, position, account, plan, postFillRisk);
     await timeAsync(
       timing,
       'idempotency_complete',
@@ -654,7 +659,7 @@ function buildCommissionLedger({ account, amount, balanceAfter, referenceId, ide
   };
 }
 
-function serializeOpenExecution(plan, account) {
+function serializeOpenExecution(plan, account, postFillRisk = null) {
   if (!plan) return null;
   return {
     fillPrice: plan.fillPrice,
@@ -670,6 +675,8 @@ function serializeOpenExecution(plan, account) {
       marginLevel: account.state.marginLevel == null ? null : normalizeDecimal(account.state.marginLevel),
       financialRevision: Number(account.financialRevision || 0),
     },
+    breached: postFillRisk?.breached === true || String(account.status || '').toUpperCase() === 'BREACHED',
+    breachEvidence: postFillRisk?.outcome?.evidence || null,
   };
 }
 
@@ -678,25 +685,29 @@ function marginLevel(equity, usedMargin) {
   return multiplyDecimal(divideDecimal(equity, usedMargin, { scale: 8 }), '100');
 }
 
-function executionResponse(operation, order, deal, position, account, plan = null) {
+function executionResponse(operation, order, deal, position, account, plan = null, postFillRisk = null) {
   return {
     operation,
     order: serializeOrder(order),
     deal: serializeDeal(deal),
     position: serializePosition(position),
     account: serializeAccount(account),
-    ...(operation === 'OPEN' && plan ? { execution: serializeOpenExecution(plan, account) } : {}),
+    ...(operation === 'OPEN' && plan ? { execution: serializeOpenExecution(plan, account, postFillRisk) } : {}),
   };
 }
 
 function openEvents(response) {
-  return [
+  const events = [
     ['trading.order.accepted', response.order],
     ['trading.order.filled', response.order],
     ['trading.deal.created', response.deal],
     ['trading.position.opened', response.position],
     ['trading.account.updated', response.account],
   ];
+  if (String(response.account?.status || '').toUpperCase() === 'BREACHED') {
+    events.push(['trading.account.breached', response.account]);
+  }
+  return events;
 }
 
 function closeEvents(response, fullClose) {
