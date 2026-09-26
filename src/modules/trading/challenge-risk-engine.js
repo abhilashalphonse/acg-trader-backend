@@ -1,150 +1,165 @@
 'use strict';
 
 const { normalizeDecimal, subtractDecimal, compareDecimal } = require('../../shared/decimal/decimal');
-const { TradingAccount } = require('../accounts/trading-account.model');
-const { dayKeyInTimezone } = require('./risk-day-engine');
+const { RiskStreamService } = require('./risk-stream.service');
 
 class ChallengeRiskEngine {
   constructor({
     eventBus,
     accountControlService,
+    riskStreamService = new RiskStreamService(),
     logger = null,
-    accountModel = TradingAccount,
-    now = () => new Date(),
   } = {}) {
     this.eventBus = eventBus;
     this.accountControlService = accountControlService;
+    this.riskStreamService = riskStreamService;
     this.logger = logger;
-    this.accountModel = accountModel;
-    this.now = now;
     this.started = false;
     this.inFlight = new Map();
-    this.accounts = new Map();
-    this.onValuation = valuation => this.#schedule(valuation);
-    this.onAccountUpdated = account => this.#cacheAccount(account);
-    this.onAccountControlled = account => this.#cacheAccount(account);
+    this.rerun = new Set();
+    this.onValuation = valuation => { void this.#ingest(valuation); };
   }
 
-  start() {
+  async start() {
     if (this.started) return;
     this.started = true;
     this.eventBus?.on('valuation.account.updated', this.onValuation);
-    this.eventBus?.on('trading.account.updated', this.onAccountUpdated);
-    for (const event of ['trading.account.paused', 'trading.account.resumed', 'trading.account.disabled', 'trading.account.breached', 'trading.account.closed']) {
-      this.eventBus?.on(event, this.onAccountControlled);
-    }
+    const pending = await this.riskStreamService.pendingAccountIds();
+    for (const accountId of pending) this.#scheduleDrain(accountId);
   }
 
   async stop() {
     if (!this.started) return;
     this.eventBus?.off('valuation.account.updated', this.onValuation);
-    this.eventBus?.off('trading.account.updated', this.onAccountUpdated);
-    for (const event of ['trading.account.paused', 'trading.account.resumed', 'trading.account.disabled', 'trading.account.breached', 'trading.account.closed']) {
-      this.eventBus?.off(event, this.onAccountControlled);
-    }
     this.started = false;
     await Promise.allSettled([...this.inFlight.values()]);
     this.inFlight.clear();
-    this.accounts.clear();
+    this.rerun.clear();
   }
 
   health() {
-    return { started: this.started, inFlight: this.inFlight.size, cachedAccounts: this.accounts.size };
+    return {
+      started: this.started,
+      inFlight: this.inFlight.size,
+      rerunAccounts: this.rerun.size,
+      durableOrderedRisk: true,
+    };
   }
 
-  #schedule(valuation) {
-    if (!valuation || valuation.complete !== true || String(valuation.valuationStatus || '').toUpperCase() !== 'LIVE') return;
-    const accountId = String(valuation.accountId || valuation.id || '').trim();
-    if (!accountId || this.inFlight.has(accountId)) return;
-
-    const work = this.#evaluate(accountId, valuation)
-      .catch(error => this.logger?.error({ err: error, accountId }, 'Challenge risk evaluation failed'))
-      .finally(() => {
-        if (this.inFlight.get(accountId) === work) this.inFlight.delete(accountId);
-      });
-    this.inFlight.set(accountId, work);
-  }
-
-  async #evaluate(accountId, valuation) {
-    let account = this.accounts.get(accountId);
-    if (!account) {
-      const loaded = await this.accountModel.findById(accountId).lean();
-      if (!loaded) return;
-      account = normalizeAccount(loaded);
-      this.accounts.set(accountId, account);
+  async #ingest(valuation) {
+    try {
+      const accepted = await this.riskStreamService.ingestValuation(valuation);
+      if (!accepted?.accepted || !accepted.accountId) return;
+      this.#scheduleDrain(accepted.accountId);
+    } catch (error) {
+      this.logger?.error({ err: error, accountId: valuation?.accountId }, 'Durable challenge risk ingestion failed');
     }
+  }
 
-    if (account.status !== 'ACTIVE' || account.tradingEnabled !== true) return;
+  #scheduleDrain(accountId) {
+    const key = String(accountId || '').trim();
+    if (!key) return;
+    if (this.inFlight.has(key)) {
+      this.rerun.add(key);
+      return;
+    }
+    const work = this.#drain(key)
+      .catch(error => this.logger?.error({ err: error, accountId: key }, 'Challenge risk replay failed'))
+      .finally(() => {
+        if (this.inFlight.get(key) === work) this.inFlight.delete(key);
+        if (this.rerun.delete(key) && this.started) this.#scheduleDrain(key);
+      });
+    this.inFlight.set(key, work);
+  }
 
-    const today = dayKeyInTimezone(this.now(), account.riskTimezone);
-    if (account.riskDayKey !== today) return;
+  async #drain(accountId) {
+    while (this.started) {
+      const next = await this.riskStreamService.getNext(accountId);
+      if (!next?.account || next.gap || !next.event) return;
 
-    const equity = normalizeDecimal(valuation.equity);
-    const dailyStart = normalizeDecimal(account.dailyStartEquity);
-    const initial = normalizeDecimal(account.initialBalance);
-    const dailyLimit = normalizeDecimal(account.dailyLossLimit);
-    const maxLimit = normalizeDecimal(account.maxLossLimit);
+      const event = next.event;
+      if (event.state && event.state !== 'RECEIVED') {
+        await this.riskStreamService.complete(accountId, event.sequence, {
+          state: event.state,
+          result: event.result || null,
+        });
+        continue;
+      }
 
-    const maxBreached = compareDecimal(maxLimit, '0') > 0
-      && compareDecimal(equity, subtractDecimal(initial, maxLimit)) <= 0;
-    const dailyBreached = compareDecimal(dailyLimit, '0') > 0
-      && compareDecimal(equity, subtractDecimal(dailyStart, dailyLimit)) <= 0;
+      if (event.type !== 'VALUATION') {
+        await this.riskStreamService.complete(accountId, event.sequence, {
+          state: 'EVALUATED',
+          result: { type: event.type, applied: true },
+        });
+        continue;
+      }
 
-    if (!maxBreached && !dailyBreached) return;
+      const outcome = evaluateRiskContext(event.context || {});
+      if (!outcome.breached) {
+        await this.riskStreamService.complete(accountId, event.sequence, {
+          state: 'EVALUATED',
+          result: outcome,
+        });
+        continue;
+      }
 
-    const reason = maxBreached ? 'MAX_LOSS_LIMIT_REACHED' : 'DAILY_LOSS_LIMIT_REACHED';
-    const breachEvidence = buildBreachEvidence({
+      const currentStatus = String(next.account.status || '').toUpperCase();
+      if (currentStatus === 'ACTIVE' && next.account.tradingEnabled === true) {
+        await this.accountControlService.breach(accountId, {
+          reason: outcome.reason,
+          evidence: outcome.evidence,
+        });
+      }
+
+      await this.riskStreamService.complete(accountId, event.sequence, {
+        state: 'BREACHED',
+        result: outcome,
+      });
+      return;
+    }
+  }
+}
+
+function evaluateRiskContext(context) {
+  const equity = normalizeDecimal(context.equity ?? '0');
+  const dailyStart = normalizeDecimal(context.dailyStartEquity ?? '0');
+  const initial = normalizeDecimal(context.initialBalance ?? '0');
+  const dailyLimit = normalizeDecimal(context.dailyLossLimit ?? '0');
+  const maxLimit = normalizeDecimal(context.maxLossLimit ?? '0');
+
+  const maxBreached = compareDecimal(maxLimit, '0') > 0
+    && compareDecimal(equity, subtractDecimal(initial, maxLimit)) <= 0;
+  const dailyBreached = compareDecimal(dailyLimit, '0') > 0
+    && compareDecimal(equity, subtractDecimal(dailyStart, dailyLimit)) <= 0;
+
+  if (!maxBreached && !dailyBreached) {
+    return {
+      breached: false,
+      equity,
+      riskDayKey: context.riskDayKey || null,
+      policyVersion: context.policyVersion || null,
+    };
+  }
+
+  const reason = maxBreached ? 'MAX_LOSS_LIMIT_REACHED' : 'DAILY_LOSS_LIMIT_REACHED';
+  return {
+    breached: true,
+    reason,
+    evidence: buildBreachEvidence({
       reason,
       maxBreached,
       dailyBreached,
-      valuation,
-      account,
+      context,
       equity,
       dailyStart,
       initial,
       dailyLimit,
       maxLimit,
-    });
-
-    // Prevent repeated breach calls while the durable lifecycle transaction is
-    // running; the subsequent control event will refresh this cache as well.
-    account.status = 'BREACHED';
-    account.tradingEnabled = false;
-    try {
-      await this.accountControlService.breach(accountId, { reason, evidence: breachEvidence });
-    } catch (error) {
-      // Allow a later valuation to retry if the durable breach transaction
-      // itself failed.
-      account.status = 'ACTIVE';
-      account.tradingEnabled = true;
-      throw error;
-    }
-  }
-
-  #cacheAccount(account) {
-    const normalized = normalizeAccount(account);
-    if (!normalized.id) return;
-    this.accounts.set(normalized.id, normalized);
-  }
-}
-
-function normalizeAccount(account) {
-  const state = account?.state || {};
-  const policy = account?.riskPolicy || {};
-  return {
-    id: String(account?.id || account?._id || account?.accountId || ''),
-    status: String(account?.status || '').toUpperCase(),
-    tradingEnabled: account?.tradingEnabled === true,
-    riskDayKey: account?.riskDayKey || null,
-    riskTimezone: String(account?.riskTimezone || 'UTC'),
-    initialBalance: value(state.initialBalance, '0'),
-    dailyStartEquity: value(state.dailyStartEquity, state.initialBalance ?? '0'),
-    dailyLossLimit: value(policy.dailyLoss?.limit, '0'),
-    maxLossLimit: value(policy.maxLoss?.limit, '0'),
+    }),
   };
 }
 
-function buildBreachEvidence({ reason, maxBreached, dailyBreached, valuation, account, equity, dailyStart, initial, dailyLimit, maxLimit }) {
+function buildBreachEvidence({ reason, maxBreached, dailyBreached, context, equity, dailyStart, initial, dailyLimit, maxLimit }) {
   const maxBreach = reason === 'MAX_LOSS_LIMIT_REACHED';
   const reference = maxBreach ? initial : dailyStart;
   const limit = maxBreach ? maxLimit : dailyLimit;
@@ -161,26 +176,34 @@ function buildBreachEvidence({ reason, maxBreached, dailyBreached, valuation, ac
     reason,
     rule: maxBreach ? 'MAX_DRAWDOWN' : 'DAILY_DRAWDOWN',
     triggeredRules,
-    balance: value(valuation?.balance, account?.balance ?? '0'),
+    balance: value(context.balance, '0'),
     equity,
-    floatingPnl: value(valuation?.floatingPnl, '0'),
-    usedMargin: value(valuation?.usedMargin, '0'),
-    freeMargin: value(valuation?.freeMargin, '0'),
+    floatingPnl: value(context.floatingPnl, '0'),
+    usedMargin: value(context.usedMargin, '0'),
+    freeMargin: value(context.freeMargin, '0'),
+    marginLevel: value(context.marginLevel, null),
     dailyStartEquity: dailyStart,
     initialBalance: initial,
     limitAmount: limit,
     thresholdEquity: threshold,
     actualLoss,
     breachAmount,
-    riskDayKey: account?.riskDayKey || null,
-    valuationSequence: Number.isFinite(Number(valuation?.sequence)) ? Number(valuation.sequence) : null,
-    valuedAtMs: Number.isFinite(Number(valuation?.valuedAtMs)) ? Number(valuation.valuedAtMs) : Date.now(),
+    riskDayKey: context.riskDayKey || null,
+    riskTimezone: context.riskTimezone || 'UTC',
+    policyVersion: context.policyVersion || null,
+    financialRevision: Number(context.financialRevision || 0),
+    valuationSequence: Number.isFinite(Number(context.valuationSequence)) ? Number(context.valuationSequence) : null,
+    valuedAtMs: Number.isFinite(Number(context.valuedAtMs)) ? Number(context.valuedAtMs) : null,
   });
 }
 
 function value(input, fallback) {
-  if (input === null || input === undefined) return String(fallback ?? '0');
+  if (input === null || input === undefined) return fallback == null ? null : String(fallback);
   return input?.toString ? input.toString() : String(input);
 }
 
-module.exports = { ChallengeRiskEngine, normalizeAccount };
+module.exports = {
+  ChallengeRiskEngine,
+  evaluateRiskContext,
+  buildBreachEvidence,
+};
