@@ -204,12 +204,12 @@ function validateChallengeRiskForOpen(account, nowMs = Date.now()) {
   const currentRiskDay = dayKeyInTimezone(new Date(nowMs), account.riskTimezone || 'UTC');
   // Risk-day transitions are ordered durable risk-stream facts. Order execution
   // must never mutate the daily baseline opportunistically.
-  if (!account.riskDayKey || account.riskDayKey !== currentRiskDay) {
+  if (account.riskDayKey && account.riskDayKey !== currentRiskDay) {
     throw new AppError('Risk-day rollover is not yet durably reconciled', {
       statusCode: 409,
       code: 'RISK_DAY_ROLLOVER_PENDING',
       details: {
-        accountRiskDayKey: account.riskDayKey || null,
+        accountRiskDayKey: account.riskDayKey,
         currentRiskDayKey: currentRiskDay,
       },
     });
