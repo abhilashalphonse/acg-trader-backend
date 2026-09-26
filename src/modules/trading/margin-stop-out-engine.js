@@ -243,6 +243,7 @@ class MarginStopOutEngine {
           return;
         }
 
+        const nowMs = this.now().getTime();
         const projection = this.valuationEngine?.overlayAccountDocument(account, { requireLive: true });
         if (!projection?.complete) {
           throw retryable('Account valuation is incomplete during margin stop-out', 'STOP_OUT_VALUATION_UNAVAILABLE');
@@ -251,7 +252,7 @@ class MarginStopOutEngine {
         const challenge = evaluateChallengePrecedence(account, {
           ...projection,
           financialRevision: Number(account.financialRevision || 0),
-          valuedAtMs: Date.now(),
+          valuedAtMs: nowMs,
         });
         if (challenge.breached) {
           await this.accountControlService.breach(String(account._id), {
@@ -278,7 +279,7 @@ class MarginStopOutEngine {
           account,
           quoteStore: this.quoteStore,
           currencyConverter: this.currencyConverter,
-          nowMs: Date.now(),
+          nowMs,
         });
         const position = ranked[0];
         if (!position) throw retryable('No position has a live valuation for stop-out', 'STOP_OUT_POSITION_VALUATION_UNAVAILABLE');
@@ -293,7 +294,7 @@ class MarginStopOutEngine {
           instrument,
           quote,
           currencyConverter: this.currencyConverter,
-          nowMs: Date.now(),
+          nowMs,
           stopOutLevelPercent: STOP_OUT_LEVEL_PERCENT,
         });
 
