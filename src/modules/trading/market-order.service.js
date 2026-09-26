@@ -799,8 +799,8 @@ async function loadOpenExposure(positionModel, accountId, session = null, {
   };
 }
 
-async function runMongoTransaction(work, timing = null) {
-  const session = await timeAsync(timing, 'mongo_session_start', () => mongoose.startSession());
+async function runMongoTransaction(work, timing = null, { startSession = () => mongoose.startSession() } = {}) {
+  const session = await timeAsync(timing, 'mongo_session_start', () => startSession());
   let result;
   let transactionWorkMs = 0;
   let transactionAttempts = 0;
