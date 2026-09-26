@@ -14,6 +14,7 @@ const { Deal } = require('../modules/trading/deal.model');
 const { Position } = require('../modules/trading/position.model');
 const { AccountLedger } = require('../modules/trading/account-ledger.model');
 const { IdempotencyRecord } = require('../modules/trading/idempotency.model');
+const { AccountRiskEvent } = require('../modules/trading/account-risk-event.model');
 const { PlatformEventOutbox } = require('../modules/integration/platform-event-outbox.model');
 const { ReconciliationReport } = require('../modules/operations/reconciliation-report.model');
 const { TraderProfile } = require('../modules/profile/trader-profile.model');
@@ -33,6 +34,7 @@ const CRITICAL_MODELS = Object.freeze([
   Position,
   AccountLedger,
   IdempotencyRecord,
+  AccountRiskEvent,
   PlatformEventOutbox,
   ReconciliationReport,
   TraderProfile,
