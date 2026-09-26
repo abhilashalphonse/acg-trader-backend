@@ -206,6 +206,13 @@ function validateAccountForOpen(account, symbol, nowMs = Date.now()) {
       details: { reason: account.riskUnresolvedReason || null },
     });
   }
+  if (String(account.marginStopOutState || 'NONE').toUpperCase() === 'ACTIVE') {
+    throw new AppError('New exposure is paused while margin stop-out liquidation is active', {
+      statusCode: 409,
+      code: 'MARGIN_STOP_OUT_ACTIVE',
+      details: { episodeId: account.marginStopOutEpisodeId || null, stopOutLevelPercent: '50' },
+    });
+  }
   validateChallengeRiskForOpen(account, nowMs);
   const allowed = account.riskPolicy?.allowedSymbols || [];
   const canonical = normalizeSymbol(symbol);
