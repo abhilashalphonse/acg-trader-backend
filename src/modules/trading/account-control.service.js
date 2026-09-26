@@ -634,7 +634,13 @@ function assertProvisionReplay(account, input) {
 
   const storedContractHash = String(account.provisioningContractHash || '').trim();
   if (storedContractHash && storedContractHash !== input.provisioningContractHash) {
-    mismatches.push('provisioningContract');
+    // ACG Funded account policies were repaired in place after an earlier
+    // migration incorrectly cleared official account-level limits. Preserve
+    // immutable provisioning hashes, but allow an idempotent replay when the
+    // live account state now exactly matches the incoming Funded contract.
+    if (!isCompatibleFundedPolicyRepairReplay(account, input)) {
+      mismatches.push('provisioningContract');
+    }
   } else if (!storedContractHash) {
     if (
       input.riskPolicy
@@ -660,6 +666,31 @@ function assertProvisionReplay(account, input) {
     });
   }
   return account;
+}
+
+function isCompatibleFundedPolicyRepairReplay(account, input) {
+  const currentMetadata = account.metadata instanceof Map
+    ? Object.fromEntries(account.metadata)
+    : (account.metadata || {});
+  const storedFundedAccountId = String(currentMetadata.fundedAccountId ?? '').trim();
+  const incomingFundedAccountId = String(input?.metadata?.fundedAccountId ?? '').trim();
+  if (!storedFundedAccountId || storedFundedAccountId !== incomingFundedAccountId) return false;
+
+  if (
+    canonicalJson(normalizeExistingRiskPolicy(account.riskPolicy || {}))
+    !== canonicalJson(input.riskPolicy || {})
+  ) return false;
+
+  for (const [key, value] of Object.entries(input.metadata || {})) {
+    if (String(currentMetadata[key] ?? '') !== String(value)) return false;
+  }
+
+  if (
+    input.riskTimezone
+    && String(account.riskTimezone || 'UTC') !== String(input.riskTimezone)
+  ) return false;
+
+  return true;
 }
 
 function provisioningContractHash(input) {

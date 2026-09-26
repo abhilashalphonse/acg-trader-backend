@@ -3,55 +3,59 @@
 const mongoose = require('mongoose');
 const { TradingAccount } = require('./trading-account.model');
 
-const LEGACY_FUNDED_RISK_DEFAULTS = Object.freeze([
-  { key: 'maxRiskPerTradePercent', value: '1', resultKey: 'maxRiskPerTradeCleared' },
-  { key: 'maxAggregateRiskPercent', value: '2', resultKey: 'maxAggregateRiskCleared' },
-  { key: 'maxMarginUsagePercent', value: '50', resultKey: 'maxMarginUsageCleared' },
-  { key: 'maxSingleOrderMarginPercentOfFree', value: '20', resultKey: 'maxSingleOrderMarginCleared' },
-  { key: 'maxSymbolMarginPercentOfPermitted', value: '30', resultKey: 'maxSymbolMarginCleared' },
+const FUNDED_ACCOUNT_RISK_POLICY = Object.freeze([
+  { key: 'maxRiskPerTradePercent', value: '1', resultKey: 'maxRiskPerTradeRepaired' },
+  { key: 'maxAggregateRiskPercent', value: '2', resultKey: 'maxAggregateRiskRepaired' },
+  { key: 'maxMarginUsagePercent', value: '50', resultKey: 'maxMarginUsageRepaired' },
+  { key: 'maxSingleOrderMarginPercentOfFree', value: '20', resultKey: 'maxSingleOrderMarginRepaired' },
+  { key: 'maxSymbolMarginPercentOfPermitted', value: '30', resultKey: 'maxSymbolMarginRepaired' },
+  { key: 'maxOpenPositions', value: 10, resultKey: 'maxOpenPositionsRepaired' },
+  { key: 'maxPositionsPerSymbol', value: 3, resultKey: 'maxPositionsPerSymbolRepaired' },
+  { key: 'maxPendingOrders', value: 10, resultKey: 'maxPendingOrdersRepaired' },
+  { key: 'maxPendingOrdersPerSymbol', value: 3, resultKey: 'maxPendingOrdersPerSymbolRepaired' },
 ]);
 
-async function normalizeLegacyFundedRiskDefaults({
+async function repairFundedAccountRiskPolicy({
   accountModel = TradingAccount,
   logger = null,
 } = {}) {
-  const candidates = await accountModel.find({
-    $or: LEGACY_FUNDED_RISK_DEFAULTS.map(item => ({
-      [`riskPolicy.${item.key}`]: item.value,
-    })),
-  })
-    .select(`_id metadata ${LEGACY_FUNDED_RISK_DEFAULTS.map(item => `riskPolicy.${item.key}`).join(' ')}`)
-    .lean();
+  const summary = {};
 
-  const funded = (candidates || []).filter(account => metadataValue(account?.metadata, 'fundedAccountId'));
-  const operations = LEGACY_FUNDED_RISK_DEFAULTS.map(item => {
-    const ids = funded
-      .filter(account => decimalText(account?.riskPolicy?.[item.key]) === item.value)
+  for (const item of FUNDED_ACCOUNT_RISK_POLICY) {
+    // Match only null/missing values. Existing explicit non-null values are
+    // intentionally preserved so this repair cannot overwrite a deliberate
+    // account-specific override.
+    const candidates = await accountModel.find({
+      [`riskPolicy.${item.key}`]: null,
+    })
+      .select(`_id metadata riskPolicy.${item.key}`)
+      .lean();
+
+    const ids = (candidates || [])
+      .filter(account => metadataValue(account?.metadata, 'fundedAccountId'))
       .map(account => account._id);
-    return clearField(accountModel, ids, `riskPolicy.${item.key}`);
-  });
-  const results = await Promise.all(operations);
 
-  const summary = Object.fromEntries(
-    LEGACY_FUNDED_RISK_DEFAULTS.map((item, index) => [item.resultKey, modifiedCount(results[index])]),
-  );
+    const result = await setField(accountModel, ids, `riskPolicy.${item.key}`, item.value);
+    summary[item.resultKey] = modifiedCount(result);
+  }
 
   if (Object.values(summary).some(Boolean)) {
-    logger?.info?.(summary, 'Normalized legacy ACG Funded risk-policy defaults');
+    logger?.info?.(summary, 'Repaired ACG Funded account risk-policy fields');
   }
 
   return summary;
 }
 
-// Backward-compatible export for callers/tests created before margin defaults
-// were included in this normalization.
-const normalizeLegacyFundedPercentageRiskDefaults = normalizeLegacyFundedRiskDefaults;
+// Compatibility aliases for older internal imports. These now repair missing
+// ACG Funded policy fields; they no longer clear official Funded limits.
+const normalizeLegacyFundedRiskDefaults = repairFundedAccountRiskPolicy;
+const normalizeLegacyFundedPercentageRiskDefaults = repairFundedAccountRiskPolicy;
 
-async function clearField(accountModel, ids, field) {
+async function setField(accountModel, ids, field, value) {
   if (!ids.length) return { modifiedCount: 0 };
   return accountModel.updateMany(
     { _id: mongoose.trusted({ $in: ids }) },
-    { $set: { [field]: null } },
+    { $set: { [field]: value } },
   );
 }
 
@@ -71,7 +75,8 @@ function modifiedCount(result) {
 }
 
 module.exports = {
-  LEGACY_FUNDED_RISK_DEFAULTS,
+  FUNDED_ACCOUNT_RISK_POLICY,
+  repairFundedAccountRiskPolicy,
   normalizeLegacyFundedRiskDefaults,
   normalizeLegacyFundedPercentageRiskDefaults,
   metadataValue,

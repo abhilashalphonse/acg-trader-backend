@@ -401,3 +401,123 @@ test('provision replay rejects immutable risk-policy contract drift', () => {
       && error.details.mismatches.includes('provisioningContract'),
   );
 });
+
+test('Funded provision replay accepts the repaired official policy without rewriting the immutable legacy hash', () => {
+  const legacy = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'contract-funded-repair',
+    ownerExternalRef: 'user-funded-repair',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      profitTarget: '10000',
+      maxRiskPerTradePercent: null,
+      maxAggregateRiskPercent: null,
+      maxMarginUsagePercent: null,
+      maxSingleOrderMarginPercentOfFree: null,
+      maxSymbolMarginPercentOfPermitted: null,
+      maxOpenPositions: null,
+      maxPositionsPerSymbol: null,
+      maxPendingOrders: null,
+      maxPendingOrdersPerSymbol: null,
+    },
+    metadata: { fundedAccountId: 'F-REPAIR', phase: 1, challengeType: 'ONE_STEP', accountType: 'CHALLENGE' },
+  });
+
+  const repaired = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'contract-funded-repair',
+    ownerExternalRef: 'user-funded-repair',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      profitTarget: '10000',
+      maxRiskPerTradePercent: 1,
+      maxAggregateRiskPercent: 2,
+      maxMarginUsagePercent: 50,
+      maxSingleOrderMarginPercentOfFree: 20,
+      maxSymbolMarginPercentOfPermitted: 30,
+      maxOpenPositions: 10,
+      maxPositionsPerSymbol: 3,
+      maxPendingOrders: 10,
+      maxPendingOrdersPerSymbol: 3,
+    },
+    metadata: { fundedAccountId: 'F-REPAIR', phase: 1, challengeType: 'ONE_STEP', accountType: 'CHALLENGE' },
+  });
+
+  const existing = {
+    tenantId: TENANT_ID,
+    ownerExternalRef: 'user-funded-repair',
+    userId: null,
+    accountType: 'CHALLENGE',
+    currency: 'USD',
+    leverage: 100,
+    state: { initialBalance: '100000' },
+    riskTimezone: 'UTC',
+    riskPolicy: repaired.riskPolicy,
+    metadata: repaired.metadata,
+    provisioningContractHash: legacy.provisioningContractHash,
+  };
+
+  assert.notEqual(existing.provisioningContractHash, repaired.provisioningContractHash);
+  assert.equal(assertProvisionReplay(existing, repaired), existing);
+});
+
+test('stale provisioning hash remains strict when a Funded account does not match the incoming repaired policy', () => {
+  const legacy = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'contract-funded-strict',
+    ownerExternalRef: 'user-funded-strict',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      profitTarget: '10000',
+    },
+    metadata: { fundedAccountId: 'F-STRICT', phase: 1 },
+  });
+  const incoming = normalizeProvisionCommand({
+    tenantId: TENANT_ID,
+    externalRef: 'contract-funded-strict',
+    ownerExternalRef: 'user-funded-strict',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      profitTarget: '10000',
+      maxRiskPerTradePercent: 1,
+      maxAggregateRiskPercent: 2,
+      maxMarginUsagePercent: 50,
+      maxSingleOrderMarginPercentOfFree: 20,
+      maxSymbolMarginPercentOfPermitted: 30,
+      maxOpenPositions: 10,
+      maxPositionsPerSymbol: 3,
+      maxPendingOrders: 10,
+      maxPendingOrdersPerSymbol: 3,
+    },
+    metadata: { fundedAccountId: 'F-STRICT', phase: 1 },
+  });
+
+  const existing = {
+    tenantId: TENANT_ID,
+    ownerExternalRef: 'user-funded-strict',
+    userId: null,
+    accountType: 'CHALLENGE',
+    currency: 'USD',
+    leverage: 100,
+    state: { initialBalance: '100000' },
+    riskTimezone: 'UTC',
+    riskPolicy: legacy.riskPolicy,
+    metadata: legacy.metadata,
+    provisioningContractHash: legacy.provisioningContractHash,
+  };
+
+  assert.throws(
+    () => assertProvisionReplay(existing, incoming),
+    error => error.code === 'ACCOUNT_PROVISIONING_CONFLICT'
+      && error.details.mismatches.includes('provisioningContract'),
+  );
+});
+
