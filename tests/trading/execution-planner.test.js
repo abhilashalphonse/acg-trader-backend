@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('../../src/modules/trading/execution-planner');
 const { loadOpenExposure } = require('../../src/modules/trading/market-order.service');
+const { multiplyDecimal } = require('../../src/shared/decimal/decimal');
 
 function account(overrides = {}) {
   return {
@@ -888,7 +889,7 @@ test('immediate opening PnL uses the same account-currency conversion path as li
     convert(amount, from, to) {
       assert.equal(from, 'USD');
       assert.equal(to, 'EUR');
-      return String(Number(amount) * 0.8);
+      return multiplyDecimal(amount, '0.8');
     },
   };
 
