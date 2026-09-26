@@ -92,26 +92,10 @@ function createAccountControlRouter(runtime, authService) {
     const accountId = parseId(req.params.accountId);
     const patch = parse(challengeSyncSchema, req.body || {});
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
-    const account = await runtime.commandQueue.run(accountId, async () => {
-      const doc = await runtime.accountControlService.accountModel.findOne({ _id: accountId, tenantId: req.servicePrincipal.tenantId });
-      if (!doc) throw new AppError('Trading account was not found for this tenant', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
-      if (patch.riskPolicy?.dailyLoss) { doc.riskPolicy.dailyLoss.limit = patch.riskPolicy.dailyLoss.limit; if (patch.riskPolicy.dailyLoss.reference) doc.riskPolicy.dailyLoss.reference = patch.riskPolicy.dailyLoss.reference; }
-      if (patch.riskPolicy?.maxLoss) { doc.riskPolicy.maxLoss.limit = patch.riskPolicy.maxLoss.limit; if (patch.riskPolicy.maxLoss.reference) doc.riskPolicy.maxLoss.reference = patch.riskPolicy.maxLoss.reference; }
-      for (const key of ['profitTarget','breachAction','maxOpenPositions','maxPositionsPerSymbol','maxPendingOrders','maxPendingOrdersPerSymbol','maxPositionVolume','maxSymbolVolume','maxTotalVolume','maxRiskPerTradePercent','maxAggregateRiskPercent','maxMarginUsagePercent','maxSingleOrderMarginPercentOfFree','maxSymbolMarginPercentOfPermitted','allowedSymbols']) if (patch.riskPolicy && patch.riskPolicy[key] !== undefined) doc.riskPolicy[key] = patch.riskPolicy[key];
-      if (patch.dailyStartEquity !== undefined) doc.state.dailyStartEquity = patch.dailyStartEquity;
-      if (patch.riskDayKey !== undefined) doc.riskDayKey = patch.riskDayKey;
-      if (patch.riskTimezone !== undefined) doc.riskTimezone = patch.riskTimezone;
-      const metadata = doc.metadata || new Map();
-      const metadataPatch = { challengePhase: patch.phase, challengeStatus: patch.challengeStatus, challengeId: patch.challengeId, payoutStatus: patch.payoutStatus, riskPolicyVersion: patch.riskPolicyVersion };
-      for (const [key, value] of Object.entries(metadataPatch)) if (value !== undefined) { if (value === null) metadata.delete(key); else metadata.set(key, String(value)); }
-      doc.metadata = metadata;
-      await doc.save();
-      runtime.valuationEngine?.scheduleAccountRevalue?.(accountId, 'challenge-sync');
-      return doc;
+    const account = await runtime.accountControlService.syncChallenge(accountId, patch, {
+      tenantId: req.servicePrincipal.tenantId,
     });
-    const serialized = serializeAccount(account);
-    try { runtime.eventBus?.emit?.('trading.account.updated', serialized); } catch (_) { /* realtime snapshot will reconcile */ }
-    res.json({ operation: 'CHALLENGE_SYNC', account: serialized });
+    res.json({ operation: 'CHALLENGE_SYNC', account });
   });
 
   router.post('/:accountId/pause', tenantCommand(runtime, 'pause', restrictSchema));
