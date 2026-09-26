@@ -224,6 +224,9 @@ class RiskStreamService {
     });
     await event.save({ session });
     account.riskSequence = sequence;
+    account.riskProcessingState = 'RISK_UNRESOLVED';
+    account.riskUnresolvedReason = 'PENDING_RISK_EVENTS';
+    account.riskUnresolvedSince = account.riskUnresolvedSince || this.now();
     return { created: true, event };
   }
 }
