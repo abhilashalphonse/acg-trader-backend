@@ -42,6 +42,14 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     currencyConverter,
     nowMs,
   });
+  const estimatedCloseCommission = normalizedStopLoss == null
+    ? '0'
+    : calculateCommission(instrument, normalizedVolume, {
+      account,
+      fillPrice: normalizedStopLoss,
+      currencyConverter,
+      nowMs,
+    });
   const requiredMargin = calculateRequiredMargin({ account, instrument, volume: normalizedVolume, fillPrice, currencyConverter, nowMs });
   const firmRisk = validatePreTradeRiskPolicy({
     account,
@@ -52,6 +60,8 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     volume: normalizedVolume,
     stopLoss: normalizedStopLoss,
     requiredMargin,
+    openingCommission: commission,
+    closingCommission: estimatedCloseCommission,
     exposure,
     orderKind: 'OPEN_EXECUTION',
     currencyConverter,
@@ -77,8 +87,12 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     takeProfit: normalizedTakeProfit,
     riskAmount: firmRisk.tradeRiskAmount,
     riskPercent: firmRisk.tradeRiskPercent,
+    rawStopRiskAmount: firmRisk.rawStopRiskAmount ?? null,
+    openingCommission: firmRisk.openingCommission ?? commission,
+    estimatedCloseCommission: firmRisk.closingCommission ?? estimatedCloseCommission,
     commission,
     requiredMargin,
+    projectedEquityAfterCommission: firmRisk.projectedEquityAfterCommission ?? null,
     marginCurrency: String(account.currency || '').toUpperCase(),
     contractSize: normalizeDecimal(instrument.contractSize),
     volumeStep: normalizeDecimal(instrument.volumeStep),
