@@ -39,7 +39,7 @@ class AtomicReverseService {
         const transactionResult = await this.runTransaction(async session => {
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
-          const valuationProjection = this.valuationEngine ? this.valuationEngine.overlayAccountDocument(account, { requireLive: false }) : null;
+          const valuationProjection = this.valuationEngine ? this.valuationEngine.overlayAccountDocument(account, { requireLive: true }) : null;
           const position = await this.positionModel.findById(normalized.positionId).session(session);
           if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
           if (String(position.accountId) !== normalized.accountId) throw new AppError('Position does not belong to this trading account', { statusCode: 403, code: 'POSITION_ACCOUNT_MISMATCH' });
