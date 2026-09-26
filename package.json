@@ -13,7 +13,8 @@
     "db:indexes": "node scripts/ensure-indexes.js",
     "maintenance:candles": "node scripts/compact-candles.js",
     "test:runtime": "node scripts/runtime-smoke.js",
-    "replay:launch-deals": "node scripts/replay-launch-deals.js"
+    "replay:launch-deals": "node scripts/replay-launch-deals.js",
+    "audit:funded-risk-policy": "node scripts/audit-funded-risk-policy.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

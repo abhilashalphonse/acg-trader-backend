@@ -123,6 +123,7 @@ class PendingOrderService {
             account,
             symbol: normalized.symbol,
             nowMs,
+            instrumentModel: this.instrumentModel,
           });
           const pendingExposure = await loadPendingExposure(this.orderModel, normalized.accountId, normalized.symbol, session);
           const instrument = await this.instrumentModel.findOne({ symbol: normalized.symbol }).session(session);
@@ -279,6 +280,7 @@ class PendingOrderService {
             account,
             symbol: order.symbol,
             nowMs: executionNowMs,
+            instrumentModel: this.instrumentModel,
           })
           : null;
 

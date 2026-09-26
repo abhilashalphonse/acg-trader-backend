@@ -13,6 +13,7 @@ const {
   validateInstrumentForOpen,
   validateVolume,
   calculateRequiredMargin,
+  calculateCommission,
 } = require('./execution-planner');
 const { validatePreTradeRiskPolicy } = require('./firm-risk-policy');
 
@@ -66,6 +67,20 @@ function planPendingOrder({
     stopLoss: normalizedStopLoss,
     takeProfit: normalizedTakeProfit,
   });
+  const projectedOpeningCommission = calculateCommission(instrument, normalizedVolume, {
+    account,
+    fillPrice: protectionReference,
+    currencyConverter,
+    nowMs,
+  });
+  const projectedClosingCommission = normalizedStopLoss == null
+    ? '0'
+    : calculateCommission(instrument, normalizedVolume, {
+      account,
+      fillPrice: normalizedStopLoss,
+      currencyConverter,
+      nowMs,
+    });
   const projectedRequiredMargin = calculateRequiredMargin({
     account,
     instrument,
@@ -83,6 +98,8 @@ function planPendingOrder({
     volume: normalizedVolume,
     stopLoss: normalizedStopLoss,
     requiredMargin: projectedRequiredMargin,
+    openingCommission: projectedOpeningCommission,
+    closingCommission: projectedClosingCommission,
     exposure,
     pendingExposure,
     orderKind: 'PENDING_PLACEMENT',

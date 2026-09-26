@@ -57,6 +57,7 @@ class AtomicReverseService {
               account,
               symbol,
               nowMs,
+              instrumentModel: this.instrumentModel,
             })
             : null;
           const openPlan = planMarketOpen({ account, instrument, quote, side: oppositeSide, volume: originalVolume, stopLoss: normalized.stopLoss, takeProfit: normalized.takeProfit, nowMs, exposure });

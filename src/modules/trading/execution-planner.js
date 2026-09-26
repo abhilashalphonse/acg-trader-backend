@@ -17,6 +17,7 @@ const { normalizeSymbol } = require('../market-data/market.utils');
 const { assertInstrumentSessionOpen } = require('../instruments/session-calendar');
 const { executionPriceForVolume } = require('../market-data/execution-pricing');
 const { dayKeyInTimezone } = require('./risk-day-engine');
+const { calculateCommission: calculateTradingCommission, convertTradingCurrency } = require('./trading-costs');
 const {
   validatePreTradeRiskPolicy,
   validateActiveExposurePolicy,
@@ -41,6 +42,14 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     currencyConverter,
     nowMs,
   });
+  const estimatedCloseCommission = normalizedStopLoss == null
+    ? '0'
+    : calculateCommission(instrument, normalizedVolume, {
+      account,
+      fillPrice: normalizedStopLoss,
+      currencyConverter,
+      nowMs,
+    });
   const requiredMargin = calculateRequiredMargin({ account, instrument, volume: normalizedVolume, fillPrice, currencyConverter, nowMs });
   const firmRisk = validatePreTradeRiskPolicy({
     account,
@@ -51,6 +60,8 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     volume: normalizedVolume,
     stopLoss: normalizedStopLoss,
     requiredMargin,
+    openingCommission: commission,
+    closingCommission: estimatedCloseCommission,
     exposure,
     orderKind: 'OPEN_EXECUTION',
     currencyConverter,
@@ -76,8 +87,12 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     takeProfit: normalizedTakeProfit,
     riskAmount: firmRisk.tradeRiskAmount,
     riskPercent: firmRisk.tradeRiskPercent,
+    rawStopRiskAmount: firmRisk.rawStopRiskAmount ?? null,
+    openingCommission: firmRisk.openingCommission ?? commission,
+    estimatedCloseCommission: firmRisk.closingCommission ?? estimatedCloseCommission,
     commission,
     requiredMargin,
+    projectedEquityAfterCommission: firmRisk.projectedEquityAfterCommission ?? null,
     marginCurrency: String(account.currency || '').toUpperCase(),
     contractSize: normalizeDecimal(instrument.contractSize),
     volumeStep: normalizeDecimal(instrument.volumeStep),
@@ -276,23 +291,8 @@ function validateProtection({ side, fillPrice, stopLoss, takeProfit }) {
   }
 }
 function invalidProtection(message) { return new AppError(message, { statusCode: 400, code: 'INVALID_PROTECTION_PRICE' }); }
-function calculateCommission(instrument, volume, { account = null, fillPrice = null, currencyConverter = null, nowMs = Date.now() } = {}) {
-  const perLot = instrument.commissionPerLotPerSide ?? instrument.commissionPerLot ?? '0';
-  let total = multiplyDecimal(normalizeDecimal(perLot), volume);
-  const rate = normalizeDecimal(instrument.commissionRate ?? '0');
-  if (compareDecimal(rate, '0') > 0) {
-    if (fillPrice == null || !account) {
-      throw new AppError('Commission-rate calculation requires account and fill price', {
-        statusCode: 409,
-        code: 'COMMISSION_PRICING_UNAVAILABLE',
-      });
-    }
-    const notionalQuote = multiplyDecimal(multiplyDecimal(fillPrice, instrument.contractSize), volume);
-    const rateChargeQuote = multiplyDecimal(notionalQuote, rate);
-    const rateCharge = convertCurrency(rateChargeQuote, instrument.quoteCurrency, account.currency, currencyConverter, nowMs);
-    total = addDecimal(total, rateCharge);
-  }
-  return total;
+function calculateCommission(instrument, volume, options = {}) {
+  return calculateTradingCommission(instrument, volume, options);
 }
 
 function decimalOrNull(value) {
@@ -317,12 +317,7 @@ function calculateRequiredMargin({ account, instrument, volume, fillPrice, curre
 }
 
 function convertCurrency(amount, fromCurrency, toCurrency, currencyConverter = null, nowMs = Date.now()) {
-  const from = String(fromCurrency || '').toUpperCase();
-  const to = String(toCurrency || '').toUpperCase();
-  if (from && to && from === to) return normalizeDecimal(amount);
-  const converter = currencyConverter || require('./currency-conversion-engine').getDefaultCurrencyConversionEngine();
-  if (!converter?.convert) throw new AppError('Live currency conversion path is unavailable', { statusCode: 409, code: 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE', details: { fromCurrency: from || null, toCurrency: to || null } });
-  return converter.convert(amount, from, to, { nowMs });
+  return convertTradingCurrency(amount, fromCurrency, toCurrency, currencyConverter, nowMs);
 }
 
 function validateOpenPosition(position, account) {

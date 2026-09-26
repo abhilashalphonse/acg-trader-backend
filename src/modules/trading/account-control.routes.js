@@ -31,6 +31,7 @@ const challengeSyncSchema = z.object({
   challengeStatus: z.string().trim().min(1).max(64).nullable().optional(),
   challengeId: z.string().trim().min(1).max(256).nullable().optional(),
   payoutStatus: z.string().trim().min(1).max(64).nullable().optional(),
+  riskPolicyVersion: z.string().trim().min(1).max(64).nullable().optional(),
 }).strict().superRefine((value, ctx) => { if (!Object.keys(value).length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['riskPolicy'], message: 'At least one challenge field must be supplied' }); });
 
 function createAccountControlRouter(runtime, authService) {
@@ -101,7 +102,7 @@ function createAccountControlRouter(runtime, authService) {
       if (patch.riskDayKey !== undefined) doc.riskDayKey = patch.riskDayKey;
       if (patch.riskTimezone !== undefined) doc.riskTimezone = patch.riskTimezone;
       const metadata = doc.metadata || new Map();
-      const metadataPatch = { challengePhase: patch.phase, challengeStatus: patch.challengeStatus, challengeId: patch.challengeId, payoutStatus: patch.payoutStatus };
+      const metadataPatch = { challengePhase: patch.phase, challengeStatus: patch.challengeStatus, challengeId: patch.challengeId, payoutStatus: patch.payoutStatus, riskPolicyVersion: patch.riskPolicyVersion };
       for (const [key, value] of Object.entries(metadataPatch)) if (value !== undefined) { if (value === null) metadata.delete(key); else metadata.set(key, String(value)); }
       doc.metadata = metadata;
       await doc.save();
