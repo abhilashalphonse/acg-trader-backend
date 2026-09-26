@@ -82,3 +82,33 @@ test('risk-reducing close remains available for paused/breached accounts and exe
   assert.equal(plan.fillPrice, '1.099');
   assert.equal(plan.realizedPnl, '-100');
 });
+
+
+test('new exposure is blocked while margin stop-out is active but closing remains available', () => {
+  const stopOutAccount = account({
+    marginStopOutState: 'ACTIVE',
+    marginStopOutEpisodeId: 'episode-1',
+  });
+
+  assert.throws(
+    () => planMarketOpen({
+      account: stopOutAccount,
+      instrument: instrument(),
+      quote,
+      side: 'BUY',
+      volume: '1',
+      nowMs: 1100,
+    }),
+    error => error.code === 'MARGIN_STOP_OUT_ACTIVE',
+  );
+
+  const close = planMarketClose({
+    account: stopOutAccount,
+    instrument: instrument(),
+    quote,
+    position,
+    volume: '0.5',
+    nowMs: 1100,
+  });
+  assert.equal(close.volume, '0.5');
+});
