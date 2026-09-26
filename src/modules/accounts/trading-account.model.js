@@ -38,6 +38,7 @@ const accountStateSchema = new Schema({
   realizedPnlToday: { type: Decimal128, required: true, default: '0' },
   usedMargin: { type: Decimal128, required: true, default: '0' },
   freeMargin: { type: Decimal128, required: true },
+  marginLevel: { type: Decimal128, default: null },
   dailyStartEquity: { type: Decimal128, required: true },
 }, { _id: false });
 
