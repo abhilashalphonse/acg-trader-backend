@@ -107,7 +107,7 @@ test('brief breach followed by recovery is still processed as an irreversible br
   const eventBus = new EventEmitter();
   const events = [
     riskEvent(1, '93990'),
-    riskEvent(2, '95000'),
+    riskEvent(2, '98000'),
   ];
   const stream = fakeStream(events);
   const breaches = [];
