@@ -11,6 +11,7 @@ const {
 const { TradingAccount } = require('./trading-account.model');
 const { AccountLedger } = require('../trading/account-ledger.model');
 const { AccountCommandQueue } = require('../trading/account-command-queue');
+const { bumpFinancialRevision } = require('../trading/account-revision');
 const { runMongoTransaction } = require('../trading/market-order.service');
 const { serializeAccount } = require('../trading/trading.serializer');
 
@@ -98,6 +99,7 @@ class AccountLedgerService {
         account.state.balance = balanceAfter;
         account.state.equity = equityAfter;
         account.state.freeMargin = freeMarginAfter;
+        bumpFinancialRevision(account);
 
         const ledger = new this.ledgerModel({
           tenantId: account.tenantId,

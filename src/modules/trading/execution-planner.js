@@ -170,6 +170,16 @@ function validateAccountForOpen(account, symbol, nowMs = Date.now()) {
   if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
   if (account.status !== 'ACTIVE') throw new AppError('Trading account is not active', { statusCode: 409, code: 'ACCOUNT_NOT_ACTIVE', details: { status: account.status } });
   if (account.tradingEnabled !== true) throw new AppError('Trading is disabled for this account', { statusCode: 409, code: 'ACCOUNT_TRADING_DISABLED' });
+  if (String(account.riskProcessingState || 'READY') === 'RISK_UNRESOLVED') {
+    throw new AppError('Risk history is unresolved; new exposure is paused until ordered risk processing is reconciled', {
+      statusCode: 409,
+      code: 'RISK_STATE_UNRESOLVED',
+      details: {
+        expectedRiskSequence: account.riskExpectedSequence ?? null,
+        nextAvailableRiskSequence: account.riskNextAvailableSequence ?? null,
+      },
+    });
+  }
   validateChallengeRiskForOpen(account, nowMs);
   const allowed = account.riskPolicy?.allowedSymbols || [];
   const canonical = normalizeSymbol(symbol);
@@ -192,13 +202,17 @@ function validateChallengeRiskForOpen(account, nowMs = Date.now()) {
   const initial = normalizeDecimal(state.initialBalance ?? '0');
 
   const currentRiskDay = dayKeyInTimezone(new Date(nowMs), account.riskTimezone || 'UTC');
-  // Only roll forward an explicitly known prior day. A missing riskDayKey must
-  // never reset the baseline at order time because that could mask an existing
-  // loss; the LIVE valuation RiskDayEngine will initialize it safely.
+  // Risk-day transitions are ordered durable risk-stream facts. Order execution
+  // must never mutate the daily baseline opportunistically.
   if (account.riskDayKey && account.riskDayKey !== currentRiskDay) {
-    account.riskDayKey = currentRiskDay;
-    state.dailyStartEquity = equity;
-    state.realizedPnlToday = '0';
+    throw new AppError('Risk-day rollover is not yet durably reconciled', {
+      statusCode: 409,
+      code: 'RISK_DAY_ROLLOVER_PENDING',
+      details: {
+        accountRiskDayKey: account.riskDayKey,
+        currentRiskDayKey: currentRiskDay,
+      },
+    });
   }
 
   const dailyStart = normalizeDecimal(state.dailyStartEquity ?? initial);

@@ -22,6 +22,7 @@ class AccountControlService {
     logger = null,
     marketOrderService = null,
     platformEventRelay = null,
+    riskStreamService = null,
     accountModel = TradingAccount,
     orderModel = Order,
     positionModel = Position,
@@ -36,6 +37,7 @@ class AccountControlService {
       logger,
       marketOrderService,
       platformEventRelay,
+      riskStreamService,
       accountModel,
       orderModel,
       positionModel,
@@ -127,6 +129,46 @@ class AccountControlService {
     const account = await this.accountModel.findById(String(accountId));
     if (!account) throw accountNotFound();
     return serializeControlledAccount(account);
+  }
+
+  async syncChallenge(accountId, patch, { tenantId = null } = {}) {
+    return this.commandQueue.run(String(accountId), async () => {
+      const result = await this.runTransaction(async session => {
+        const filter = { _id: String(accountId) };
+        if (tenantId) filter.tenantId = tenantId;
+        const account = await this.accountModel.findOne(filter).session(session);
+        if (!account) throw accountNotFound();
+
+        const before = challengeRiskSnapshot(account);
+        applyChallengePatch(account, patch || {});
+        const after = challengeRiskSnapshot(account);
+
+        let riskEvent = null;
+        if (canonicalJson(before) !== canonicalJson(after)) {
+          if (!this.riskStreamService) {
+            throw new AppError('Durable risk stream is unavailable for challenge policy transition', {
+              statusCode: 503,
+              code: 'RISK_STREAM_UNAVAILABLE',
+            });
+          }
+          riskEvent = await this.riskStreamService.appendPolicyTransitionInSession({
+            account,
+            before,
+            after,
+            session,
+            effectiveAt: this.now(),
+          });
+        }
+
+        await account.save({ session });
+        return { account, riskEvent };
+      });
+
+      const serialized = serializeControlledAccount(result.account);
+      this.#emit('trading.account.updated', serialized);
+      if (result.riskEvent) this.riskStreamService?.emitAppended?.(result.riskEvent);
+      return serialized;
+    });
   }
 
   async pause(accountId, { reason = 'MANUAL_PAUSE', cancelPending = false } = {}) {
@@ -484,6 +526,68 @@ class AccountControlService {
       this.logger?.error({ err: error, event: name }, 'Account control event listener failed');
     }
   }
+}
+
+function applyChallengePatch(account, patch) {
+  if (patch.riskPolicy?.dailyLoss) {
+    account.riskPolicy.dailyLoss.limit = patch.riskPolicy.dailyLoss.limit;
+    if (patch.riskPolicy.dailyLoss.reference) account.riskPolicy.dailyLoss.reference = patch.riskPolicy.dailyLoss.reference;
+  }
+  if (patch.riskPolicy?.maxLoss) {
+    account.riskPolicy.maxLoss.limit = patch.riskPolicy.maxLoss.limit;
+    if (patch.riskPolicy.maxLoss.reference) account.riskPolicy.maxLoss.reference = patch.riskPolicy.maxLoss.reference;
+  }
+  for (const key of [
+    'profitTarget',
+    'breachAction',
+    'maxOpenPositions',
+    'maxPositionsPerSymbol',
+    'maxPendingOrders',
+    'maxPendingOrdersPerSymbol',
+    'maxPositionVolume',
+    'maxSymbolVolume',
+    'maxTotalVolume',
+    'maxRiskPerTradePercent',
+    'maxAggregateRiskPercent',
+    'maxMarginUsagePercent',
+    'maxSingleOrderMarginPercentOfFree',
+    'maxSymbolMarginPercentOfPermitted',
+    'allowedSymbols',
+  ]) {
+    if (patch.riskPolicy && patch.riskPolicy[key] !== undefined) account.riskPolicy[key] = patch.riskPolicy[key];
+  }
+
+  if (patch.dailyStartEquity !== undefined) account.state.dailyStartEquity = patch.dailyStartEquity;
+  if (patch.riskDayKey !== undefined) account.riskDayKey = patch.riskDayKey;
+  if (patch.riskTimezone !== undefined) account.riskTimezone = patch.riskTimezone;
+
+  const metadata = account.metadata instanceof Map
+    ? account.metadata
+    : new Map(Object.entries(account.metadata || {}));
+  const metadataPatch = {
+    challengePhase: patch.phase,
+    challengeStatus: patch.challengeStatus,
+    challengeId: patch.challengeId,
+    payoutStatus: patch.payoutStatus,
+    riskPolicyVersion: patch.riskPolicyVersion,
+  };
+  for (const [key, value] of Object.entries(metadataPatch)) {
+    if (value === undefined) continue;
+    if (value === null) metadata.delete(key);
+    else metadata.set(key, String(value));
+  }
+  account.metadata = metadata;
+}
+
+function challengeRiskSnapshot(account) {
+  const serialized = serializeAccount(account);
+  return {
+    riskPolicy: serialized.riskPolicy,
+    riskPolicyVersion: serialized.challenge?.riskPolicyVersion || null,
+    riskDayKey: serialized.riskDayKey || null,
+    riskTimezone: serialized.riskTimezone || 'UTC',
+    dailyStartEquity: serialized.state?.dailyStartEquity || null,
+  };
 }
 
 function normalizeProvisionCommand(command) {

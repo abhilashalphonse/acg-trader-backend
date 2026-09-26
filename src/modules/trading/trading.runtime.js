@@ -4,7 +4,7 @@ const { env } = require('../../config/env');
 const { logger } = require('../../infrastructure/logger/logger');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
-const { MarketOrderService } = require('./market-order.service');
+const { MarketOrderService, runMongoTransaction } = require('./market-order.service');
 const { AtomicReverseService } = require('./atomic-reverse.service');
 const { TradingCommandService } = require('./trading-command.service');
 const { PendingOrderAmendService } = require('./pending-order-amend.service');
@@ -23,6 +23,7 @@ const { TrailingStopService } = require('./trailing-stop.service');
 const { TrailingStopEngine } = require('./trailing-stop-engine');
 const { RiskDayEngine } = require('./risk-day-engine');
 const { ChallengeRiskEngine } = require('./challenge-risk-engine');
+const { AccountRiskStreamService } = require('./account-risk-stream.service');
 
 function createTradingRuntime({ marketRuntime }) {
   const eventBus = marketRuntime.eventBus;
@@ -32,6 +33,7 @@ function createTradingRuntime({ marketRuntime }) {
   setDefaultCurrencyConversionEngine(currencyConversionEngine);
 
   const marketPriority = { retain: marketRuntime.retainPriority, release: marketRuntime.releasePriority };
+  const riskStreamService = new AccountRiskStreamService({ eventBus, logger, runTransaction: runMongoTransaction });
   const valuationEngine = new ValuationEngine({ quoteStore: marketRuntime.quoteStore, eventBus, currencyConverter: currencyConversionEngine, marketPriority, logger });
   const platformEventRelay = new PlatformEventRelay({
     eventBus,
@@ -48,7 +50,7 @@ function createTradingRuntime({ marketRuntime }) {
   const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
   const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
   const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
-  const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger });
+  const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, riskStreamService, logger });
   const accountLedgerService = new AccountLedgerService({ eventBus, commandQueue, logger });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus, marketOrderService, logger });
   const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, logger });
@@ -58,8 +60,8 @@ function createTradingRuntime({ marketRuntime }) {
   const positionProtectionService = new PositionProtectionService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
   const trailingStopService = new TrailingStopService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
   const trailingStopEngine = new TrailingStopEngine({ eventBus, trailingStopService, logger });
-  const riskDayEngine = new RiskDayEngine({ eventBus, commandQueue, logger });
-  const challengeRiskEngine = new ChallengeRiskEngine({ eventBus, accountControlService, logger });
+  const riskDayEngine = new RiskDayEngine({ eventBus, riskStreamService, valuationEngine, logger });
+  const challengeRiskEngine = new ChallengeRiskEngine({ eventBus, accountControlService, riskStreamService, logger });
   const reconciliationService = new ReconciliationService({ commandQueue, valuationEngine, pendingOrderEngine, protectionTriggerEngine, trailingStopEngine, logger });
   let started = false;
 
@@ -68,7 +70,7 @@ function createTradingRuntime({ marketRuntime }) {
     try {
       await valuationEngine.start();
       riskDayEngine.start();
-      challengeRiskEngine.start();
+      await challengeRiskEngine.start();
       await platformEventRelay.start();
       await protectionTriggerEngine.start();
       await pendingOrderEngine.start();
@@ -82,8 +84,8 @@ function createTradingRuntime({ marketRuntime }) {
       await trailingStopEngine.stop().catch(() => undefined);
       await pendingOrderEngine.stop().catch(() => undefined);
       await protectionTriggerEngine.stop().catch(() => undefined);
-      await challengeRiskEngine.stop().catch(() => undefined);
       await riskDayEngine.stop().catch(() => undefined);
+      await challengeRiskEngine.stop().catch(() => undefined);
       await platformEventRelay.stop().catch(() => undefined);
       await valuationEngine.stop().catch(() => undefined);
       setDefaultCurrencyConversionEngine(null);
@@ -99,8 +101,8 @@ function createTradingRuntime({ marketRuntime }) {
     await trailingStopEngine.stop();
     await pendingOrderEngine.stop();
     await protectionTriggerEngine.stop();
-    await challengeRiskEngine.stop();
     await riskDayEngine.stop();
+    await challengeRiskEngine.stop();
 
     // Complete all accepted account commands while the platform relay remains
     // attached, so committed deals/account events cannot be lost on SIGTERM.
@@ -177,6 +179,8 @@ function createTradingRuntime({ marketRuntime }) {
         immutableReconciliationReports: true,
         recoveryVerification: true,
         propChallengeRiskEngine: true,
+        durableOrderedRiskStream: true,
+        financialRevisionFencing: true,
         riskEngine: true,
       },
     };
@@ -203,6 +207,7 @@ function createTradingRuntime({ marketRuntime }) {
     trailingStopEngine,
     riskDayEngine,
     challengeRiskEngine,
+    riskStreamService,
     reconciliationService,
     commandQueue,
     start,

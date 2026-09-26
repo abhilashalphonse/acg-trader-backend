@@ -521,3 +521,80 @@ test('stale provisioning hash remains strict when a Funded account does not matc
   );
 });
 
+
+
+test('challenge sync records an ordered durable policy transition before publishing the account update', async () => {
+  const models = createFakeModels();
+  const transitions = [];
+  const appended = [];
+  const riskStreamService = {
+    async appendPolicyTransitionInSession({ account, before, after, session }) {
+      account.riskSequence = Number(account.riskSequence || 0) + 1;
+      const event = {
+        _id: 'risk-transition-1',
+        tenantId: account.tenantId,
+        accountId: account._id,
+        sequence: account.riskSequence,
+        eventType: 'POLICY_TRANSITION',
+        financialRevision: Number(account.financialRevision || 0),
+        accountRevision: Number(account.__v || 0),
+        policyVersion: 'ACG_FUNDED_V2',
+        riskDayKey: account.riskDayKey,
+        riskTimezone: account.riskTimezone,
+        effectiveAt: new Date('2026-09-26T12:00:00.000Z'),
+        context: { before, after },
+        processingState: 'PENDING',
+        toObject() { return { ...this }; },
+      };
+      transitions.push({ before, after, session, event });
+      return event;
+    },
+    emitAppended(event) {
+      appended.push(event);
+    },
+  };
+
+  const service = createService(models, {
+    riskStreamService,
+    now: () => new Date('2026-09-26T12:00:00.000Z'),
+  });
+
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-policy-transition',
+    ownerExternalRef: 'user-policy-transition',
+    initialBalance: '100000',
+    riskPolicy: {
+      dailyLoss: { limit: '3000' },
+      maxLoss: { limit: '6000' },
+      maxRiskPerTradePercent: '1',
+      maxAggregateRiskPercent: '2',
+    },
+    metadata: {
+      fundedAccountId: 'F-POLICY',
+      riskPolicyVersion: 'ACG_FUNDED_V1',
+    },
+  });
+
+  const synced = await service.syncChallenge(
+    created.account.id,
+    {
+      riskPolicy: {
+        maxRiskPerTradePercent: null,
+        maxAggregateRiskPercent: null,
+      },
+      riskPolicyVersion: 'ACG_FUNDED_V2',
+    },
+    { tenantId: TENANT_ID },
+  );
+
+  assert.equal(transitions.length, 1);
+  assert.equal(appended.length, 1);
+  assert.equal(transitions[0].before.riskPolicyVersion, 'ACG_FUNDED_V1');
+  assert.equal(transitions[0].after.riskPolicyVersion, 'ACG_FUNDED_V2');
+  assert.equal(transitions[0].before.riskPolicy.maxRiskPerTradePercent, '1');
+  assert.equal(transitions[0].after.riskPolicy.maxRiskPerTradePercent, null);
+  assert.equal(synced.challenge.riskPolicyVersion, 'ACG_FUNDED_V2');
+  assert.equal(synced.riskPolicy.maxRiskPerTradePercent, null);
+  assert.equal(synced.riskSequence, 1);
+});

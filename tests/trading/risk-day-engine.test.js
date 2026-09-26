@@ -5,83 +5,101 @@ const assert = require('node:assert/strict');
 const EventEmitter = require('events');
 const { RiskDayEngine, dayKeyInTimezone } = require('../../src/modules/trading/risk-day-engine');
 
-function document() {
-  return {
-    _id: '64b000000000000000000001',
-    riskDayKey: '2026-09-17',
-    state: { dailyStartEquity: '100000', realizedPnlToday: '-500' },
-    async save() { this.saved = true; },
-    toObject() {
-      return {
-        _id: this._id,
-        accountCode: 'ACG-TEST',
-        accountType: 'CHALLENGE',
-        currency: 'USD',
-        leverage: 100,
-        status: 'ACTIVE',
-        tradingEnabled: true,
-        riskDayKey: this.riskDayKey,
-        riskTimezone: 'UTC',
-        state: {
-          initialBalance: '100000',
-          balance: '99500',
-          equity: this.state.dailyStartEquity,
-          floatingPnl: '0',
-          realizedPnlToday: this.state.realizedPnlToday,
-          usedMargin: '0',
-          freeMargin: '99500',
-          dailyStartEquity: this.state.dailyStartEquity,
-        },
-        riskPolicy: {},
-        metadata: {},
-      };
-    },
-  };
-}
-
-test('first live valuation of a new UTC day resets daily risk baseline', async () => {
+test('live valuations are handed to the durable risk stream', async () => {
   const eventBus = new EventEmitter();
-  const doc = document();
+  const accepted = [];
   const engine = new RiskDayEngine({
     eventBus,
-    accountModel: { findById: async () => doc },
-    now: () => new Date('2026-09-18T00:00:01Z'),
+    riskStreamService: {
+      async ingestValuation(valuation) {
+        accepted.push(valuation);
+        return { accepted: true };
+      },
+    },
   });
+
   engine.start();
   eventBus.emit('valuation.account.updated', {
-    accountId: doc._id,
+    eventId: 'valuation-1',
+    accountId: 'account-1',
+    financialRevision: 4,
     complete: true,
     valuationStatus: 'LIVE',
     equity: '98750',
   });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(doc.riskDayKey, '2026-09-18');
-  assert.equal(String(doc.state.dailyStartEquity), '98750');
-  assert.equal(String(doc.state.realizedPnlToday), '0');
-  assert.equal(doc.saved, true);
-  engine.stop();
+  await engine.stop();
+
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].eventId, 'valuation-1');
+  assert.equal(accepted[0].financialRevision, 4);
 });
 
-test('stale valuation cannot reset the risk day', async () => {
+test('stale valuation is never accepted into the durable risk stream', async () => {
   const eventBus = new EventEmitter();
-  const doc = document();
+  let accepted = 0;
   const engine = new RiskDayEngine({
     eventBus,
-    accountModel: { findById: async () => doc },
-    now: () => new Date('2026-09-18T00:00:01Z'),
+    riskStreamService: {
+      async ingestValuation() { accepted += 1; },
+    },
   });
+
   engine.start();
   eventBus.emit('valuation.account.updated', {
-    accountId: doc._id,
+    eventId: 'valuation-stale',
+    accountId: 'account-1',
     complete: true,
     valuationStatus: 'STALE',
-    equity: '98750',
+    equity: '1',
   });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(doc.riskDayKey, '2026-09-17');
-  engine.stop();
+  await engine.stop();
+
+  assert.equal(accepted, 0);
 });
 
+test('stale financial revision requests a fresh account valuation', async () => {
+  const eventBus = new EventEmitter();
+  const revalues = [];
+  const engine = new RiskDayEngine({
+    eventBus,
+    riskStreamService: {
+      async ingestValuation() {
+        const error = new Error('stale');
+        error.code = 'STALE_VALUATION_REVISION';
+        error.details = {
+          expectedFinancialRevision: 4,
+          currentFinancialRevision: 5,
+        };
+        throw error;
+      },
+    },
+    valuationEngine: {
+      scheduleAccountRevalue(accountId, reason) {
+        revalues.push({ accountId, reason });
+      },
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  engine.start();
+  eventBus.emit('valuation.account.updated', {
+    eventId: 'valuation-old-revision',
+    accountId: 'account-1',
+    financialRevision: 4,
+    complete: true,
+    valuationStatus: 'LIVE',
+    equity: '99000',
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await engine.stop();
+
+  assert.deepEqual(revalues, [{
+    accountId: 'account-1',
+    reason: 'stale-risk-valuation',
+  }]);
+});
 
 test('risk day key follows the configured account timezone', () => {
   assert.equal(

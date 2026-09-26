@@ -318,3 +318,53 @@ test('stale conversion quotes immediately make cross-currency account valuation 
   assert.equal(snapshot.equity, null);
   await engine.stop();
 });
+
+
+test('execution overlay never applies a valuation from an older financial revision', async () => {
+  const { engine, eventBus } = fixture();
+  await engine.start();
+
+  const staleSnapshot = engine.getAccountSnapshot('a1');
+  assert.equal(staleSnapshot.financialRevision, 0);
+
+  const accountDoc = {
+    _id: 'a1',
+    currency: 'USD',
+    financialRevision: 1,
+    state: {
+      balance: '10000',
+      floatingPnl: '0',
+      equity: '10000',
+      usedMargin: '1100',
+      freeMargin: '8900',
+    },
+  };
+
+  assert.throws(
+    () => engine.overlayAccountDocument(accountDoc, { requireLive: true }),
+    error => error.code === 'ACCOUNT_VALUATION_REVISION_STALE'
+      && error.details.accountFinancialRevision === 1
+      && error.details.valuationFinancialRevision === 0,
+  );
+
+  assert.equal(String(accountDoc.state.equity), '10000');
+  assert.equal(String(accountDoc.state.freeMargin), '8900');
+
+  eventBus.emit('trading.account.updated', {
+    id: 'a1',
+    accountCode: 'A1',
+    currency: 'USD',
+    financialRevision: 1,
+    state: {
+      balance: '10000',
+      realizedPnlToday: '0',
+      dailyStartEquity: '10000',
+    },
+  });
+
+  const refreshed = engine.getAccountSnapshot('a1');
+  assert.equal(refreshed.financialRevision, 1);
+  assert.doesNotThrow(() => engine.overlayAccountDocument(accountDoc, { requireLive: true }));
+
+  await engine.stop();
+});

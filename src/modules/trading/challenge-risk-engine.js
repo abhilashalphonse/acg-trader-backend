@@ -1,150 +1,206 @@
 'use strict';
 
 const { normalizeDecimal, subtractDecimal, compareDecimal } = require('../../shared/decimal/decimal');
-const { TradingAccount } = require('../accounts/trading-account.model');
-const { dayKeyInTimezone } = require('./risk-day-engine');
+const { APPENDED_EVENT } = require('./account-risk-stream.service');
 
 class ChallengeRiskEngine {
   constructor({
     eventBus,
     accountControlService,
+    riskStreamService,
     logger = null,
-    accountModel = TradingAccount,
-    now = () => new Date(),
   } = {}) {
     this.eventBus = eventBus;
     this.accountControlService = accountControlService;
+    this.riskStreamService = riskStreamService;
     this.logger = logger;
-    this.accountModel = accountModel;
-    this.now = now;
     this.started = false;
     this.inFlight = new Map();
-    this.accounts = new Map();
-    this.onValuation = valuation => this.#schedule(valuation);
-    this.onAccountUpdated = account => this.#cacheAccount(account);
-    this.onAccountControlled = account => this.#cacheAccount(account);
+    this.wake = new Set();
+    this.onRiskEvent = event => this.#schedule(event?.accountId);
   }
 
-  start() {
+  async start() {
     if (this.started) return;
+    if (!this.riskStreamService) throw new TypeError('riskStreamService is required');
     this.started = true;
-    this.eventBus?.on('valuation.account.updated', this.onValuation);
-    this.eventBus?.on('trading.account.updated', this.onAccountUpdated);
-    for (const event of ['trading.account.paused', 'trading.account.resumed', 'trading.account.disabled', 'trading.account.breached', 'trading.account.closed']) {
-      this.eventBus?.on(event, this.onAccountControlled);
-    }
+    this.eventBus?.on(APPENDED_EVENT, this.onRiskEvent);
+
+    const pending = await this.riskStreamService.pendingAccountIds();
+    await Promise.all(pending.map(accountId => this.#schedule(accountId)));
   }
 
   async stop() {
     if (!this.started) return;
-    this.eventBus?.off('valuation.account.updated', this.onValuation);
-    this.eventBus?.off('trading.account.updated', this.onAccountUpdated);
-    for (const event of ['trading.account.paused', 'trading.account.resumed', 'trading.account.disabled', 'trading.account.breached', 'trading.account.closed']) {
-      this.eventBus?.off(event, this.onAccountControlled);
-    }
+    this.eventBus?.off(APPENDED_EVENT, this.onRiskEvent);
     this.started = false;
     await Promise.allSettled([...this.inFlight.values()]);
     this.inFlight.clear();
-    this.accounts.clear();
+    this.wake.clear();
   }
 
   health() {
-    return { started: this.started, inFlight: this.inFlight.size, cachedAccounts: this.accounts.size };
+    return {
+      started: this.started,
+      inFlight: this.inFlight.size,
+      wakeAccounts: this.wake.size,
+    };
   }
 
-  #schedule(valuation) {
-    if (!valuation || valuation.complete !== true || String(valuation.valuationStatus || '').toUpperCase() !== 'LIVE') return;
-    const accountId = String(valuation.accountId || valuation.id || '').trim();
-    if (!accountId || this.inFlight.has(accountId)) return;
+  #schedule(rawAccountId) {
+    const accountId = String(rawAccountId || '').trim();
+    if (!accountId) return Promise.resolve();
 
-    const work = this.#evaluate(accountId, valuation)
-      .catch(error => this.logger?.error({ err: error, accountId }, 'Challenge risk evaluation failed'))
-      .finally(() => {
-        if (this.inFlight.get(accountId) === work) this.inFlight.delete(accountId);
-      });
-    this.inFlight.set(accountId, work);
-  }
-
-  async #evaluate(accountId, valuation) {
-    let account = this.accounts.get(accountId);
-    if (!account) {
-      const loaded = await this.accountModel.findById(accountId).lean();
-      if (!loaded) return;
-      account = normalizeAccount(loaded);
-      this.accounts.set(accountId, account);
+    const current = this.inFlight.get(accountId);
+    if (current) {
+      this.wake.add(accountId);
+      return current;
     }
 
-    if (account.status !== 'ACTIVE' || account.tradingEnabled !== true) return;
+    const work = this.#runAccount(accountId)
+      .catch(error => {
+        this.logger?.error?.({ err: error, accountId }, 'Ordered challenge risk processing failed');
+      })
+      .finally(() => {
+        if (this.inFlight.get(accountId) === work) this.inFlight.delete(accountId);
+        if (this.started && this.wake.delete(accountId)) {
+          queueMicrotask(() => this.#schedule(accountId));
+        }
+      });
 
-    const today = dayKeyInTimezone(this.now(), account.riskTimezone);
-    if (account.riskDayKey !== today) return;
+    this.inFlight.set(accountId, work);
+    return work;
+  }
 
-    const equity = normalizeDecimal(valuation.equity);
-    const dailyStart = normalizeDecimal(account.dailyStartEquity);
-    const initial = normalizeDecimal(account.initialBalance);
-    const dailyLimit = normalizeDecimal(account.dailyLossLimit);
-    const maxLimit = normalizeDecimal(account.maxLossLimit);
+  async #runAccount(accountId) {
+    do {
+      this.wake.delete(accountId);
+      await this.#drain(accountId);
+    } while (this.wake.has(accountId));
+  }
 
-    const maxBreached = compareDecimal(maxLimit, '0') > 0
-      && compareDecimal(equity, subtractDecimal(initial, maxLimit)) <= 0;
-    const dailyBreached = compareDecimal(dailyLimit, '0') > 0
-      && compareDecimal(equity, subtractDecimal(dailyStart, dailyLimit)) <= 0;
+  async #drain(accountId) {
+    while (this.started) {
+      const next = await this.riskStreamService.nextForProcessing(accountId);
 
-    if (!maxBreached && !dailyBreached) return;
+      if (next.state === 'EMPTY' || next.state === 'MISSING_ACCOUNT') return;
 
-    const reason = maxBreached ? 'MAX_LOSS_LIMIT_REACHED' : 'DAILY_LOSS_LIMIT_REACHED';
-    const breachEvidence = buildBreachEvidence({
+      if (next.state === 'GAP') {
+        await this.riskStreamService.markUnresolved(accountId, {
+          expectedSequence: next.expected,
+          nextAvailableSequence: next.nextAvailable,
+          reason: 'RISK_SEQUENCE_GAP',
+        });
+        this.logger?.error?.({
+          accountId,
+          expectedRiskSequence: next.expected,
+          nextAvailableRiskSequence: next.nextAvailable,
+          highestRiskSequence: next.highest,
+        }, 'Risk sequence gap detected; new exposure is blocked');
+        return;
+      }
+
+      const event = next.event;
+      const outcome = await this.#processEvent(event);
+      const marked = await this.riskStreamService.markProcessed(accountId, event.sequence, {
+        processingState: outcome.breached ? 'BREACH' : 'PROCESSED',
+        processingResult: outcome,
+      });
+      if (marked?.state === 'GAP') return;
+    }
+  }
+
+  async #processEvent(event) {
+    if (event.eventType !== 'VALUATION') {
+      return {
+        breached: false,
+        eventType: event.eventType,
+        riskSequence: Number(event.sequence),
+      };
+    }
+
+    const evaluation = evaluateRiskEvent(event);
+    if (!evaluation.breached) return evaluation;
+
+    await this.accountControlService.breach(String(event.accountId), {
+      reason: evaluation.reason,
+      evidence: evaluation.evidence,
+    });
+
+    return evaluation;
+  }
+}
+
+function evaluateRiskEvent(event) {
+  const context = event?.context || {};
+  if (
+    String(context.accountStatus || '').toUpperCase() !== 'ACTIVE'
+    || context.tradingEnabled !== true
+  ) {
+    return {
+      breached: false,
+      eventType: event?.eventType || 'VALUATION',
+      riskSequence: Number(event?.sequence || 0),
+      reason: 'ACCOUNT_NOT_ACTIVE_AT_VALUATION',
+    };
+  }
+
+  const valuation = context.valuation || {};
+  const equity = normalizeDecimal(valuation.equity ?? '0');
+  const dailyStart = normalizeDecimal(context.dailyStartEquity ?? context.initialBalance ?? '0');
+  const initial = normalizeDecimal(context.initialBalance ?? '0');
+  const dailyLimit = normalizeDecimal(context.dailyLossLimit ?? '0');
+  const maxLimit = normalizeDecimal(context.maxLossLimit ?? '0');
+
+  const maxBreached = compareDecimal(maxLimit, '0') > 0
+    && compareDecimal(equity, subtractDecimal(initial, maxLimit)) <= 0;
+  const dailyBreached = compareDecimal(dailyLimit, '0') > 0
+    && compareDecimal(equity, subtractDecimal(dailyStart, dailyLimit)) <= 0;
+
+  if (!maxBreached && !dailyBreached) {
+    return {
+      breached: false,
+      eventType: 'VALUATION',
+      riskSequence: Number(event?.sequence || 0),
+      equity,
+    };
+  }
+
+  const reason = maxBreached ? 'MAX_LOSS_LIMIT_REACHED' : 'DAILY_LOSS_LIMIT_REACHED';
+  return {
+    breached: true,
+    reason,
+    eventType: 'VALUATION',
+    riskSequence: Number(event?.sequence || 0),
+    evidence: buildBreachEvidence({
+      event,
       reason,
       maxBreached,
       dailyBreached,
       valuation,
-      account,
+      context,
       equity,
       dailyStart,
       initial,
       dailyLimit,
       maxLimit,
-    });
-
-    // Prevent repeated breach calls while the durable lifecycle transaction is
-    // running; the subsequent control event will refresh this cache as well.
-    account.status = 'BREACHED';
-    account.tradingEnabled = false;
-    try {
-      await this.accountControlService.breach(accountId, { reason, evidence: breachEvidence });
-    } catch (error) {
-      // Allow a later valuation to retry if the durable breach transaction
-      // itself failed.
-      account.status = 'ACTIVE';
-      account.tradingEnabled = true;
-      throw error;
-    }
-  }
-
-  #cacheAccount(account) {
-    const normalized = normalizeAccount(account);
-    if (!normalized.id) return;
-    this.accounts.set(normalized.id, normalized);
-  }
-}
-
-function normalizeAccount(account) {
-  const state = account?.state || {};
-  const policy = account?.riskPolicy || {};
-  return {
-    id: String(account?.id || account?._id || account?.accountId || ''),
-    status: String(account?.status || '').toUpperCase(),
-    tradingEnabled: account?.tradingEnabled === true,
-    riskDayKey: account?.riskDayKey || null,
-    riskTimezone: String(account?.riskTimezone || 'UTC'),
-    initialBalance: value(state.initialBalance, '0'),
-    dailyStartEquity: value(state.dailyStartEquity, state.initialBalance ?? '0'),
-    dailyLossLimit: value(policy.dailyLoss?.limit, '0'),
-    maxLossLimit: value(policy.maxLoss?.limit, '0'),
+    }),
   };
 }
 
-function buildBreachEvidence({ reason, maxBreached, dailyBreached, valuation, account, equity, dailyStart, initial, dailyLimit, maxLimit }) {
+function buildBreachEvidence({
+  event,
+  reason,
+  maxBreached,
+  dailyBreached,
+  valuation,
+  context,
+  equity,
+  dailyStart,
+  initial,
+  dailyLimit,
+  maxLimit,
+}) {
   const maxBreach = reason === 'MAX_LOSS_LIMIT_REACHED';
   const reference = maxBreach ? initial : dailyStart;
   const limit = maxBreach ? maxLimit : dailyLimit;
@@ -161,21 +217,30 @@ function buildBreachEvidence({ reason, maxBreached, dailyBreached, valuation, ac
     reason,
     rule: maxBreach ? 'MAX_DRAWDOWN' : 'DAILY_DRAWDOWN',
     triggeredRules,
-    balance: value(valuation?.balance, account?.balance ?? '0'),
+    balance: value(valuation.balance, '0'),
     equity,
-    floatingPnl: value(valuation?.floatingPnl, '0'),
-    usedMargin: value(valuation?.usedMargin, '0'),
-    freeMargin: value(valuation?.freeMargin, '0'),
+    floatingPnl: value(valuation.floatingPnl, '0'),
+    usedMargin: value(valuation.usedMargin, '0'),
+    freeMargin: value(valuation.freeMargin, '0'),
     dailyStartEquity: dailyStart,
     initialBalance: initial,
     limitAmount: limit,
     thresholdEquity: threshold,
     actualLoss,
     breachAmount,
-    riskDayKey: account?.riskDayKey || null,
-    valuationSequence: Number.isFinite(Number(valuation?.sequence)) ? Number(valuation.sequence) : null,
-    valuedAtMs: Number.isFinite(Number(valuation?.valuedAtMs)) ? Number(valuation.valuedAtMs) : Date.now(),
+    riskDayKey: event?.riskDayKey || context?.riskDayKey || null,
+    riskTimezone: event?.riskTimezone || context?.riskTimezone || 'UTC',
+    riskPolicyVersion: event?.policyVersion || context?.policyVersion || null,
+    financialRevision: Number(event?.financialRevision ?? context?.financialRevision ?? 0),
+    riskSequence: Number(event?.sequence || 0),
+    valuationSequence: finiteNumber(valuation.sourceSequence),
+    valuedAtMs: finiteNumber(valuation.valuedAtMs),
   });
+}
+
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function value(input, fallback) {
@@ -183,4 +248,8 @@ function value(input, fallback) {
   return input?.toString ? input.toString() : String(input);
 }
 
-module.exports = { ChallengeRiskEngine, normalizeAccount };
+module.exports = {
+  ChallengeRiskEngine,
+  evaluateRiskEvent,
+  buildBreachEvidence,
+};
