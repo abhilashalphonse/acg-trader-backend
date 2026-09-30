@@ -15,7 +15,8 @@
     "test:runtime": "node scripts/runtime-smoke.js",
     "replay:launch-deals": "node scripts/replay-launch-deals.js",
     "audit:funded-risk-policy": "node scripts/audit-funded-risk-policy.js",
-    "diagnostic:accelpix": "node diagnostics/accelpix-symbol-master.js"
+    "diagnostic:accelpix": "node diagnostics/accelpix-symbol-master.js",
+    "diagnostic:accelpix-history": "node diagnostics/accelpix-history.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
