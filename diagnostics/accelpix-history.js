@@ -115,7 +115,7 @@ async function main() {
   const eodStart = ymd(daysAgo(760));
 
   console.log('============================================================');
-  console.log(' ACG Trader - Accelpix Historical Diagnostic');
+  console.log(' ACG Trader - Accelpix Quote + Historical Diagnostic');
   console.log('============================================================');
   console.log(`Host: ${HOST}`);
   console.log(`Symbols: ${SYMBOLS.join(', ')}`);
@@ -125,6 +125,42 @@ async function main() {
   console.log('============================================================');
 
   let failures = 0;
+
+  const quoteUrl = new URL(`https://${HOST}/api/fda/rest/quote`);
+  quoteUrl.searchParams.set('api_token', API_KEY);
+  const quoteResponse = await fetch(quoteUrl, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'user-agent': 'acg-trader-backend/accelpix-history-diagnostic',
+    },
+    body: JSON.stringify(SYMBOLS),
+    signal: AbortSignal.timeout(15000),
+  });
+  const quoteRaw = await quoteResponse.text();
+  let quotes = null;
+  try { quotes = JSON.parse(quoteRaw); } catch { /* handled below */ }
+  console.log('\n--- Quotes ---');
+  console.log(`HTTP: ${quoteResponse.status}`);
+  if (quoteResponse.ok && Array.isArray(quotes)) {
+    console.table(quotes.map((q) => ({
+      tkr: q.tkr,
+      sid: q.sid,
+      pr: q.pr,
+      bp: q.bp,
+      ap: q.ap,
+      vol: q.vol,
+      op: q.op,
+      hp: q.hp,
+      lp: q.lp,
+      cp: q.cp,
+      tm: q.tm,
+    })));
+  } else {
+    failures += 1;
+    console.log('FAIL:', quoteRaw.slice(0, 1000));
+  }
 
   for (const symbol of SYMBOLS) {
     const intra = await getJson(endpoint([symbol, intraStart, end, '1']));
