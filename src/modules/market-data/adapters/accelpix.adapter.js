@@ -4,6 +4,15 @@ const EventEmitter = require('events');
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const LIVE_TIMESTAMP_TOLERANCE_MS = 10 * 60 * 1000;
+const NSE_SESSION_OPEN_MINUTE = 9 * 60 + 15;
+const INTRADAY_TIMEFRAME_MS = Object.freeze({
+  '1m': 60_000,
+  '5m': 5 * 60_000,
+  '15m': 15 * 60_000,
+  '30m': 30 * 60_000,
+  '1h': 60 * 60_000,
+  '4h': 4 * 60 * 60_000,
+});
 
 function finiteNumber(value) {
   const number = Number(value);
@@ -90,6 +99,99 @@ function ymdUtc(timeMs) {
   const month = String(date.getUTCMonth() + 1).padStart(2, '0');
   const day = String(date.getUTCDate()).padStart(2, '0');
   return `${year}${month}${day}`;
+}
+
+function nseSessionOpenUtcMs(timeMs) {
+  const local = new Date(Number(timeMs) + IST_OFFSET_MS);
+  const year = local.getUTCFullYear();
+  const month = local.getUTCMonth();
+  const day = local.getUTCDate();
+  const openLocalAsUtc = Date.UTC(
+    year,
+    month,
+    day,
+    Math.floor(NSE_SESSION_OPEN_MINUTE / 60),
+    NSE_SESSION_OPEN_MINUTE % 60,
+    0,
+    0,
+  );
+  return openLocalAsUtc - IST_OFFSET_MS;
+}
+
+function nseIntradayBucketOpenTimeMs(timeMs, timeframe) {
+  const stepMs = INTRADAY_TIMEFRAME_MS[timeframe];
+  if (!stepMs) return null;
+  const sessionOpenMs = nseSessionOpenUtcMs(timeMs);
+  if (!Number.isFinite(sessionOpenMs) || timeMs < sessionOpenMs) return null;
+  return sessionOpenMs + Math.floor((timeMs - sessionOpenMs) / stepMs) * stepMs;
+}
+
+function aggregateNseIntradayBars(sourceBars, timeframe) {
+  if (timeframe === '1m') return sourceBars;
+  const stepMs = INTRADAY_TIMEFRAME_MS[timeframe];
+  if (!stepMs) return [];
+
+  const buckets = new Map();
+  for (const bar of sourceBars) {
+    const bucket = nseIntradayBucketOpenTimeMs(Number(bar.openTimeMs), timeframe);
+    if (!Number.isFinite(bucket)) continue;
+
+    const existing = buckets.get(bucket);
+    if (!existing) {
+      buckets.set(bucket, {
+        openTimeMs: bucket,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        providerVolume: nonNegativeNumber(bar.providerVolume),
+      });
+      continue;
+    }
+
+    existing.high = Math.max(existing.high, bar.high);
+    existing.low = Math.min(existing.low, bar.low);
+    existing.close = bar.close;
+    const volume = nonNegativeNumber(bar.providerVolume);
+    if (volume != null) existing.providerVolume = Number(existing.providerVolume || 0) + volume;
+  }
+
+  return [...buckets.values()].sort((a, b) => a.openTimeMs - b.openTimeMs);
+}
+
+function aggregateWeeklyEodBars(sourceBars) {
+  const buckets = new Map();
+  for (const bar of sourceBars) {
+    const date = new Date(Number(bar.openTimeMs));
+    const day = date.getUTCDay();
+    const daysSinceMonday = (day + 6) % 7;
+    const bucket = Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate() - daysSinceMonday,
+    );
+
+    const existing = buckets.get(bucket);
+    if (!existing) {
+      buckets.set(bucket, {
+        openTimeMs: bucket,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        providerVolume: nonNegativeNumber(bar.providerVolume),
+      });
+      continue;
+    }
+
+    existing.high = Math.max(existing.high, bar.high);
+    existing.low = Math.min(existing.low, bar.low);
+    existing.close = bar.close;
+    const volume = nonNegativeNumber(bar.providerVolume);
+    if (volume != null) existing.providerVolume = Number(existing.providerVolume || 0) + volume;
+  }
+
+  return [...buckets.values()].sort((a, b) => a.openTimeMs - b.openTimeMs);
 }
 
 function mapHistoryRow(row, timeframe) {
@@ -373,7 +475,7 @@ class AccelpixAdapter extends EventEmitter {
   }
 
   supportsHistory(timeframe) {
-    return timeframe === '1m' || timeframe === '1d';
+    return ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'].includes(timeframe);
   }
 
   async fetchHistorical({ providerSymbol, timeframe, limit = 160, beforeMs = null }) {
@@ -390,10 +492,13 @@ class AccelpixAdapter extends EventEmitter {
     let end;
     let path;
 
-    if (timeframe === '1m') {
-      // 375 regular-session minutes/day. Add calendar slack for weekends and
-      // holidays but never request beyond the subscribed 60-day entitlement.
-      const requestedDays = Math.max(3, Math.ceil(safeLimit / 375 * 2.2) + 2);
+    const intraday = Boolean(INTRADAY_TIMEFRAME_MS[timeframe]);
+    if (intraday) {
+      // Accelpix entitlement provides 60 calendar days of 1-minute history.
+      // Higher ACG intraday timeframes are derived from those authoritative M1
+      // bars using the NSE 09:15 Asia/Kolkata session anchor.
+      const barsPerSession = Math.max(1, Math.ceil((6.25 * 60 * 60 * 1000) / INTRADAY_TIMEFRAME_MS[timeframe]));
+      const requestedDays = Math.max(3, Math.ceil(safeLimit / barsPerSession * 2.2) + 2);
       const lookbackDays = Math.min(60, requestedDays);
       startMs = endMs - lookbackDays * 24 * 60 * 60 * 1000;
       start = ymdInIst(startMs);
@@ -425,12 +530,20 @@ class AccelpixAdapter extends EventEmitter {
         throw error;
       }
 
-      return body
-        .map(row => mapHistoryRow(row, timeframe))
+      const sourceTimeframe = intraday ? '1m' : '1d';
+      const sourceBars = body
+        .map(row => mapHistoryRow(row, sourceTimeframe))
         .filter(Boolean)
         .filter(bar => cursor == null || bar.openTimeMs < cursor)
-        .sort((a, b) => a.openTimeMs - b.openTimeMs)
-        .slice(-safeLimit);
+        .sort((a, b) => a.openTimeMs - b.openTimeMs);
+
+      const bars = intraday
+        ? aggregateNseIntradayBars(sourceBars, timeframe)
+        : timeframe === '1w'
+          ? aggregateWeeklyEodBars(sourceBars)
+          : sourceBars;
+
+      return bars.slice(-safeLimit);
     } finally {
       clearTimeout(timeout);
     }
@@ -442,4 +555,7 @@ module.exports = {
   normalizeAccelpixLiveTimestampMs,
   parseAccelpixIntradayTimeMs,
   parseAccelpixEodTimeMs,
+  nseIntradayBucketOpenTimeMs,
+  aggregateNseIntradayBars,
+  aggregateWeeklyEodBars,
 };
