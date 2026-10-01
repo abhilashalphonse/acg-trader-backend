@@ -80,6 +80,9 @@ class DayChangeService {
     const previousClose = reference?.dayKey === dayKey
       ? Number(reference.previousClose)
       : null;
+    if (reference && reference.dayKey !== dayKey) {
+      void this.ensure(symbol).catch(() => undefined);
+    }
     const last = Number(quote?.last ?? quote?.price);
 
     if (!Number.isFinite(previousClose) || previousClose <= 0 || !Number.isFinite(last) || last <= 0) {
