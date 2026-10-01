@@ -143,7 +143,8 @@ class CandleEngine {
     if (state.current && bucket < state.current.openTimeMs) return;
 
     const eventSequence = this.#eventSequence(state, tick);
-    const suppressProviderVolume = Number(suppressProviderVolumeForBucket) === bucket;
+    const suppressProviderVolume = suppressProviderVolumeForBucket != null
+      && Number(suppressProviderVolumeForBucket) === bucket;
     const providerVolumeDelta = this.#providerVolumeDelta(
       state,
       tick.dayVolume,
