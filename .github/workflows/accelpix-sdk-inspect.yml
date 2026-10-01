@@ -26,3 +26,5 @@ jobs:
           find node_modules/pix-apidata -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
           echo "---ENTRY---"
           node -e "console.log(require.resolve('pix-apidata'))"
+          echo "---SOURCE---"
+          cat node_modules/pix-apidata/src/apidata.js
