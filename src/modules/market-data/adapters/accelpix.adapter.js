@@ -557,6 +557,29 @@ class AccelpixAdapter extends EventEmitter {
     return ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'].includes(timeframe);
   }
 
+  async #fetchHistoryArray(path) {
+    const url = new URL(`${this.scheme}://${this.host}${path}`);
+    url.searchParams.set('api_token', this.apiKey);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
+    try {
+      const response = await this.fetchImpl(url, {
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      });
+      const body = await response.json();
+      if (!response.ok || !Array.isArray(body)) {
+        const error = new Error(`Accelpix history request failed (${response.status})`);
+        error.statusCode = response.status || 502;
+        throw error;
+      }
+      return body;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async fetchHistorical({ providerSymbol, timeframe, limit = 160, beforeMs = null }) {
     if (!this.supportsHistory(timeframe)) return [];
 
