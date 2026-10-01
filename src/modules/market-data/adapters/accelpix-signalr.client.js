@@ -220,13 +220,15 @@ class AccelpixSignalRClient {
     });
 
     connection.onreconnected(async () => {
-      this.callbackHandlers.reconnected?.();
-      if (!this.subscriptionSymbols.size) return;
       try {
-        await connection.invoke('SubscribeAll', [...this.subscriptionSymbols]);
+        if (this.subscriptionSymbols.size) {
+          await connection.invoke('SubscribeAll', [...this.subscriptionSymbols]);
+        }
+        this.callbackHandlers.reconnected?.();
       } catch (error) {
         this.logger?.warn?.({ err: error }, 'Accelpix resubscription failed after SignalR reconnect');
         this.callbackHandlers.subscriptionError?.(error);
+        await connection.stop().catch(() => undefined);
       }
     });
 
