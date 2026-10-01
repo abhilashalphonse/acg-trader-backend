@@ -215,6 +215,14 @@ class AccelpixSignalRClient {
       if (decoded) this.callbackHandlers.refsSnapshot?.(decoded);
     });
 
+    // The vendor SDK handles the server-side Shutdown hub event by closing
+    // the connection. Preserve that behavior so the adapter's normal reconnect
+    // path can establish a clean session.
+    connection.on('Shutdown', async message => {
+      this.logger?.warn?.({ message }, 'Accelpix requested SignalR shutdown');
+      await connection.stop().catch(() => undefined);
+    });
+
     connection.onreconnecting(error => {
       this.callbackHandlers.reconnecting?.(error || null);
     });
