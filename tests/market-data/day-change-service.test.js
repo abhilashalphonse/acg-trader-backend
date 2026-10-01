@@ -114,4 +114,5 @@ test('day-change service enriches an existing live quote and emits the same auth
   assert.equal(quote.changePercent, 2);
   assert.equal(emitted.length, 1);
   assert.equal(emitted[0].changePercent, 2);
+  assert.equal(emitted[0].referenceUpdate, true);
 });

@@ -140,7 +140,7 @@ class DayChangeService {
         const current = this.quoteStore.get(canonical);
         if (current) {
           const enriched = this.quoteStore.set(this.decorate(current));
-          this.eventBus.emit('market.quote', enriched);
+          this.eventBus.emit('market.quote', { ...enriched, referenceUpdate: true });
         }
         return reference;
       })
