@@ -127,6 +127,7 @@ class TwelveDataAdapter extends EventEmitter {
     this.subscriptionIdentity = new Map();
     this.rejectedProviderSymbols = new Map();
     this.requestedByResolvedProviderSymbol = new Map();
+    this.commodityCatalogLogged = false;
   }
 
   async start(subscriptions) {
@@ -310,6 +311,22 @@ class TwelveDataAdapter extends EventEmitter {
 
       if (!match && subscription?.name) {
         const allRows = await fetchCommodities(null);
+        if (!this.commodityCatalogLogged) {
+          this.commodityCatalogLogged = true;
+          const relevant = allRows
+            .filter(row => /(gas|corn|wheat|soy|coffee|cocoa|sugar|cotton|cattle|hog|gasoline|heating|aluminum|copper)/i.test(
+              `${row.instrument_name || ''} ${row.symbol || ''} ${row.instrument_type || ''}`
+            ))
+            .map(row => ({
+              symbol: row.symbol,
+              name: row.instrument_name,
+              category: row.instrument_type,
+            }));
+          this.logger?.info?.({
+            count: allRows.length,
+            relevant,
+          }, 'Twelve Data commodity catalog candidates');
+        }
         match = chooseCommoditySearchMatch(allRows, subscription, { requireExactSymbol: false });
       }
 
