@@ -34,6 +34,7 @@ class MarketGateway {
     this.tickSanityFilter = tickSanityFilter || new TickSanityFilter();
     this.onStreamRecovered = typeof onStreamRecovered === 'function' ? onStreamRecovered : null;
     this.streamOutage = false;
+    this.providerOutages = new Set();
 
     this.connectionState = MARKET_CONNECTION_STATES.DISCONNECTED;
     this.symbolStates = new Map(this.symbols.map(symbol => [symbol, 'WAITING']));
@@ -48,6 +49,7 @@ class MarketGateway {
     this.onConnection = event => this.#onConnection(event);
     this.onAdapterError = error => this.#onAdapterError(error);
     this.onSubscriptionStatus = event => this.#onSubscriptionStatus(event);
+    this.onProviderConnection = event => this.#onProviderConnection(event);
   }
 
   async start() {
@@ -59,8 +61,9 @@ class MarketGateway {
     this.adapter.on('connection', this.onConnection);
     this.adapter.on('adapter-error', this.onAdapterError);
     this.adapter.on('subscription-status', this.onSubscriptionStatus);
+    this.adapter.on?.('provider-connection', this.onProviderConnection);
 
-    this.adapter.start(this.instrumentRegistry.providerSubscriptions());
+    await this.adapter.start(this.instrumentRegistry.providerSubscriptions());
     this.staleTimer = setInterval(() => this.#checkQuoteFreshness(), this.staleCheckMs);
     this.staleTimer.unref?.();
   }
@@ -73,6 +76,7 @@ class MarketGateway {
     this.adapter.off('connection', this.onConnection);
     this.adapter.off('adapter-error', this.onAdapterError);
     this.adapter.off('subscription-status', this.onSubscriptionStatus);
+    this.adapter.off?.('provider-connection', this.onProviderConnection);
 
     await Promise.allSettled([...this.recoveryInFlight.values()]);
     this.recoveryInFlight.clear();
@@ -131,13 +135,13 @@ class MarketGateway {
     if (current && ageMs <= instrument.maxQuoteAgeMs) this.#setSymbolState(canonical, 'REFRESHING');
 
     const task = Promise.resolve()
-      .then(() => this.adapter.fetchLatestPrice({ providerSymbol: instrument.providerSymbol }))
+      .then(() => this.adapter.fetchLatestPrice({ provider: instrument.provider || 'twelve-data', providerSymbol: instrument.providerSymbol }))
       .then(raw => {
         this.#onPrice({
           ...raw,
           symbol: canonical,
           providerSymbol: instrument.providerSymbol,
-          source: raw?.source || 'twelve-data-rest',
+          source: raw?.source || ((instrument.provider || 'twelve-data') + '-rest'),
           quoteOnly: true,
         });
         const recovered = this.quoteStore.get(canonical);
@@ -169,7 +173,7 @@ class MarketGateway {
   status() {
     const now = Date.now();
     return {
-      provider: 'twelve-data',
+      provider: this.adapter.providerName || 'twelve-data',
       state: this.connectionState,
       startedAt: this.startedAtMs ? new Date(this.startedAtMs).toISOString() : null,
       symbols: this.symbols.map(symbol => {
@@ -178,6 +182,7 @@ class MarketGateway {
         return {
           symbol,
           state: this.symbolStates.get(symbol) || 'WAITING',
+          provider: this.instrumentRegistry.provider?.(symbol) || 'twelve-data',
           providerSymbol: this.instrumentRegistry.providerSymbol(symbol),
           configured: Boolean(instrument?.configured),
           lastReceivedAt: quote?.receivedAtMs ? new Date(quote.receivedAtMs).toISOString() : null,
@@ -232,11 +237,58 @@ class MarketGateway {
     this.#emitGatewayStatus({ code: event.code, reason: event.reason, recovered });
   }
 
-  #onAdapterError(error) {
-    this.logger.warn({ err: error }, 'Market-data provider error');
+  #onProviderConnection(event) {
+    const provider = event?.provider;
+    if (!provider || provider === 'multi-provider') return;
+
+    const affectedSymbols = this.instrumentRegistry.providerSubscriptions()
+      .filter(item => item.provider === provider)
+      .map(item => item.symbol);
+
+    if (!affectedSymbols.length) return;
+
+    if (['DISCONNECTED', 'ERROR', 'STOPPED'].includes(event.state)) {
+      this.providerOutages.add(provider);
+      for (const symbol of affectedSymbols) {
+        this.candleEngine.setSymbolLive(symbol, false);
+        this.tickSanityFilter.resetPending(symbol);
+
+        const quote = this.quoteStore.get(symbol);
+        const instrument = this.instrumentRegistry.get(symbol);
+        const ageMs = this.#quoteAgeMs(quote);
+        if (!quote || !instrument || ageMs > instrument.maxQuoteAgeMs) {
+          const staleQuote = this.quoteStore.markStale(symbol, true);
+          if (staleQuote) this.eventBus.emit('market.quote', staleQuote);
+          this.#setSymbolState(symbol, 'DISCONNECTED');
+        }
+      }
+    } else if (event.state === 'LIVE' && this.providerOutages.has(provider)) {
+      this.providerOutages.delete(provider);
+      try {
+        this.onStreamRecovered?.({
+          provider,
+          timestamp: Number(event.timestamp) || Date.now(),
+        });
+      } catch (error) {
+        this.logger?.warn?.({ err: error, provider }, 'Market provider recovery hook failed');
+      }
+    }
+
     this.eventBus.emit('market.status', {
       scope: 'provider',
-      provider: 'twelve-data',
+      provider,
+      state: event.state,
+      timestamp: Number(event.timestamp) || Date.now(),
+      reason: event.reason || '',
+    });
+  }
+
+  #onAdapterError(error) {
+    const provider = error?.provider || this.adapter.providerName || 'twelve-data';
+    this.logger.warn({ err: error, provider }, 'Market-data provider error');
+    this.eventBus.emit('market.status', {
+      scope: 'provider',
+      provider,
       state: 'ERROR',
       message: error.message,
       timestamp: Date.now(),
@@ -244,11 +296,12 @@ class MarketGateway {
   }
 
   #onSubscriptionStatus(event) {
-    this.logger.info({ event: event.event, status: event.status, success: event.success, fails: event.fails }, 'Twelve Data subscription status');
+    const provider = event?.provider || this.adapter.providerName || 'twelve-data';
+    this.logger.info({ provider, event: event.event, status: event.status, success: event.success, fails: event.fails }, 'Market-data subscription status');
     if (Array.isArray(event.fails)) {
       for (const failure of event.fails) {
         const providerSymbol = failure.symbol || failure?.meta?.symbol;
-        const subscription = this.instrumentRegistry.providerSubscriptions().find(item => item.providerSymbol === providerSymbol);
+        const subscription = this.instrumentRegistry.providerSubscriptions().find(item => item.providerSymbol === providerSymbol && (!event?.provider || item.provider === event.provider));
         if (subscription) this.#setSymbolState(subscription.symbol, 'SUBSCRIPTION_ERROR');
       }
     }
@@ -343,7 +396,7 @@ class MarketGateway {
       providerTimestampMs: Number.isFinite(providerTimestampMs) ? Math.trunc(providerTimestampMs) : null,
       receivedAtMs,
       timeMs: marketTimeMs,
-      source: raw.source || 'twelve-data',
+      source: raw.source || raw.provider || this.instrumentRegistry.provider?.(symbol) || 'twelve-data',
       providerSymbol: raw.providerSymbol,
       isSyntheticSpread: normalizedPrices.isSyntheticSpread,
       dayVolume: raw.dayVolume,
@@ -442,7 +495,7 @@ class MarketGateway {
   #emitGatewayStatus(extra = {}) {
     this.eventBus.emit('market.status', {
       scope: 'gateway',
-      provider: 'twelve-data',
+      provider: this.adapter.providerName || 'twelve-data',
       state: this.connectionState,
       timestamp: Date.now(),
       ...extra,

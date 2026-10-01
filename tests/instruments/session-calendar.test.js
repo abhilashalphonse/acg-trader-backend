@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isInstrumentSessionOpen, assertInstrumentSessionOpen } = require('../../src/modules/instruments/session-calendar');
+const { isInstrumentSessionOpen, assertInstrumentSessionOpen, sessionAlignedBucketOpenTimeMs } = require('../../src/modules/instruments/session-calendar');
 
 function instrument(overrides = {}) {
   return {
@@ -37,4 +37,33 @@ test('holiday closure overrides weekly session', () => {
 
 test('empty session list preserves always-open product behavior', () => {
   assert.equal(isInstrumentSessionOpen(instrument({ tradingSessions: [] }), ms('2026-09-19T12:00:00.000Z')), true);
+});
+
+
+test('NSE 30-minute buckets anchor at the 09:15 Asia/Kolkata session open', () => {
+  const nse = instrument({
+    symbol: 'RELIANCE',
+    timezone: 'Asia/Kolkata',
+    tradingSessions: [{ days: [1, 2, 3, 4, 5], open: '09:15', close: '15:30' }],
+  });
+
+  const tickMs = ms('2026-10-01T04:02:00.000Z'); // 09:32 IST
+  assert.equal(
+    sessionAlignedBucketOpenTimeMs(nse, tickMs, 30 * 60 * 1000),
+    ms('2026-10-01T03:45:00.000Z'),
+  );
+});
+
+test('NSE one-hour buckets stay aligned to 09:15 rather than UTC clock hours', () => {
+  const nse = instrument({
+    symbol: 'RELIANCE',
+    timezone: 'Asia/Kolkata',
+    tradingSessions: [{ days: [1, 2, 3, 4, 5], open: '09:15', close: '15:30' }],
+  });
+
+  const tickMs = ms('2026-10-01T05:10:00.000Z'); // 10:40 IST
+  assert.equal(
+    sessionAlignedBucketOpenTimeMs(nse, tickMs, 60 * 60 * 1000),
+    ms('2026-10-01T04:45:00.000Z'), // 10:15 IST
+  );
 });

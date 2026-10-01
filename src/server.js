@@ -9,7 +9,7 @@ const { createApp } = require('./app');
 const { createMarketRuntime } = require('./modules/market-data/market.runtime');
 const { createTradingRuntime } = require('./modules/trading/trading.runtime');
 const { createAuthRuntime } = require('./modules/auth/auth.runtime');
-const { syncInstrumentCatalog, provisionCatalogExecution, enforceCatalogLeveragePolicy } = require('./modules/instruments/instrument-catalog.service');
+const { syncInstrumentCatalog, syncIndiaPilotCatalog, provisionCatalogExecution, enforceCatalogLeveragePolicy } = require('./modules/instruments/instrument-catalog.service');
 const { runLegacyCandleCleanup } = require('./modules/market-data/legacy-candle-cleanup');
 
 async function start() {
@@ -18,7 +18,10 @@ async function start() {
     await verifyTransactionSupport();
     await ensureCriticalIndexes({ logger });
   }
-  if (env.instrumentCatalogAutoSeed) await syncInstrumentCatalog({ logger });
+  if (env.instrumentCatalogAutoSeed) {
+    await syncInstrumentCatalog({ logger });
+    if (env.market.provider === 'multi') await syncIndiaPilotCatalog({ logger });
+  }
   if (env.tradingApiEnabled) {
     await provisionCatalogExecution({ logger });
     await enforceCatalogLeveragePolicy({ logger });

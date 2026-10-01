@@ -351,3 +351,26 @@ test('confirmed large provider move is released in original tick order', async (
 
   await gateway.stop();
 });
+
+
+test('gateway waits for asynchronous provider startup before reporting started', async () => {
+  const { gateway, adapter } = createHarness();
+  let release;
+  let resolved = false;
+  adapter.start = () => new Promise(resolve => {
+    release = () => {
+      resolved = true;
+      resolve();
+    };
+  });
+
+  const startPromise = gateway.start();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(resolved, false);
+
+  release();
+  await startPromise;
+  assert.equal(resolved, true);
+
+  await gateway.stop();
+});

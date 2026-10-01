@@ -66,6 +66,94 @@ function zonedParts(nowMs, timezone) {
   };
 }
 
+function zonedDateTimeToUtcMs({ year, month, day, hour, minute }, timezone) {
+  const targetWallClockMs = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  let guess = targetWallClockMs;
+
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const local = zonedParts(guess, timezone);
+    const observedWallClockMs = Date.UTC(
+      local.year,
+      local.month - 1,
+      local.day,
+      local.hour,
+      local.minute,
+      0,
+      0,
+    );
+    const delta = observedWallClockMs - targetWallClockMs;
+    if (delta === 0) return guess;
+    guess -= delta;
+  }
+
+  return guess;
+}
+
+function activeSessionOpenTimeMs(instrument, nowMs) {
+  if (!instrument) return null;
+
+  const timezone = String(instrument.timezone || 'UTC');
+  const sessions = Array.isArray(instrument.tradingSessions) ? instrument.tradingSessions : [];
+  if (!sessions.length) return null;
+
+  const local = zonedParts(nowMs, timezone);
+  const minuteOfDay = local.hour * 60 + local.minute;
+  const currentDay = local.weekday;
+  const previousDay = (currentDay + 6) % 7;
+
+  for (const session of sessions) {
+    const days = Array.isArray(session.days) ? session.days.map(Number) : [];
+    const open = parseClock(session.open);
+    const close = parseClock(session.close);
+    if (open == null || close == null) continue;
+
+    if (open <= close) {
+      if (!days.includes(currentDay) || minuteOfDay < open || minuteOfDay >= close) continue;
+      return zonedDateTimeToUtcMs({
+        year: local.year,
+        month: local.month,
+        day: local.day,
+        hour: Math.floor(open / 60),
+        minute: open % 60,
+      }, timezone);
+    }
+
+    if (days.includes(currentDay) && minuteOfDay >= open) {
+      return zonedDateTimeToUtcMs({
+        year: local.year,
+        month: local.month,
+        day: local.day,
+        hour: Math.floor(open / 60),
+        minute: open % 60,
+      }, timezone);
+    }
+
+    if (days.includes(previousDay) && minuteOfDay < close) {
+      const previousLocal = zonedParts(nowMs - 24 * 60 * 60 * 1000, timezone);
+      return zonedDateTimeToUtcMs({
+        year: previousLocal.year,
+        month: previousLocal.month,
+        day: previousLocal.day,
+        hour: Math.floor(open / 60),
+        minute: open % 60,
+      }, timezone);
+    }
+  }
+
+  return null;
+}
+
+function sessionAlignedBucketOpenTimeMs(instrument, timeMs, stepMs) {
+  const numericTime = Number(timeMs);
+  const numericStep = Number(stepMs);
+  if (!Number.isFinite(numericTime) || !Number.isFinite(numericStep) || numericStep <= 0) return null;
+
+  const sessionOpenMs = activeSessionOpenTimeMs(instrument, numericTime);
+  if (!Number.isFinite(sessionOpenMs) || numericTime < sessionOpenMs) return null;
+
+  return sessionOpenMs + Math.floor((numericTime - sessionOpenMs) / numericStep) * numericStep;
+}
+
 function parseClock(value) {
   const match = /^(\d{2}):(\d{2})$/.exec(String(value || ''));
   if (!match) return null;
@@ -77,4 +165,4 @@ function parseClock(value) {
 
 function pad(value) { return String(value).padStart(2, '0'); }
 
-module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, parseClock, zonedParts };
+module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs };

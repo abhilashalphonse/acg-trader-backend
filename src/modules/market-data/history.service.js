@@ -112,15 +112,17 @@ class MarketHistoryService {
     const rows = await this.#loadLocal(canonical, timeframe, fetchLimit, cursor);
     const localByOpenTime = new Map(rows.map(row => [new Date(row.openTime).getTime(), row]));
 
-    if (this.adapter.supportsHistory(timeframe)) {
+    const provider = this.instrumentRegistry.provider?.(canonical) || 'twelve-data';
+    if (this.adapter.supportsHistory(timeframe, provider)) {
       try {
         const providerSymbol = this.instrumentRegistry.providerSymbol(canonical);
         const cursorKey = cursor == null ? 'latest' : String(cursor);
         const providerBars = await this.historyCache.getOrLoad({
-          key: `${providerSymbol}:${timeframe}:${cursorKey}`,
+          key: `${provider}:${providerSymbol}:${timeframe}:${cursorKey}`,
           timeframe,
           limit: fetchLimit,
           load: () => this.adapter.fetchHistorical({
+            provider,
             providerSymbol,
             timeframe,
             limit: fetchLimit,
@@ -137,6 +139,7 @@ class MarketHistoryService {
             selected,
             safeLimit,
             localByOpenTime,
+            provider,
           );
           return {
             candles,
@@ -166,7 +169,7 @@ class MarketHistoryService {
     };
   }
 
-  #serializeProviderBars(symbol, timeframe, bars, limit, localByOpenTime) {
+  #serializeProviderBars(symbol, timeframe, bars, limit, localByOpenTime, provider = 'twelve-data') {
     const stepMs = TIMEFRAME_MS[timeframe];
     const now = Date.now();
     const merged = bars.slice(-limit).map(bar => {
@@ -185,7 +188,7 @@ class MarketHistoryService {
         complete: bar.openTimeMs + stepMs <= now,
         synthetic: false,
         source: bar.canonicalUtc ? 'CANONICAL_BACKFILL' : 'BACKFILL',
-        provider: 'twelve-data',
+        provider,
       };
     });
     return applyVolumeMode(merged, chooseVolumeMode(merged, timeframe));
