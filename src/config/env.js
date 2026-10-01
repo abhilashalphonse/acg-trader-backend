@@ -45,6 +45,7 @@ const schema = z.object({
   PLATFORM_EVENT_MAX_ATTEMPTS: positiveInt(12),
   PLATFORM_SNAPSHOT_COALESCE_MS: positiveInt(5000),
   MARKET_GATEWAY_ENABLED: booleanFromEnv.default(true),
+  INDIA_MARKET_ENABLED: booleanFromEnv.default(false),
   MARKET_PROVIDER: z.enum(['twelve-data', 'multi']).default('twelve-data'),
   MARKET_UNIVERSE_MODE: z.enum(['catalog', 'explicit']).default('catalog'),
   MARKET_SYMBOLS: z.string().default('EURUSD,XAUUSD'),
@@ -176,6 +177,7 @@ const env = Object.freeze({
   }),
   market: Object.freeze({
     enabled: raw.MARKET_GATEWAY_ENABLED,
+    indiaEnabled: raw.INDIA_MARKET_ENABLED,
     provider: raw.MARKET_PROVIDER,
     universeMode: raw.MARKET_UNIVERSE_MODE,
     useCatalogUniverse,
