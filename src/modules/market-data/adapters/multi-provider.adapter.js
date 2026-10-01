@@ -9,6 +9,9 @@ class MultiProviderAdapter extends EventEmitter {
     this.logger = logger;
     this.bound = new Map();
     this.activeProviders = new Set();
+    this.providerStates = new Map();
+    this.lastAggregateState = null;
+    this.providerName = 'multi-provider';
   }
 
   start(subscriptions) {
@@ -44,7 +47,10 @@ class MultiProviderAdapter extends EventEmitter {
     }
     await Promise.allSettled(tasks);
     this.activeProviders.clear();
+    this.providerStates.clear();
+    this.lastAggregateState = null;
     this.#unbindAll();
+    this.emit('connection', { state: 'STOPPED', timestamp: Date.now(), provider: 'multi-provider' });
   }
 
   async fetchLatestPrice({ provider = 'twelve-data', ...args }) {
@@ -77,7 +83,12 @@ class MultiProviderAdapter extends EventEmitter {
 
     const listeners = {
       price: event => this.emit('price', { provider, ...event }),
-      connection: event => this.emit('connection', { provider, ...event }),
+      connection: event => {
+        const normalized = { provider, ...event };
+        this.providerStates.set(provider, normalized.state);
+        this.emit('provider-connection', normalized);
+        this.#emitAggregateConnection(normalized);
+      },
       error: error => {
         if (error && typeof error === 'object') error.provider = error.provider || provider;
         this.emit('adapter-error', error);
@@ -90,6 +101,34 @@ class MultiProviderAdapter extends EventEmitter {
     adapter.on('adapter-error', listeners.error);
     adapter.on('subscription-status', listeners.subscription);
     this.bound.set(provider, { adapter, listeners });
+  }
+
+  #emitAggregateConnection(lastEvent = {}) {
+    const states = [...this.activeProviders].map(provider => this.providerStates.get(provider) || 'CONNECTING');
+    let state = 'CONNECTING';
+
+    if (!states.length) state = 'STOPPED';
+    else if (states.every(item => item === 'LIVE')) state = 'LIVE';
+    else if (states.some(item => item === 'LIVE')) state = 'LIVE';
+    else if (states.some(item => item === 'ERROR')) state = 'ERROR';
+    else if (states.every(item => ['DISCONNECTED', 'STOPPED'].includes(item))) state = 'DISCONNECTED';
+
+    if (state === this.lastAggregateState) return;
+    this.lastAggregateState = state;
+    this.emit('connection', {
+      state,
+      timestamp: Number(lastEvent.timestamp) || Date.now(),
+      provider: 'multi-provider',
+      providers: Object.fromEntries(this.providerStates),
+    });
+  }
+
+  status() {
+    return {
+      provider: this.providerName,
+      providers: Object.fromEntries(this.providerStates),
+      activeProviders: [...this.activeProviders],
+    };
   }
 
   #unbindAll() {
