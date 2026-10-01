@@ -476,6 +476,26 @@ class CandleEngine {
       correctionReason: reason,
     };
 
+    const previous = state.lastClosedCandle?.openTimeMs === openTimeMs
+      ? state.lastClosedCandle
+      : null;
+    const sameNumber = (a, b) => {
+      const left = Number(a);
+      const right = Number(b);
+      return (Number.isFinite(left) && Number.isFinite(right) && left === right)
+        || (!Number.isFinite(left) && !Number.isFinite(right));
+    };
+    if (
+      previous
+      && sameNumber(previous.open, candle.open)
+      && sameNumber(previous.high, candle.high)
+      && sameNumber(previous.low, candle.low)
+      && sameNumber(previous.close, candle.close)
+      && sameNumber(previous.providerVolume, candle.providerVolume)
+    ) {
+      return serializeCandle(previous);
+    }
+
     this.#touchState(state, candle);
     if (openTimeMs === state.lastClosedOpenTimeMs) {
       state.lastClosedCandle = { ...candle };
