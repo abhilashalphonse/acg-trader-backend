@@ -422,6 +422,7 @@ class AccelpixAdapter extends EventEmitter {
       providerTimestampMs: normalizeAccelpixLiveTimestampMs(message?.time, receivedAtMs),
       dayVolume: state.dayVolume,
       source: 'accelpix',
+      quoteOnly: true,
       raw: message,
     });
   }
