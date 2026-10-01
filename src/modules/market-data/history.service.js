@@ -160,6 +160,19 @@ class MarketHistoryService {
         }
       } catch (error) {
         this.logger.warn({ err: error, symbol: canonical, timeframe, beforeMs: cursor }, 'Historical provider reconciliation failed');
+
+        // Identity mismatches are not ordinary provider outages. Falling back
+        // to locally persisted bars can resurrect candles that were previously
+        // written from a different instrument sharing the same bare provider
+        // ticker (for example NDX resolving to Nordex instead of Nasdaq 100).
+        // Fail closed until the intended instrument identity is available.
+        if (error?.code === 'TWELVE_DATA_SYMBOL_IDENTITY_MISMATCH') {
+          throw new AppError('Market history is unavailable for this instrument', {
+            statusCode: 502,
+            code: 'MARKET_HISTORY_IDENTITY_UNAVAILABLE',
+          });
+        }
+
         if (!rows.length) {
           throw new AppError('Market history is temporarily unavailable', {
             statusCode: 502,
