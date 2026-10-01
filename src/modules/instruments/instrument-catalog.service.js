@@ -2,6 +2,7 @@
 
 const { Instrument } = require('./instrument.model');
 const { ACG_INSTRUMENT_CATALOG } = require('./instrument-catalog');
+const { ACG_INDIA_PILOT_CATALOG } = require('./india-pilot-catalog');
 
 const EXECUTION_PROVISION_VERSION = 1;
 
@@ -19,6 +20,32 @@ async function ensureInstrumentCatalog({ logger } = {}) {
   const inserted = Number(result.upsertedCount || 0);
   logger?.info?.({ inserted, catalogSize: ACG_INSTRUMENT_CATALOG.length }, 'Instrument catalog ensured');
   return { inserted };
+}
+
+async function syncIndiaPilotCatalog({ logger } = {}) {
+  const operations = ACG_INDIA_PILOT_CATALOG.map(spec => ({
+    updateOne: {
+      filter: { symbol: spec.symbol },
+      update: {
+        $set: {
+          ...spec,
+          executionEnabled: false,
+          executionProvisionVersion: 0,
+        },
+      },
+      upsert: true,
+    },
+  }));
+
+  if (!operations.length) return { matched: 0, modified: 0, inserted: 0 };
+  const result = await Instrument.bulkWrite(operations, { ordered: false });
+  const summary = {
+    matched: Number(result.matchedCount || 0),
+    modified: Number(result.modifiedCount || 0),
+    inserted: Number(result.upsertedCount || 0),
+  };
+  logger?.info?.({ ...summary, catalogSize: ACG_INDIA_PILOT_CATALOG.length }, 'NSE pilot catalog synchronized as chart-only');
+  return summary;
 }
 
 async function enforceCatalogLeveragePolicy({ logger } = {}) {
@@ -179,6 +206,7 @@ function serializeInstrument(document) {
 module.exports = {
   ensureInstrumentCatalog,
   syncInstrumentCatalog,
+  syncIndiaPilotCatalog,
   provisionCatalogExecution,
   enforceCatalogLeveragePolicy,
   serializeInstrument,
