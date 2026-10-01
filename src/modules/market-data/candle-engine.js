@@ -383,8 +383,10 @@ class CandleEngine {
       source: 'HYDRATED',
       provider: existing?.provider || historyBar?.provider || null,
       volumeMode,
-      firstEventTimeMs: existing?.firstEventTimeMs ?? historyOpenTimeMs,
-      firstEventSequence: existing?.firstEventSequence ?? null,
+      // Provider history owns the bar open once hydration succeeds. Buffered
+      // in-bucket ticks may widen the range but cannot replace that open.
+      firstEventTimeMs: historyOpenTimeMs,
+      firstEventSequence: null,
       lastEventTimeMs: existing?.lastEventTimeMs ?? historyOpenTimeMs,
       lastEventSequence: existing?.lastEventSequence ?? null,
     };
