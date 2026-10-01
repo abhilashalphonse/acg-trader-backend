@@ -53,6 +53,43 @@ function chooseIndexSearchMatch(rows, subscription, { requireExactSymbol = true 
   return ranked[0]?.row || null;
 }
 
+function commodityMatchScore(row, subscription) {
+  const expectedName = normalizeSearchText(subscription?.name);
+  const expectedTokens = new Set(expectedName.split(' ').filter(token => token.length > 1));
+  const candidateName = normalizeSearchText(row?.instrument_name);
+  const candidateTokens = new Set(candidateName.split(' ').filter(token => token.length > 1));
+
+  let value = 0;
+  if (expectedName && candidateName === expectedName) value += 30;
+  else if (expectedName && (candidateName.includes(expectedName) || expectedName.includes(candidateName))) value += 18;
+  for (const token of expectedTokens) if (candidateTokens.has(token)) value += 2;
+  if (String(row?.currency || '').toUpperCase() === String(subscription?.quoteCurrency || '').toUpperCase()) value += 5;
+  return value;
+}
+
+function chooseCommoditySearchMatch(rows, subscription, { requireExactSymbol = true } = {}) {
+  const expectedSymbol = String(subscription?.providerSymbol || '').toUpperCase();
+  const candidates = (Array.isArray(rows) ? rows : []).filter(row => (
+    /commodity/i.test(String(row?.instrument_type || ''))
+    && (!requireExactSymbol || String(row?.symbol || '').toUpperCase() === expectedSymbol)
+  ));
+  if (!candidates.length) return null;
+
+  const ranked = [...candidates]
+    .map(row => ({ row, score: commodityMatchScore(row, subscription) }))
+    .sort((a, b) => b.score - a.score);
+
+  if (!requireExactSymbol && ranked[0]?.score < 6) return null;
+  return ranked[0]?.row || null;
+}
+
+function needsCommodityIdentityResolution(subscription) {
+  const assetClass = String(subscription?.assetClass || '').toUpperCase();
+  const providerSymbol = String(subscription?.providerSymbol || '');
+  return assetClass === 'OTHER' || String(subscription?.symbol || '').toUpperCase() === 'NGASUSD'
+    || (assetClass === 'ENERGY' && !providerSymbol.includes('/'));
+}
+
 function qualifyProviderSymbol(match, fallback) {
   const symbol = String(match?.symbol || fallback || '').trim();
   const exchange = String(match?.exchange || '').trim();
@@ -151,15 +188,21 @@ class TwelveDataAdapter extends EventEmitter {
 
   async #resolveSubscriptionIdentities(subscriptions) {
     const result = [];
-    const indexSubscriptions = subscriptions.filter(item => String(item?.assetClass || '').toUpperCase() === 'INDEX');
-    const nonIndexSubscriptions = subscriptions.filter(item => String(item?.assetClass || '').toUpperCase() !== 'INDEX');
-    result.push(...nonIndexSubscriptions);
+    const identitySubscriptions = subscriptions.filter(item => (
+      String(item?.assetClass || '').toUpperCase() === 'INDEX'
+      || needsCommodityIdentityResolution(item)
+    ));
+    const passthroughSubscriptions = subscriptions.filter(item => !identitySubscriptions.includes(item));
+    result.push(...passthroughSubscriptions);
 
-    const queue = [...indexSubscriptions];
+    const queue = [...identitySubscriptions];
     const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
       while (queue.length) {
         const item = queue.shift();
-        result.push(await this.#resolveIndexSubscription(item));
+        const isIndex = String(item?.assetClass || '').toUpperCase() === 'INDEX';
+        result.push(isIndex
+          ? await this.#resolveIndexSubscription(item)
+          : await this.#resolveCommoditySubscription(item));
       }
     });
     await Promise.all(workers);
@@ -229,6 +272,76 @@ class TwelveDataAdapter extends EventEmitter {
       return {
         ...subscription,
         identityError: `Twelve Data index identity resolution failed for ${providerSymbol}`,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+
+  async #resolveCommoditySubscription(subscription) {
+    const providerSymbol = String(subscription?.providerSymbol || '').trim();
+    if (!providerSymbol) return { ...subscription, identityError: 'Missing Twelve Data commodity symbol' };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
+    try {
+      const search = async term => {
+        const query = new URLSearchParams({
+          symbol: term,
+          outputsize: '120',
+          show_plan: 'true',
+          apikey: this.apiKey,
+        });
+        const response = await this.fetchImpl(`${this.apiBase}/symbol_search?${query}`, { signal: controller.signal });
+        const body = await response.json();
+        if (!response.ok || body?.status === 'error') {
+          throw new Error(body?.message || `Twelve Data symbol search failed (${response.status})`);
+        }
+        return body?.data || [];
+      };
+
+      const symbolRows = await search(providerSymbol);
+      let match = chooseCommoditySearchMatch(symbolRows, subscription, { requireExactSymbol: true });
+
+      if (!match && subscription?.name) {
+        const nameRows = await search(String(subscription.name));
+        match = chooseCommoditySearchMatch(nameRows, subscription, { requireExactSymbol: false });
+      }
+
+      if (!match) {
+        return {
+          ...subscription,
+          identityError: `Twelve Data commodity identity could not be resolved for ${providerSymbol}`,
+        };
+      }
+
+      const resolvedProviderSymbol = qualifyProviderSymbol(match, providerSymbol);
+      this.logger?.info?.({
+        symbol: subscription.symbol,
+        providerSymbol,
+        resolvedProviderSymbol,
+        instrumentName: match.instrument_name,
+        exchange: match.exchange,
+      }, 'Resolved Twelve Data commodity identity');
+
+      return {
+        ...subscription,
+        resolvedProviderSymbol,
+        resolvedIdentity: {
+          instrumentName: match.instrument_name || null,
+          instrumentType: match.instrument_type || null,
+          exchange: match.exchange || null,
+          micCode: match.mic_code || null,
+          country: match.country || null,
+          currency: match.currency || null,
+        },
+      };
+    } catch (error) {
+      this.logger?.warn?.({ err: error, symbol: subscription.symbol, providerSymbol }, 'Twelve Data commodity identity resolution failed');
+      return {
+        ...subscription,
+        identityError: `Twelve Data commodity identity resolution failed for ${providerSymbol}`,
       };
     } finally {
       clearTimeout(timeout);
@@ -531,4 +644,10 @@ class TwelveDataAdapter extends EventEmitter {
   }
 }
 
-module.exports = { TwelveDataAdapter, chooseIndexSearchMatch, qualifyProviderSymbol };
+module.exports = {
+  TwelveDataAdapter,
+  chooseIndexSearchMatch,
+  chooseCommoditySearchMatch,
+  needsCommodityIdentityResolution,
+  qualifyProviderSymbol,
+};
