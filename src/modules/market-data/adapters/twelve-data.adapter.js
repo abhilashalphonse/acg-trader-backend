@@ -80,6 +80,7 @@ class TwelveDataAdapter extends EventEmitter {
     this.resolvedProviderSymbols = new Map();
     this.subscriptionIdentity = new Map();
     this.rejectedProviderSymbols = new Map();
+    this.requestedByResolvedProviderSymbol = new Map();
   }
 
   async start(subscriptions) {
@@ -88,6 +89,7 @@ class TwelveDataAdapter extends EventEmitter {
     this.resolvedProviderSymbols.clear();
     this.subscriptionIdentity.clear();
     this.rejectedProviderSymbols.clear();
+    this.requestedByResolvedProviderSymbol.clear();
 
     const resolved = await this.#resolveSubscriptionIdentities(requested);
     this.subscriptions = resolved.filter(item => !item.identityError);
@@ -98,6 +100,7 @@ class TwelveDataAdapter extends EventEmitter {
       this.providerToCanonical.set(resolvedSymbol, item.symbol);
       this.providerToCanonical.set(item.providerSymbol, item.symbol);
       this.resolvedProviderSymbols.set(item.providerSymbol, resolvedSymbol);
+      this.requestedByResolvedProviderSymbol.set(resolvedSymbol, item.providerSymbol);
       this.subscriptionIdentity.set(item.providerSymbol, item);
     }
 
@@ -322,7 +325,17 @@ class TwelveDataAdapter extends EventEmitter {
     }
 
     if (data.event === 'subscribe-status' || data.event === 'unsubscribe-status') {
-      this.emit('subscription-status', data);
+      const normalizeProviderSymbol = value => {
+        const symbol = typeof value === 'string' ? value : value?.symbol;
+        const requested = this.requestedByResolvedProviderSymbol.get(String(symbol || '')) || symbol;
+        return typeof value === 'string' ? requested : { ...value, symbol: requested };
+      };
+      const normalized = {
+        ...data,
+        success: Array.isArray(data.success) ? data.success.map(normalizeProviderSymbol) : data.success,
+        fails: Array.isArray(data.fails) ? data.fails.map(normalizeProviderSymbol) : data.fails,
+      };
+      this.emit('subscription-status', normalized);
       if (data.status === 'error') this.emit('adapter-error', new Error(data.message || `Twelve Data ${data.event} failed`));
       return;
     }
