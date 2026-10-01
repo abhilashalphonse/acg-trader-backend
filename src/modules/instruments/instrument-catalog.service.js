@@ -1,6 +1,7 @@
 'use strict';
 
 const { Instrument } = require('./instrument.model');
+const { env } = require('../../config/env');
 const { ACG_INSTRUMENT_CATALOG } = require('./instrument-catalog');
 const { ACG_INDIA_PILOT_CATALOG } = require('./india-pilot-catalog');
 
@@ -132,8 +133,13 @@ async function syncInstrumentCatalog({ logger } = {}) {
     inserted: Number(result.upsertedCount || 0),
     executionProvisioned: Number(provision.modified || 0),
   };
-  logger?.info?.({ ...summary, catalogSize: ACG_INSTRUMENT_CATALOG.length }, 'Instrument catalog synchronized');
-  return summary;
+  let indiaPilot = null;
+  if (env.market.indiaEnabled) {
+    indiaPilot = await syncIndiaPilotCatalog({ logger });
+  }
+
+  logger?.info?.({ ...summary, catalogSize: ACG_INSTRUMENT_CATALOG.length, indiaPilot }, 'Instrument catalog synchronized');
+  return { ...summary, indiaPilot };
 }
 
 function serializeInstrument(document) {
