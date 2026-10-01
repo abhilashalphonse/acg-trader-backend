@@ -456,10 +456,53 @@ class CandleEngine {
 
     const baseline = Number(historyBar.displayVolume ?? historyBar.providerVolume);
     const liveAnchor = Number(state.current.providerVolume);
-    if (Number.isFinite(baseline) && baseline >= 0 && Number.isFinite(liveAnchor) && liveAnchor >= 0) {
-      state.current.providerVolumeBaseline = baseline;
-      state.current.providerVolumeLiveAnchor = liveAnchor;
+    const currentDisplay = Number(resolveCandleVolume(state.current, 'provider').displayVolume);
+    const monotonicBaseline = [baseline, currentDisplay]
+      .filter(value => Number.isFinite(value) && value >= 0)
+      .reduce((max, value) => Math.max(max, value), -Infinity);
+    if (monotonicBaseline !== -Infinity && Number.isFinite(liveAnchor) && liveAnchor >= 0) {
+      if (state.current.providerVolumeBaseline == null) {
+        state.current.providerVolumeBaseline = monotonicBaseline;
+        state.current.providerVolumeLiveAnchor = liveAnchor;
+      } else if (monotonicBaseline > Number(state.current.providerVolumeBaseline)) {
+        state.current.providerVolumeBaseline = monotonicBaseline;
+        state.current.providerVolumeLiveAnchor = liveAnchor;
+      }
     }
+  }
+
+  #hydrationState(token) {
+    if (!token?.symbol || !token?.timeframe || token.id == null) return null;
+    const state = this.states.get(this.#key(normalizeSymbol(token.symbol), token.timeframe));
+    if (!state?.hydration || state.hydration.id !== token.id) return null;
+    return state;
+  }
+
+  #abortHydrationState(state, { replay = true } = {}) {
+    const hydration = state?.hydration;
+    if (!hydration) return;
+
+    const buffered = hydration.buffered
+      .slice()
+      .sort((a, b) => (a.tick.timeMs - b.tick.timeMs) || ((Number(a.tick.sequence) || 0) - (Number(b.tick.sequence) || 0)));
+    state.hydration = null;
+
+    if (replay) {
+      for (const item of buffered) {
+        this.#processTickForTimeframe(item.tick, item.chartPrice, item.symbol, item.timeframe, {
+          bypassHydration: true,
+          continuityBroken: item.continuityBroken,
+        });
+      }
+    }
+
+    hydration.resolveDone?.();
+  }
+
+  #touchState(state, candle = state?.current) {
+    if (!state || !candle) return;
+    state.revision += 1;
+    candle.stateVersion = state.revision;
   }
 
   #state(symbol, timeframe) {
@@ -471,6 +514,10 @@ class CandleEngine {
         current: null,
         lastClose: null,
         lastClosedOpenTimeMs: null,
+        lastClosedCandle: null,
+        revision: 0,
+        hydration: null,
+        historyHydratedOpenTimeMs: null,
         consecutiveSyntheticClosed: 0,
         lastProviderDayVolume: null,
         lastProviderVolumeEventTimeMs: null,
@@ -543,7 +590,7 @@ class CandleEngine {
     return sequence > anchorSequence;
   }
 
-  #providerVolumeDelta(state, rawDayVolume, eventTimeMs, eventSequence) {
+  #providerVolumeDelta(state, rawDayVolume, eventTimeMs, eventSequence, suppressDelta = false) {
     if (rawDayVolume === null || rawDayVolume === undefined || rawDayVolume === '') {
       return null;
     }
@@ -571,7 +618,7 @@ class CandleEngine {
     state.lastProviderDayVolume = dayVolume;
     state.lastProviderVolumeEventTimeMs = eventTimeMs;
     state.lastProviderVolumeEventSequence = eventSequence;
-    if (!Number.isFinite(previous) || dayVolume < previous) return null;
+    if (suppressDelta || !Number.isFinite(previous) || dayVolume < previous) return null;
     return dayVolume - previous;
   }
 
@@ -654,8 +701,13 @@ class CandleEngine {
 
   #finalizeClosed(state, candle) {
     this.#observeClosedVolume(state, candle);
+    this.#touchState(state, candle);
     state.lastClose = candle.close;
     state.lastClosedOpenTimeMs = candle.openTimeMs;
+    state.lastClosedCandle = { ...candle };
+    state.historyHydratedOpenTimeMs = state.historyHydratedOpenTimeMs === candle.openTimeMs
+      ? null
+      : state.historyHydratedOpenTimeMs;
     state.consecutiveSyntheticClosed = candle.synthetic ? state.consecutiveSyntheticClosed + 1 : 0;
     const publicCandle = serializeCandle(candle);
     this.eventBus.emit('market.candle.closed', publicCandle);
@@ -690,6 +742,8 @@ class CandleEngine {
   }
 
   #emitUpdate(candle) {
+    const state = this.states.get(this.#key(normalizeSymbol(candle.symbol), candle.timeframe));
+    this.#touchState(state, candle);
     this.eventBus.emit('market.candle.update', serializeCandle(candle));
   }
 }
