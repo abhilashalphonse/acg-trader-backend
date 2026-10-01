@@ -91,120 +91,136 @@ class CandleEngine {
 
   processTick(tick) {
     if (!tick || !Number.isFinite(tick.timeMs)) return;
-    // Historical OHLC comes from the provider's price series. Keep live OHLC
-    // on that exact same series so the REST -> websocket handoff cannot jump
-    // just because execution pricing derives a different bid/ask midpoint.
-    // referencePrice remains a safe fallback for feeds that do not expose price.
     const chartPrice = [tick.price, tick.referencePrice, tick.mid, tick.bid]
       .filter(value => value !== null && value !== undefined && value !== '')
       .map(Number)
       .find(value => Number.isFinite(value) && value > 0);
     if (!Number.isFinite(chartPrice)) return;
+
     const symbol = normalizeSymbol(tick.symbol);
     const continuityBroken = this.continuityBroken.has(symbol);
     this.symbolFeedLive.set(symbol, true);
 
     for (const timeframe of this.timeframes) {
-      const stepMs = TIMEFRAME_MS[timeframe];
-      if (!stepMs) continue;
-      const instrument = this.instrumentRegistry?.get?.(symbol) || null;
-      const useSessionAnchor = instrument?.provider === 'accelpix'
-        && !['1d', '1w'].includes(timeframe);
-      const bucket = useSessionAnchor
-        ? sessionAlignedBucketOpenTimeMs(instrument, tick.timeMs, stepMs)
-        : candleBucketOpenTimeMs(tick.timeMs, timeframe);
-      if (!Number.isFinite(bucket)) continue;
-      const state = this.#state(symbol, timeframe);
-
-      // Completed bars are immutable on the live path. A late tick for an
-      // already-finalized bucket must never create a new one-tick fragment that
-      // can later overwrite the durable candle. Historical corrections belong
-      // to the explicit provider reconciliation path instead.
-      if (state.lastClosedOpenTimeMs != null && bucket <= state.lastClosedOpenTimeMs) continue;
-      if (state.current && bucket < state.current.openTimeMs) continue;
-
-      const eventSequence = this.#eventSequence(state, tick);
-      const providerVolumeDelta = this.#providerVolumeDelta(
-        state,
-        tick.dayVolume,
-        tick.timeMs,
-        eventSequence,
-      );
-
-      if (state.current && bucket === state.current.openTimeMs) {
-        const candle = state.current;
-        if (candle.synthetic && candle.tickCount === 0) {
-          candle.open = chartPrice;
-          candle.high = chartPrice;
-          candle.low = chartPrice;
-          candle.close = chartPrice;
-          candle.tickCount = 1;
-          candle.providerVolume = providerVolumeDelta;
-          candle.synthetic = false;
-          candle.source = 'LIVE';
-          candle.provider = tick.source || null;
-          candle.firstEventTimeMs = tick.timeMs;
-          candle.firstEventSequence = eventSequence;
-          candle.lastEventTimeMs = tick.timeMs;
-          candle.lastEventSequence = eventSequence;
-        } else {
-          candle.high = Math.max(candle.high, chartPrice);
-          candle.low = Math.min(candle.low, chartPrice);
-
-          // Open/close are event-time properties, not arrival-order properties.
-          // Slightly reordered ticks may extend the range but an older event
-          // must not replace the latest close.
-          if (this.#isEarlierEvent(
-            tick.timeMs,
-            eventSequence,
-            candle.firstEventTimeMs,
-            candle.firstEventSequence,
-          )) {
-            candle.open = chartPrice;
-            candle.firstEventTimeMs = tick.timeMs;
-            candle.firstEventSequence = eventSequence;
-          }
-          if (this.#isLaterEvent(
-            tick.timeMs,
-            eventSequence,
-            candle.lastEventTimeMs,
-            candle.lastEventSequence,
-          )) {
-            candle.close = chartPrice;
-            candle.lastEventTimeMs = tick.timeMs;
-            candle.lastEventSequence = eventSequence;
-          }
-
-          candle.tickCount += 1;
-          if (providerVolumeDelta != null) {
-            candle.providerVolume = Number(candle.providerVolume || 0) + providerVolumeDelta;
-          }
-          candle.provider = tick.source || candle.provider;
-        }
-        this.#emitUpdate(candle);
-        continue;
-      }
-
-      if (state.current && bucket > state.current.openTimeMs) {
-        this.#closeCurrent(state);
-      }
-
-      if (!continuityBroken) this.#fillShortGap(state, symbol, timeframe, stepMs, bucket);
-      state.current = this.#fromTick(
-        symbol,
-        timeframe,
-        stepMs,
-        bucket,
-        tick,
-        chartPrice,
-        providerVolumeDelta,
-        eventSequence,
-      );
-      state.current.volumeMode = state.volumeMode;
-      this.#emitUpdate(state.current);
+      this.#processTickForTimeframe(tick, chartPrice, symbol, timeframe, { continuityBroken });
     }
 
     this.continuityBroken.delete(symbol);
+  }
+
+  #processTickForTimeframe(tick, chartPrice, symbol, timeframe, {
+    bypassHydration = false,
+    continuityBroken = false,
+    suppressProviderVolumeForBucket = null,
+    emit = true,
+  } = {}) {
+    const stepMs = TIMEFRAME_MS[timeframe];
+    if (!stepMs) return;
+
+    const instrument = this.instrumentRegistry?.get?.(symbol) || null;
+    const useSessionAnchor = instrument?.provider === 'accelpix'
+      && !['1d', '1w'].includes(timeframe);
+    const bucket = useSessionAnchor
+      ? sessionAlignedBucketOpenTimeMs(instrument, tick.timeMs, stepMs)
+      : candleBucketOpenTimeMs(tick.timeMs, timeframe);
+    if (!Number.isFinite(bucket)) return;
+
+    const state = this.#state(symbol, timeframe);
+    if (state.hydration && !bypassHydration) {
+      state.hydration.buffered.push({
+        tick: { ...tick },
+        chartPrice,
+        symbol,
+        timeframe,
+        continuityBroken,
+      });
+      return;
+    }
+
+    // Completed bars are immutable on the live path. A late tick for an
+    // already-finalized bucket must never create a new one-tick fragment.
+    if (state.lastClosedOpenTimeMs != null && bucket <= state.lastClosedOpenTimeMs) return;
+    if (state.current && bucket < state.current.openTimeMs) return;
+
+    const eventSequence = this.#eventSequence(state, tick);
+    const suppressProviderVolume = Number(suppressProviderVolumeForBucket) === bucket;
+    const providerVolumeDelta = this.#providerVolumeDelta(
+      state,
+      tick.dayVolume,
+      tick.timeMs,
+      eventSequence,
+      suppressProviderVolume,
+    );
+
+    if (state.current && bucket === state.current.openTimeMs) {
+      const candle = state.current;
+      if (candle.synthetic && candle.tickCount === 0) {
+        candle.open = chartPrice;
+        candle.high = chartPrice;
+        candle.low = chartPrice;
+        candle.close = chartPrice;
+        candle.tickCount = 1;
+        candle.providerVolume = providerVolumeDelta;
+        candle.synthetic = false;
+        candle.source = 'LIVE';
+        candle.provider = tick.source || null;
+        candle.firstEventTimeMs = tick.timeMs;
+        candle.firstEventSequence = eventSequence;
+        candle.lastEventTimeMs = tick.timeMs;
+        candle.lastEventSequence = eventSequence;
+      } else {
+        candle.high = Math.max(candle.high, chartPrice);
+        candle.low = Math.min(candle.low, chartPrice);
+
+        if (this.#isEarlierEvent(
+          tick.timeMs,
+          eventSequence,
+          candle.firstEventTimeMs,
+          candle.firstEventSequence,
+        )) {
+          candle.open = chartPrice;
+          candle.firstEventTimeMs = tick.timeMs;
+          candle.firstEventSequence = eventSequence;
+        }
+        if (this.#isLaterEvent(
+          tick.timeMs,
+          eventSequence,
+          candle.lastEventTimeMs,
+          candle.lastEventSequence,
+        )) {
+          candle.close = chartPrice;
+          candle.lastEventTimeMs = tick.timeMs;
+          candle.lastEventSequence = eventSequence;
+        }
+
+        candle.tickCount += 1;
+        if (providerVolumeDelta != null) {
+          candle.providerVolume = Number(candle.providerVolume || 0) + providerVolumeDelta;
+        }
+        candle.provider = tick.source || candle.provider;
+      }
+      if (emit) this.#emitUpdate(candle);
+      return;
+    }
+
+    if (state.current && bucket > state.current.openTimeMs) {
+      this.#closeCurrent(state);
+    }
+
+    if (!continuityBroken) this.#fillShortGap(state, symbol, timeframe, stepMs, bucket);
+    state.current = this.#fromTick(
+      symbol,
+      timeframe,
+      stepMs,
+      bucket,
+      tick,
+      chartPrice,
+      providerVolumeDelta,
+      eventSequence,
+    );
+    state.current.volumeMode = state.volumeMode;
+    state.historyHydratedOpenTimeMs = null;
+    if (emit) this.#emitUpdate(state.current);
   }
 
   flushExpired(nowMs) {
