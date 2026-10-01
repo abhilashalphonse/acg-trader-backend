@@ -167,6 +167,11 @@ class AccelpixSignalRClient {
     const rawUrl = `${protocol}://${host}/api/fda/apidata/stream?api_token=${token}`;
 
     const connection = new signalR.HubConnectionBuilder()
+      // SignalR's information-level connect log includes the full WebSocket
+      // URL, which contains the Accelpix api_token query parameter. Keep the
+      // transport logger at warning-or-higher so credentials never enter
+      // application/deployment logs.
+      .configureLogging(signalR.LogLevel.Warning)
       .withUrl(encodeURI(rawUrl))
       .withAutomaticReconnect({
         nextRetryDelayInMilliseconds: context => {
