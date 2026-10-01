@@ -131,6 +131,7 @@ class MarketGateway {
     const instrument = this.instrumentRegistry.get(canonical);
     if (!instrument || !this.symbols.includes(canonical)) return null;
 
+    const current = this.quoteStore.get(canonical);
     const subscriptionError = this.subscriptionErrors.get(canonical);
     if (subscriptionError) {
       const staleQuote = this.quoteStore.markStale(canonical, true);
@@ -142,7 +143,6 @@ class MarketGateway {
       throw error;
     }
 
-    const current = this.quoteStore.get(canonical);
     const ageMs = this.#quoteAgeMs(current);
     if (!force && current && !current.isStale && ageMs <= instrument.softQuoteAgeMs) return current;
 
