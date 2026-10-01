@@ -762,3 +762,42 @@ test('completed bar corrections use an explicit path without reopening live stat
   assert.equal(engine.getCurrent('EURUSD', '5s').openTimeMs, 5000);
   assert.equal(corrections.at(-1).reason, 'test-correction');
 });
+
+
+test('flush cannot finalize an active bucket until hydration replays buffered rollover ticks', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+  const base = Math.floor((Date.now() + 10_000) / 5_000) * 5_000;
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 1000, sequence: 1, price: 105, source: 'test' });
+  const hydration = engine.beginHydration('EURUSD', '5s');
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 6000, sequence: 2, price: 108, source: 'test' });
+  engine.flushExpired(base + 5000);
+
+  // Still open/frozen: the 6s tick is buffered until the snapshot is seeded.
+  assert.equal(engine.getLastClosed('EURUSD', '5s'), null);
+  assert.equal(engine.getCurrent('EURUSD', '5s').openTimeMs, base);
+
+  engine.completeHydration(hydration, {
+    symbol: 'EURUSD',
+    timeframe: '5s',
+    openTimeMs: base,
+    closeTimeMs: base + 5000,
+    open: 100,
+    high: 120,
+    low: 90,
+    close: 106,
+    complete: false,
+    volumeMode: 'unavailable',
+  });
+
+  const closed = engine.getLastClosed('EURUSD', '5s');
+  assert.equal(closed.openTimeMs, base);
+  assert.equal(closed.open, 100);
+  assert.equal(closed.high, 120);
+  assert.equal(closed.low, 90);
+  assert.equal(closed.close, 105);
+  assert.equal(engine.getCurrent('EURUSD', '5s').openTimeMs, base + 5000);
+  assert.equal(engine.getCurrent('EURUSD', '5s').close, 108);
+});
