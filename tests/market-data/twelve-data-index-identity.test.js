@@ -136,7 +136,7 @@ test('chooses a Commodity result instead of an ambiguous equity ticker', () => {
       symbol: 'KC1',
       instrument_name: 'Coffee',
       exchange: 'COMMODITY',
-      instrument_type: 'Commodity',
+      instrument_type: 'Agricultural Product',
       currency: 'USD',
     },
   ];
@@ -148,7 +148,7 @@ test('chooses a Commodity result instead of an ambiguous equity ticker', () => {
     quoteCurrency: 'USD',
   });
 
-  assert.equal(match.instrument_type, 'Commodity');
+  assert.equal(match.instrument_type, 'Agricultural Product');
   assert.equal(match.exchange, 'COMMODITY');
   assert.equal(qualifyProviderSymbol(match, 'KC1'), 'KC1:COMMODITY');
 });
@@ -159,7 +159,7 @@ test('commodity name fallback can resolve provider aliases such as Natural Gas',
       symbol: 'NG',
       instrument_name: 'Natural Gas',
       exchange: 'COMMODITY',
-      instrument_type: 'Commodity',
+      instrument_type: 'Agricultural Product',
       currency: 'USD',
     },
     {
@@ -178,7 +178,7 @@ test('commodity name fallback can resolve provider aliases such as Natural Gas',
     quoteCurrency: 'USD',
   }, { requireExactSymbol: false });
 
-  assert.equal(match.instrument_type, 'Commodity');
+  assert.equal(match.instrument_type, 'Energy Resource');
   assert.equal(match.instrument_name, 'Natural Gas');
   assert.equal(qualifyProviderSymbol(match, 'NG/USD'), 'NG:COMMODITY');
 });
@@ -189,4 +189,22 @@ test('commodity identity resolution is limited to ambiguous commodity mappings',
   assert.equal(needsCommodityIdentityResolution({ symbol: 'WTIUSD', assetClass: 'ENERGY', providerSymbol: 'WTI/USD' }), false);
   assert.equal(needsCommodityIdentityResolution({ symbol: 'XAUUSD', assetClass: 'METAL', providerSymbol: 'XAU/USD' }), false);
   assert.equal(needsCommodityIdentityResolution({ symbol: 'EURUSD', assetClass: 'FOREX', providerSymbol: 'EUR/USD' }), false);
+});
+
+
+test('accepts official Twelve Data commodity categories', () => {
+  for (const instrumentType of ['Precious Metal', 'Industrial Metal', 'Energy Resource', 'Agricultural Product', 'Livestock']) {
+    const match = chooseCommoditySearchMatch([{
+      symbol: 'TEST1',
+      instrument_name: 'Test Commodity',
+      instrument_type: instrumentType,
+      exchange: 'COMMODITY',
+    }], {
+      symbol: 'TEST',
+      providerSymbol: 'TEST1',
+      name: 'Test Commodity',
+      quoteCurrency: 'USD',
+    });
+    assert.ok(match, instrumentType);
+  }
 });

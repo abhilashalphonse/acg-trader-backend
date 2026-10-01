@@ -70,7 +70,7 @@ function commodityMatchScore(row, subscription) {
 function chooseCommoditySearchMatch(rows, subscription, { requireExactSymbol = true } = {}) {
   const expectedSymbol = String(subscription?.providerSymbol || '').toUpperCase();
   const candidates = (Array.isArray(rows) ? rows : []).filter(row => (
-    /commodity/i.test(String(row?.instrument_type || ''))
+    /(commodity|metal|energy|agricultural|livestock|soft|grain)/i.test(String(row?.instrument_type || row?.category || ''))
     && (!requireExactSymbol || String(row?.symbol || '').toUpperCase() === expectedSymbol)
   ));
   if (!candidates.length) return null;
@@ -286,27 +286,31 @@ class TwelveDataAdapter extends EventEmitter {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
     try {
-      const search = async term => {
+      const fetchCommodities = async symbol => {
         const query = new URLSearchParams({
-          symbol: term,
-          outputsize: '120',
-          show_plan: 'true',
+          outputsize: '500',
           apikey: this.apiKey,
         });
-        const response = await this.fetchImpl(`${this.apiBase}/symbol_search?${query}`, { signal: controller.signal });
+        if (symbol) query.set('symbol', symbol);
+        const response = await this.fetchImpl(`${this.apiBase}/commodities?${query}`, { signal: controller.signal });
         const body = await response.json();
         if (!response.ok || body?.status === 'error') {
-          throw new Error(body?.message || `Twelve Data symbol search failed (${response.status})`);
+          throw new Error(body?.message || `Twelve Data commodities request failed (${response.status})`);
         }
-        return body?.data || [];
+        return (body?.data || []).map(row => ({
+          ...row,
+          instrument_name: row?.name || null,
+          instrument_type: row?.category || null,
+          exchange: 'COMMODITY',
+        }));
       };
 
-      const symbolRows = await search(providerSymbol);
+      const symbolRows = await fetchCommodities(providerSymbol);
       let match = chooseCommoditySearchMatch(symbolRows, subscription, { requireExactSymbol: true });
 
       if (!match && subscription?.name) {
-        const nameRows = await search(String(subscription.name));
-        match = chooseCommoditySearchMatch(nameRows, subscription, { requireExactSymbol: false });
+        const allRows = await fetchCommodities(null);
+        match = chooseCommoditySearchMatch(allRows, subscription, { requireExactSymbol: false });
       }
 
       if (!match) {
@@ -322,7 +326,7 @@ class TwelveDataAdapter extends EventEmitter {
         providerSymbol,
         resolvedProviderSymbol,
         instrumentName: match.instrument_name,
-        exchange: match.exchange,
+        instrumentType: match.instrument_type,
       }, 'Resolved Twelve Data commodity identity');
 
       return {
@@ -331,10 +335,10 @@ class TwelveDataAdapter extends EventEmitter {
         resolvedIdentity: {
           instrumentName: match.instrument_name || null,
           instrumentType: match.instrument_type || null,
-          exchange: match.exchange || null,
-          micCode: match.mic_code || null,
-          country: match.country || null,
-          currency: match.currency || null,
+          exchange: 'COMMODITY',
+          micCode: null,
+          country: null,
+          currency: subscription?.quoteCurrency || null,
         },
       };
     } catch (error) {
