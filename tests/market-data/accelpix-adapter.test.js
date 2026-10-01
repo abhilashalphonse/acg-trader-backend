@@ -7,6 +7,9 @@ const {
   normalizeAccelpixLiveTimestampMs,
   parseAccelpixIntradayTimeMs,
   parseAccelpixEodTimeMs,
+  nseIntradayBucketOpenTimeMs,
+  aggregateNseIntradayBars,
+  aggregateWeeklyEodBars,
 } = require('../../src/modules/market-data/adapters/accelpix.adapter');
 
 function fakeClient() {
