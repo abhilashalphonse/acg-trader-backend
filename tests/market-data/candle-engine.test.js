@@ -512,3 +512,83 @@ test('daily candles never auto-switch to local tick-volume mode', () => {
   assert.equal(current.volumeMode, 'unavailable');
   assert.equal(current.displayVolume, null);
 });
+
+
+test('late ticks cannot recreate or overwrite an already completed candle', async () => {
+  const bus = new EventEmitter();
+  const persisted = [];
+  const updates = [];
+  bus.on('market.candle.update', candle => updates.push(candle));
+
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['5s'],
+    persistTimeframes: ['5s'],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 0,
+    instrumentRegistry: alwaysOpenRegistry(),
+    logger,
+    persistCandle: async candle => { persisted.push({ ...candle }); },
+  });
+
+  engine.processTick({ ...tick(1000, 1.10), sequence: 1 });
+  engine.processTick({ ...tick(6000, 1.20), sequence: 2 });
+  engine.flushExpired(10000);
+
+  const updateCountBeforeLateTick = updates.length;
+  engine.processTick({ ...tick(7000, 9.99), sequence: 3, dayVolume: 9999 });
+  engine.flushExpired(15000);
+  await engine.stop();
+
+  assert.equal(engine.getCurrent('EURUSD', '5s'), null);
+  assert.equal(updates.length, updateCountBeforeLateTick);
+  assert.equal(persisted.filter(item => item.openTimeMs === 5000).length, 1);
+  assert.equal(persisted.find(item => item.openTimeMs === 5000).close, 1.20);
+});
+
+test('older accepted ticks do not move the cumulative-volume baseline backward', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ ...tick(1000, 1.10), sequence: 1, dayVolume: 1000 });
+  engine.processTick({ ...tick(3000, 1.12), sequence: 3, dayVolume: 1010 });
+  engine.processTick({ ...tick(2000, 1.11), sequence: 2, dayVolume: 1005 });
+  engine.processTick({ ...tick(4000, 1.13), sequence: 4, dayVolume: 1015 });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.providerVolume, 15);
+  assert.equal(current.tickCount, 4);
+});
+
+test('open and close follow event-time order while high and low include reordered ticks', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  // Arrives in the order 3s, 1s, 4s, 2s.
+  engine.processTick({ ...tick(3000, 1.13), sequence: 1 });
+  engine.processTick({ ...tick(1000, 1.10), sequence: 2 });
+  engine.processTick({ ...tick(4000, 1.14), sequence: 3 });
+  engine.processTick({ ...tick(2000, 1.08), sequence: 4 });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.open, 1.10);
+  assert.equal(current.high, 1.14);
+  assert.equal(current.low, 1.08);
+  assert.equal(current.close, 1.14);
+  assert.equal(current.tickCount, 4);
+});
+
+test('same-timestamp ticks use sequence as the deterministic close tie-breaker', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ ...tick(2000, 1.10), sequence: 10 });
+  engine.processTick({ ...tick(2000, 1.11), sequence: 11 });
+  engine.processTick({ ...tick(2000, 1.09), sequence: 9 });
+
+  const current = engine.getCurrent('EURUSD', '5s');
+  assert.equal(current.open, 1.09);
+  assert.equal(current.close, 1.11);
+  assert.equal(current.high, 1.11);
+  assert.equal(current.low, 1.09);
+});
