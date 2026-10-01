@@ -37,6 +37,7 @@ class MarketGateway {
     this.onStreamRecovered = typeof onStreamRecovered === 'function' ? onStreamRecovered : null;
     this.streamOutage = false;
     this.providerOutages = new Set();
+    this.subscriptionErrors = new Map();
 
     this.connectionState = MARKET_CONNECTION_STATES.DISCONNECTED;
     this.symbolStates = new Map(this.symbols.map(symbol => [symbol, 'WAITING']));
@@ -83,6 +84,7 @@ class MarketGateway {
     await Promise.allSettled([...this.recoveryInFlight.values()]);
     this.recoveryInFlight.clear();
     this.priorityRefs.clear();
+    this.subscriptionErrors.clear();
     await this.adapter.stop();
     for (const symbol of this.symbols) this.candleEngine.setSymbolLive(symbol, false);
     await this.candleEngine.stop();
@@ -95,6 +97,12 @@ class MarketGateway {
     if (!this.symbols.includes(canonical)) return 0;
     const count = (this.priorityRefs.get(canonical) || 0) + 1;
     this.priorityRefs.set(canonical, count);
+
+    if (this.subscriptionErrors.has(canonical)) {
+      this.#setSymbolState(canonical, 'SUBSCRIPTION_ERROR');
+      return count;
+    }
+
     const quote = this.quoteStore.get(canonical);
     if (!quote || this.#quoteAgeMs(quote) > this.#softAgeMs(canonical)) {
       void this.ensureFreshQuote(canonical, { reason: 'priority-retained' }).catch(() => undefined);
@@ -124,6 +132,17 @@ class MarketGateway {
     if (!instrument || !this.symbols.includes(canonical)) return null;
 
     const current = this.quoteStore.get(canonical);
+    const subscriptionError = this.subscriptionErrors.get(canonical);
+    if (subscriptionError) {
+      const staleQuote = this.quoteStore.markStale(canonical, true);
+      if (staleQuote && current?.isStale !== true) this.eventBus.emit('market.quote', staleQuote);
+      this.candleEngine.setSymbolLive(canonical, false);
+      this.#setSymbolState(canonical, 'SUBSCRIPTION_ERROR');
+      const error = new Error(subscriptionError);
+      error.code = 'MARKET_SUBSCRIPTION_UNAVAILABLE';
+      throw error;
+    }
+
     const ageMs = this.#quoteAgeMs(current);
     if (!force && current && !current.isStale && ageMs <= instrument.softQuoteAgeMs) return current;
 
@@ -194,6 +213,8 @@ class MarketGateway {
           maxQuoteAgeMs: instrument?.maxQuoteAgeMs ?? null,
           priority: this.priorityCount(symbol) > 0,
           isStale: quote?.isStale ?? true,
+          marketDataAvailable: !this.subscriptionErrors.has(symbol),
+          subscriptionError: this.subscriptionErrors.get(symbol) || null,
           tickSanity: this.tickSanityFilter.snapshot(symbol),
         };
       }),
@@ -301,11 +322,49 @@ class MarketGateway {
   #onSubscriptionStatus(event) {
     const provider = event?.provider || this.adapter.providerName || 'twelve-data';
     this.logger.info({ provider, event: event.event, status: event.status, success: event.success, fails: event.fails }, 'Market-data subscription status');
+
+    const subscriptions = this.instrumentRegistry.providerSubscriptions();
+    const resolveSubscription = providerSymbol => subscriptions.find(item => (
+      item.providerSymbol === providerSymbol
+      && (!event?.provider || item.provider === event.provider)
+    ));
+
     if (Array.isArray(event.fails)) {
       for (const failure of event.fails) {
-        const providerSymbol = failure.symbol || failure?.meta?.symbol;
-        const subscription = this.instrumentRegistry.providerSubscriptions().find(item => item.providerSymbol === providerSymbol && (!event?.provider || item.provider === event.provider));
-        if (subscription) this.#setSymbolState(subscription.symbol, 'SUBSCRIPTION_ERROR');
+        const providerSymbol = typeof failure === 'string' ? failure : (failure?.symbol || failure?.meta?.symbol);
+        const subscription = resolveSubscription(providerSymbol);
+        if (!subscription) continue;
+
+        const canonical = normalizeSymbol(subscription.symbol);
+        const message = typeof failure === 'string'
+          ? `${providerSymbol} is unavailable from ${provider}`
+          : (failure?.message || `${providerSymbol} is unavailable from ${provider}`);
+        this.subscriptionErrors.set(canonical, message);
+        this.candleEngine.setSymbolLive(canonical, false);
+        const quote = this.quoteStore.markStale(canonical, true);
+        if (quote) this.eventBus.emit('market.quote', quote);
+        this.#setSymbolState(canonical, 'SUBSCRIPTION_ERROR');
+      }
+    }
+
+    if (Array.isArray(event.success)) {
+      for (const success of event.success) {
+        const providerSymbol = typeof success === 'string' ? success : success?.symbol;
+        const subscription = resolveSubscription(providerSymbol);
+        if (!subscription) continue;
+
+        const canonical = normalizeSymbol(subscription.symbol);
+        const hadError = this.subscriptionErrors.delete(canonical);
+        if (!hadError) continue;
+
+        const quote = this.quoteStore.get(canonical);
+        const instrument = this.instrumentRegistry.get(canonical);
+        const ageMs = this.#quoteAgeMs(quote);
+        const nextState = quote && instrument && ageMs <= instrument.maxQuoteAgeMs ? 'LIVE' : 'WAITING';
+        this.#setSymbolState(canonical, nextState);
+        if (this.priorityCount(canonical) > 0) {
+          void this.ensureFreshQuote(canonical, { reason: 'subscription-recovered', force: true }).catch(() => undefined);
+        }
       }
     }
   }
@@ -408,6 +467,7 @@ class MarketGateway {
     const tick = Object.freeze(this.dayChangeService?.decorate?.(baseTick) || baseTick);
 
     const previousState = this.symbolStates.get(symbol);
+    this.subscriptionErrors.delete(symbol);
     const quoteOnly = raw.quoteOnly === true;
     const quote = this.quoteStore.set(tick);
     this.#setSymbolState(symbol, 'LIVE');
@@ -441,6 +501,14 @@ class MarketGateway {
       const quote = this.quoteStore.get(symbol);
       const instrument = this.instrumentRegistry.get(symbol);
       if (!instrument) continue;
+
+      if (this.subscriptionErrors.has(symbol)) {
+        this.candleEngine.setSymbolLive(symbol, false);
+        const staleQuote = this.quoteStore.markStale(symbol, true);
+        if (staleQuote && quote?.isStale !== true) this.eventBus.emit('market.quote', staleQuote);
+        this.#setSymbolState(symbol, 'SUBSCRIPTION_ERROR');
+        continue;
+      }
 
       if (!quote) {
         this.#setSymbolState(symbol, 'WAITING');
