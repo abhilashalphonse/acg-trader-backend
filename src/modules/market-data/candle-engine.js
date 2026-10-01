@@ -8,7 +8,7 @@ const {
 } = require('./market.constants');
 const { normalizeSymbol, resolveCandleVolume, serializeCandle } = require('./market.utils');
 const { candleExpiresAt } = require('./candle-retention');
-const { isInstrumentSessionOpen } = require('../instruments/session-calendar');
+const { isInstrumentSessionOpen, sessionAlignedBucketOpenTimeMs } = require('../instruments/session-calendar');
 
 // Synthetic continuity is intentionally limited to short intraday charts.
 // H1/H4/D1/W1 must represent real provider/tick OHLC only.
@@ -105,7 +105,12 @@ class CandleEngine {
     for (const timeframe of this.timeframes) {
       const stepMs = TIMEFRAME_MS[timeframe];
       if (!stepMs) continue;
-      const bucket = candleBucketOpenTimeMs(tick.timeMs, timeframe);
+      const instrument = this.instrumentRegistry?.get?.(symbol) || null;
+      const useSessionAnchor = instrument?.provider === 'accelpix'
+        && !['1d', '1w'].includes(timeframe);
+      const bucket = useSessionAnchor
+        ? sessionAlignedBucketOpenTimeMs(instrument, tick.timeMs, stepMs)
+        : candleBucketOpenTimeMs(tick.timeMs, timeframe);
       if (!Number.isFinite(bucket)) continue;
       const state = this.#state(symbol, timeframe);
       const providerVolumeDelta = this.#providerVolumeDelta(state, tick.dayVolume);
