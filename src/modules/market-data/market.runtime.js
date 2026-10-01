@@ -7,6 +7,8 @@ const { InstrumentRegistry } = require('./instrument-registry');
 const { QuoteStore } = require('./quote-store');
 const { CandleEngine } = require('./candle-engine');
 const { TwelveDataAdapter } = require('./adapters/twelve-data.adapter');
+const { AccelpixAdapter } = require('./adapters/accelpix.adapter');
+const { MultiProviderAdapter } = require('./adapters/multi-provider.adapter');
 const { MarketGateway } = require('./market-gateway');
 const { MarketHistoryService } = require('./history.service');
 const { createMarketWebSocketServer } = require('../../realtime/market-ws-server');
@@ -20,7 +22,15 @@ function createMarketRuntime() {
     : env.market.symbols;
   const instrumentRegistry = new InstrumentRegistry({ symbols: symbols, defaultMaxQuoteAgeMs: env.market.defaultMaxQuoteAgeMs, logger });
   const quoteStore = new QuoteStore();
-  const adapter = new TwelveDataAdapter({ apiKey: env.twelveData.apiKey, wsUrl: env.twelveData.wsUrl, apiBase: env.twelveData.apiBase, heartbeatMs: env.twelveData.heartbeatMs, reconnectMinMs: env.twelveData.reconnectMinMs, reconnectMaxMs: env.twelveData.reconnectMaxMs, httpTimeoutMs: env.twelveData.httpTimeoutMs, subscribeBatchSize: env.twelveData.subscribeBatchSize, logger });
+  const twelveDataAdapter = new TwelveDataAdapter({ apiKey: env.twelveData.apiKey, wsUrl: env.twelveData.wsUrl, apiBase: env.twelveData.apiBase, heartbeatMs: env.twelveData.heartbeatMs, reconnectMinMs: env.twelveData.reconnectMinMs, reconnectMaxMs: env.twelveData.reconnectMaxMs, httpTimeoutMs: env.twelveData.httpTimeoutMs, subscribeBatchSize: env.twelveData.subscribeBatchSize, logger });
+  twelveDataAdapter.providerName = 'twelve-data';
+
+  const accelpixAdapter = new AccelpixAdapter({ apiKey: env.accelpix.apiKey, host: env.accelpix.host, httpTimeoutMs: env.accelpix.httpTimeoutMs, reconnectMinMs: env.accelpix.reconnectMinMs, reconnectMaxMs: env.accelpix.reconnectMaxMs, maxSymbols: env.accelpix.maxSymbols, logger });
+  accelpixAdapter.providerName = 'accelpix';
+
+  const adapter = env.market.provider === 'multi'
+    ? new MultiProviderAdapter({ adapters: { 'twelve-data': twelveDataAdapter, accelpix: accelpixAdapter }, logger })
+    : twelveDataAdapter;
   const candleEngine = new CandleEngine({ eventBus, timeframes: env.market.candleTimeframes, persistTimeframes: env.market.persistTimeframes, flushIntervalMs: env.market.candleFlushIntervalMs, maxSyntheticGapBars: env.market.maxSyntheticGapBars, instrumentRegistry, logger });
   const historyService = new MarketHistoryService({ adapter, instrumentRegistry, persistTimeframes: env.market.persistTimeframes, logger });
   const gateway = new MarketGateway({
