@@ -169,7 +169,7 @@ class MarketGateway {
   status() {
     const now = Date.now();
     return {
-      provider: 'twelve-data',
+      provider: this.adapter.providerName || 'twelve-data',
       state: this.connectionState,
       startedAt: this.startedAtMs ? new Date(this.startedAtMs).toISOString() : null,
       symbols: this.symbols.map(symbol => {
@@ -178,6 +178,7 @@ class MarketGateway {
         return {
           symbol,
           state: this.symbolStates.get(symbol) || 'WAITING',
+          provider: this.instrumentRegistry.provider?.(symbol) || 'twelve-data',
           providerSymbol: this.instrumentRegistry.providerSymbol(symbol),
           configured: Boolean(instrument?.configured),
           lastReceivedAt: quote?.receivedAtMs ? new Date(quote.receivedAtMs).toISOString() : null,
@@ -233,10 +234,11 @@ class MarketGateway {
   }
 
   #onAdapterError(error) {
-    this.logger.warn({ err: error }, 'Market-data provider error');
+    const provider = error?.provider || this.adapter.providerName || 'twelve-data';
+    this.logger.warn({ err: error, provider }, 'Market-data provider error');
     this.eventBus.emit('market.status', {
       scope: 'provider',
-      provider: 'twelve-data',
+      provider,
       state: 'ERROR',
       message: error.message,
       timestamp: Date.now(),
@@ -244,11 +246,12 @@ class MarketGateway {
   }
 
   #onSubscriptionStatus(event) {
-    this.logger.info({ event: event.event, status: event.status, success: event.success, fails: event.fails }, 'Twelve Data subscription status');
+    const provider = event?.provider || this.adapter.providerName || 'twelve-data';
+    this.logger.info({ provider, event: event.event, status: event.status, success: event.success, fails: event.fails }, 'Market-data subscription status');
     if (Array.isArray(event.fails)) {
       for (const failure of event.fails) {
         const providerSymbol = failure.symbol || failure?.meta?.symbol;
-        const subscription = this.instrumentRegistry.providerSubscriptions().find(item => item.providerSymbol === providerSymbol);
+        const subscription = this.instrumentRegistry.providerSubscriptions().find(item => item.providerSymbol === providerSymbol && (!event?.provider || item.provider === event.provider));
         if (subscription) this.#setSymbolState(subscription.symbol, 'SUBSCRIPTION_ERROR');
       }
     }
@@ -442,7 +445,7 @@ class MarketGateway {
   #emitGatewayStatus(extra = {}) {
     this.eventBus.emit('market.status', {
       scope: 'gateway',
-      provider: 'twelve-data',
+      provider: this.adapter.providerName || 'twelve-data',
       state: this.connectionState,
       timestamp: Date.now(),
       ...extra,
