@@ -7,6 +7,7 @@ const {
   normalizeStoredIdentity,
   isFreshIdentity,
   providerSymbolFor,
+  isAccelpixOnly,
 } = require('../../src/modules/instruments/instrument-identity.service');
 
 test('normalizes Twelve Data logo payload without exposing malformed URLs', () => {
@@ -44,4 +45,10 @@ test('ready identities stay cached longer than unavailable identities', () => {
   });
   assert.equal(isFreshIdentity(ready, now), true);
   assert.equal(isFreshIdentity(unavailable, now), false);
+});
+
+
+test('Accelpix-only instruments never fall through to Twelve Data identity lookup', () => {
+  assert.equal(isAccelpixOnly({ providerMappings: { accelpix: 'RELIANCE' } }), true);
+  assert.equal(isAccelpixOnly({ providerMappings: { twelveData: 'AAPL' } }), false);
 });
