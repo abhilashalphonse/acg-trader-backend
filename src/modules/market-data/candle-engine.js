@@ -65,6 +65,8 @@ class CandleEngine {
     this.flushTimer = null;
     this.symbolFeedLive = new Map();
     this.continuityBroken = new Set();
+    this.hydrationEpoch = 0;
+    this.hydrationOrdinal = 0;
   }
 
   start() {
@@ -228,6 +230,186 @@ class CandleEngine {
   getCurrent(symbol, timeframe) {
     const state = this.states.get(this.#key(normalizeSymbol(symbol), timeframe));
     return state?.current ? serializeCandle(state.current) : null;
+  }
+
+  getLastClosed(symbol, timeframe) {
+    const state = this.states.get(this.#key(normalizeSymbol(symbol), timeframe));
+    return state?.lastClosedCandle ? serializeCandle(state.lastClosedCandle) : null;
+  }
+
+  beginHydration(symbol, timeframe) {
+    const canonical = normalizeSymbol(symbol);
+    const state = this.#state(canonical, timeframe);
+
+    if (
+      state.current
+      && state.historyHydratedOpenTimeMs === state.current.openTimeMs
+      && !state.hydration
+    ) {
+      return Object.freeze({
+        symbol: canonical,
+        timeframe,
+        id: null,
+        epoch: this.hydrationEpoch,
+        owner: false,
+        skipped: true,
+      });
+    }
+
+    if (state.hydration) {
+      return Object.freeze({
+        symbol: canonical,
+        timeframe,
+        id: state.hydration.id,
+        epoch: state.hydration.epoch,
+        owner: false,
+        skipped: false,
+      });
+    }
+
+    let resolveDone;
+    const done = new Promise(resolve => { resolveDone = resolve; });
+    const hydration = {
+      id: ++this.hydrationOrdinal,
+      epoch: this.hydrationEpoch,
+      buffered: [],
+      resolveDone,
+      done,
+    };
+    state.hydration = hydration;
+
+    return Object.freeze({
+      symbol: canonical,
+      timeframe,
+      id: hydration.id,
+      epoch: hydration.epoch,
+      owner: true,
+      skipped: false,
+    });
+  }
+
+  async waitForHydration(token) {
+    if (!token || token.skipped) return;
+    const state = this.states.get(this.#key(normalizeSymbol(token.symbol), token.timeframe));
+    if (!state?.hydration || state.hydration.id !== token.id) return;
+    await state.hydration.done;
+  }
+
+  completeHydration(token, historyBar) {
+    const state = this.#hydrationState(token);
+    if (!state) return this.getCurrent(token?.symbol, token?.timeframe);
+    const hydration = state.hydration;
+
+    if (token.epoch !== this.hydrationEpoch || hydration.epoch !== this.hydrationEpoch) {
+      this.#abortHydrationState(state, { replay: true });
+      return this.getCurrent(token.symbol, token.timeframe);
+    }
+
+    const historyOpenTimeMs = Number(historyBar?.openTimeMs);
+    const historyCloseTimeMs = Number(historyBar?.closeTimeMs);
+    const historyIsActive = Number.isFinite(historyOpenTimeMs)
+      && historyBar?.complete !== true
+      && (!Number.isFinite(historyCloseTimeMs) || historyCloseTimeMs > Date.now());
+
+    if (
+      !historyIsActive
+      || (state.lastClosedOpenTimeMs != null && historyOpenTimeMs <= state.lastClosedOpenTimeMs)
+      || (state.current && state.current.openTimeMs > historyOpenTimeMs)
+    ) {
+      this.#abortHydrationState(state, { replay: true });
+      return this.getCurrent(token.symbol, token.timeframe);
+    }
+
+    const existing = state.current?.openTimeMs === historyOpenTimeMs
+      ? { ...state.current }
+      : null;
+    const numeric = value => {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
+    const historyOpen = numeric(historyBar?.open);
+    const historyHigh = numeric(historyBar?.high);
+    const historyLow = numeric(historyBar?.low);
+    const historyClose = numeric(historyBar?.close);
+    if (![historyOpen, historyHigh, historyLow, historyClose].every(Number.isFinite)) {
+      this.#abortHydrationState(state, { replay: true });
+      return this.getCurrent(token.symbol, token.timeframe);
+    }
+
+    const existingDisplay = existing ? resolveCandleVolume(existing, existing.volumeMode || state.volumeMode).displayVolume : null;
+    const historyDisplay = numeric(historyBar?.displayVolume ?? historyBar?.providerVolume);
+    const providerBaseline = [existingDisplay, historyDisplay]
+      .filter(value => Number.isFinite(value) && value >= 0)
+      .reduce((max, value) => Math.max(max, value), -Infinity);
+    const existingProviderVolume = numeric(existing?.providerVolume) ?? 0;
+    const volumeMode = historyBar?.volumeMode || existing?.volumeMode || state.volumeMode || null;
+
+    const highs = [historyHigh, historyOpen, historyClose, numeric(existing?.high), numeric(existing?.open), numeric(existing?.close)].filter(Number.isFinite);
+    const lows = [historyLow, historyOpen, historyClose, numeric(existing?.low), numeric(existing?.open), numeric(existing?.close)].filter(Number.isFinite);
+
+    state.current = {
+      symbol: normalizeSymbol(token.symbol),
+      timeframe: token.timeframe,
+      openTimeMs: historyOpenTimeMs,
+      closeTimeMs: Number.isFinite(historyCloseTimeMs)
+        ? historyCloseTimeMs
+        : historyOpenTimeMs + (TIMEFRAME_MS[token.timeframe] || 0),
+      open: historyOpen,
+      high: Math.max(...highs),
+      low: Math.min(...lows),
+      // Never let a delayed provider snapshot roll back a live close already
+      // observed before hydration started.
+      close: numeric(existing?.close) ?? historyClose,
+      tickCount: Math.max(Number(historyBar?.tickCount || 0), Number(existing?.tickCount || 0)),
+      providerVolume: existingProviderVolume,
+      complete: false,
+      synthetic: false,
+      source: 'HYDRATED',
+      provider: existing?.provider || historyBar?.provider || null,
+      volumeMode,
+      firstEventTimeMs: existing?.firstEventTimeMs ?? historyOpenTimeMs,
+      firstEventSequence: existing?.firstEventSequence ?? null,
+      lastEventTimeMs: existing?.lastEventTimeMs ?? historyOpenTimeMs,
+      lastEventSequence: existing?.lastEventSequence ?? null,
+    };
+    state.volumeMode = volumeMode;
+
+    if (volumeMode === 'provider' && providerBaseline !== -Infinity) {
+      state.current.providerVolumeBaseline = providerBaseline;
+      state.current.providerVolumeLiveAnchor = existingProviderVolume;
+    }
+
+    const buffered = hydration.buffered
+      .slice()
+      .sort((a, b) => (a.tick.timeMs - b.tick.timeMs) || ((Number(a.tick.sequence) || 0) - (Number(b.tick.sequence) || 0)));
+    state.hydration = null;
+    state.historyHydratedOpenTimeMs = historyOpenTimeMs;
+
+    for (const item of buffered) {
+      this.#processTickForTimeframe(item.tick, item.chartPrice, item.symbol, item.timeframe, {
+        bypassHydration: true,
+        continuityBroken: item.continuityBroken,
+        suppressProviderVolumeForBucket: historyOpenTimeMs,
+        emit: false,
+      });
+    }
+
+    if (state.current) this.#emitUpdate(state.current);
+    hydration.resolveDone?.();
+    return this.getCurrent(token.symbol, token.timeframe);
+  }
+
+  abortHydration(token) {
+    const state = this.#hydrationState(token);
+    if (!state) return;
+    this.#abortHydrationState(state, { replay: true });
+  }
+
+  invalidateHydration() {
+    this.hydrationEpoch += 1;
+    for (const state of this.states.values()) {
+      state.historyHydratedOpenTimeMs = null;
+    }
   }
 
   setVolumeMode(symbol, timeframe, mode) {
