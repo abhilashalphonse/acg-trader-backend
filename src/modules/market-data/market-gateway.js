@@ -15,6 +15,7 @@ class MarketGateway {
     quoteStore,
     candleEngine,
     eventBus,
+    dayChangeService = null,
     symbols,
     staleCheckMs,
     logger,
@@ -27,6 +28,7 @@ class MarketGateway {
     this.quoteStore = quoteStore;
     this.candleEngine = candleEngine;
     this.eventBus = eventBus;
+    this.dayChangeService = dayChangeService;
     this.symbols = symbols.map(normalizeSymbol);
     this.staleCheckMs = staleCheckMs;
     this.logger = logger;
@@ -97,6 +99,7 @@ class MarketGateway {
     if (!quote || this.#quoteAgeMs(quote) > this.#softAgeMs(canonical)) {
       void this.ensureFreshQuote(canonical, { reason: 'priority-retained' }).catch(() => undefined);
     }
+    void this.dayChangeService?.ensure?.(canonical).catch?.(() => undefined);
     return count;
   }
 
@@ -377,7 +380,7 @@ class MarketGateway {
     const sequence = (this.sequences.get(symbol) || 0) + 1;
     this.sequences.set(symbol, sequence);
 
-    const tick = Object.freeze({
+    const baseTick = {
       symbol,
       sequence,
       price: lastPrice,
@@ -401,7 +404,8 @@ class MarketGateway {
       isSyntheticSpread: normalizedPrices.isSyntheticSpread,
       dayVolume: raw.dayVolume,
       isStale: false,
-    });
+    };
+    const tick = Object.freeze(this.dayChangeService?.decorate?.(baseTick) || baseTick);
 
     const previousState = this.symbolStates.get(symbol);
     const quoteOnly = raw.quoteOnly === true;
