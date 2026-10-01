@@ -159,7 +159,7 @@ test('commodity name fallback can resolve provider aliases such as Natural Gas',
       symbol: 'NG',
       instrument_name: 'Natural Gas',
       exchange: 'COMMODITY',
-      instrument_type: 'Agricultural Product',
+      instrument_type: 'Energy Resource',
       currency: 'USD',
     },
     {
