@@ -113,9 +113,21 @@ class CandleEngine {
         : candleBucketOpenTimeMs(tick.timeMs, timeframe);
       if (!Number.isFinite(bucket)) continue;
       const state = this.#state(symbol, timeframe);
-      const providerVolumeDelta = this.#providerVolumeDelta(state, tick.dayVolume);
 
+      // Completed bars are immutable on the live path. A late tick for an
+      // already-finalized bucket must never create a new one-tick fragment that
+      // can later overwrite the durable candle. Historical corrections belong
+      // to the explicit provider reconciliation path instead.
+      if (state.lastClosedOpenTimeMs != null && bucket <= state.lastClosedOpenTimeMs) continue;
       if (state.current && bucket < state.current.openTimeMs) continue;
+
+      const eventSequence = this.#eventSequence(state, tick);
+      const providerVolumeDelta = this.#providerVolumeDelta(
+        state,
+        tick.dayVolume,
+        tick.timeMs,
+        eventSequence,
+      );
 
       if (state.current && bucket === state.current.openTimeMs) {
         const candle = state.current;
@@ -129,10 +141,38 @@ class CandleEngine {
           candle.synthetic = false;
           candle.source = 'LIVE';
           candle.provider = tick.source || null;
+          candle.firstEventTimeMs = tick.timeMs;
+          candle.firstEventSequence = eventSequence;
+          candle.lastEventTimeMs = tick.timeMs;
+          candle.lastEventSequence = eventSequence;
         } else {
           candle.high = Math.max(candle.high, chartPrice);
           candle.low = Math.min(candle.low, chartPrice);
-          candle.close = chartPrice;
+
+          // Open/close are event-time properties, not arrival-order properties.
+          // Slightly reordered ticks may extend the range but an older event
+          // must not replace the latest close.
+          if (this.#isEarlierEvent(
+            tick.timeMs,
+            eventSequence,
+            candle.firstEventTimeMs,
+            candle.firstEventSequence,
+          )) {
+            candle.open = chartPrice;
+            candle.firstEventTimeMs = tick.timeMs;
+            candle.firstEventSequence = eventSequence;
+          }
+          if (this.#isLaterEvent(
+            tick.timeMs,
+            eventSequence,
+            candle.lastEventTimeMs,
+            candle.lastEventSequence,
+          )) {
+            candle.close = chartPrice;
+            candle.lastEventTimeMs = tick.timeMs;
+            candle.lastEventSequence = eventSequence;
+          }
+
           candle.tickCount += 1;
           if (providerVolumeDelta != null) {
             candle.providerVolume = Number(candle.providerVolume || 0) + providerVolumeDelta;
@@ -148,7 +188,16 @@ class CandleEngine {
       }
 
       if (!continuityBroken) this.#fillShortGap(state, symbol, timeframe, stepMs, bucket);
-      state.current = this.#fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice, providerVolumeDelta);
+      state.current = this.#fromTick(
+        symbol,
+        timeframe,
+        stepMs,
+        bucket,
+        tick,
+        chartPrice,
+        providerVolumeDelta,
+        eventSequence,
+      );
       state.current.volumeMode = state.volumeMode;
       this.#emitUpdate(state.current);
     }
@@ -226,6 +275,9 @@ class CandleEngine {
         lastClosedOpenTimeMs: null,
         consecutiveSyntheticClosed: 0,
         lastProviderDayVolume: null,
+        lastProviderVolumeEventTimeMs: null,
+        lastProviderVolumeEventSequence: null,
+        eventOrdinal: 0,
         volumeMode: null,
         consecutiveTickVolumeBars: 0,
       });
@@ -237,7 +289,16 @@ class CandleEngine {
     return `${symbol}:${timeframe}`;
   }
 
-  #fromTick(symbol, timeframe, stepMs, bucket, tick, chartPrice, providerVolume = null) {
+  #fromTick(
+    symbol,
+    timeframe,
+    stepMs,
+    bucket,
+    tick,
+    chartPrice,
+    providerVolume = null,
+    eventSequence = null,
+  ) {
     return {
       symbol,
       timeframe,
@@ -253,10 +314,38 @@ class CandleEngine {
       synthetic: false,
       source: 'LIVE',
       provider: tick.source || null,
+      firstEventTimeMs: tick.timeMs,
+      firstEventSequence: eventSequence,
+      lastEventTimeMs: tick.timeMs,
+      lastEventSequence: eventSequence,
     };
   }
 
-  #providerVolumeDelta(state, rawDayVolume) {
+  #eventSequence(state, tick) {
+    const provided = Number(tick?.sequence);
+    if (Number.isFinite(provided)) {
+      state.eventOrdinal = Math.max(state.eventOrdinal, provided);
+      return provided;
+    }
+    state.eventOrdinal += 1;
+    return state.eventOrdinal;
+  }
+
+  #isEarlierEvent(timeMs, sequence, anchorTimeMs, anchorSequence) {
+    if (!Number.isFinite(anchorTimeMs)) return true;
+    if (timeMs !== anchorTimeMs) return timeMs < anchorTimeMs;
+    if (!Number.isFinite(anchorSequence)) return true;
+    return sequence < anchorSequence;
+  }
+
+  #isLaterEvent(timeMs, sequence, anchorTimeMs, anchorSequence) {
+    if (!Number.isFinite(anchorTimeMs)) return true;
+    if (timeMs !== anchorTimeMs) return timeMs > anchorTimeMs;
+    if (!Number.isFinite(anchorSequence)) return true;
+    return sequence > anchorSequence;
+  }
+
+  #providerVolumeDelta(state, rawDayVolume, eventTimeMs, eventSequence) {
     if (rawDayVolume === null || rawDayVolume === undefined || rawDayVolume === '') {
       return null;
     }
@@ -265,8 +354,25 @@ class CandleEngine {
       return null;
     }
 
+    // Cumulative volume is monotonic in event time. A reordered older tick may
+    // still contribute to OHLC range/open, but it must not move the cumulative
+    // volume anchor backward and inflate the next accepted delta.
+    if (
+      Number.isFinite(state.lastProviderVolumeEventTimeMs)
+      && this.#isEarlierEvent(
+        eventTimeMs,
+        eventSequence,
+        state.lastProviderVolumeEventTimeMs,
+        state.lastProviderVolumeEventSequence,
+      )
+    ) {
+      return null;
+    }
+
     const previous = state.lastProviderDayVolume;
     state.lastProviderDayVolume = dayVolume;
+    state.lastProviderVolumeEventTimeMs = eventTimeMs;
+    state.lastProviderVolumeEventSequence = eventSequence;
     if (!Number.isFinite(previous) || dayVolume < previous) return null;
     return dayVolume - previous;
   }
