@@ -100,3 +100,57 @@ test('local live candle fallback remains available when provider history fails',
     Candle.find = originalFind;
   }
 });
+
+
+test('provider identity mismatch never falls back to locally persisted candles', async () => {
+  const originalFind = Candle.find;
+  const openTime = new Date(Date.UTC(2026, 8, 21, 20, 0, 0));
+
+  Candle.find = () => ({
+    sort() { return this; },
+    limit() { return this; },
+    async lean() {
+      return [{
+        symbol: 'US100',
+        timeframe: '1h',
+        openTime,
+        closeTime: new Date(openTime.getTime() + 3600000),
+        open: '19.10',
+        high: '19.40',
+        low: '18.90',
+        close: '19.20',
+        tickCount: 10,
+        providerVolume: null,
+        complete: true,
+        synthetic: false,
+        source: 'LIVE',
+        provider: 'twelve-data',
+      }];
+    },
+  });
+
+  const identityError = new Error('NDX resolved as Common Stock instead of Index');
+  identityError.code = 'TWELVE_DATA_SYMBOL_IDENTITY_MISMATCH';
+
+  const service = new MarketHistoryService({
+    adapter: {
+      supportsHistory() { return true; },
+      async fetchHistorical() { throw identityError; },
+    },
+    instrumentRegistry: {
+      provider() { return 'twelve-data'; },
+      providerSymbol() { return 'NDX'; },
+    },
+    persistTimeframes: ['1h'],
+    logger: { warn() {} },
+  });
+
+  try {
+    await assert.rejects(
+      () => service.getCandles({ symbol: 'US100', timeframe: '1h', limit: 160 }),
+      error => error?.code === 'MARKET_HISTORY_IDENTITY_UNAVAILABLE',
+    );
+  } finally {
+    Candle.find = originalFind;
+  }
+});
