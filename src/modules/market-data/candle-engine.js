@@ -428,6 +428,59 @@ class CandleEngine {
     }
   }
 
+  async reconcileCompletedCandle(symbol, timeframe, correctedBar, { reason = 'provider-correction' } = {}) {
+    const canonical = normalizeSymbol(symbol);
+    const state = this.#state(canonical, timeframe);
+    const openTimeMs = Number(correctedBar?.openTimeMs);
+    const stepMs = TIMEFRAME_MS[timeframe];
+    if (!Number.isFinite(openTimeMs) || !stepMs) return null;
+
+    // Corrections are intentionally isolated from the live mutation path.
+    // They can revise a finalized bucket, but can never replace/reopen the
+    // current active bucket or move the finalized frontier forward.
+    if (state.current && openTimeMs >= state.current.openTimeMs) return null;
+    if (state.lastClosedOpenTimeMs == null || openTimeMs > state.lastClosedOpenTimeMs) return null;
+
+    const open = Number(correctedBar.open);
+    const high = Number(correctedBar.high);
+    const low = Number(correctedBar.low);
+    const close = Number(correctedBar.close);
+    if (![open, high, low, close].every(Number.isFinite)) return null;
+
+    const candle = {
+      symbol: canonical,
+      timeframe,
+      openTimeMs,
+      closeTimeMs: Number(correctedBar.closeTimeMs) || openTimeMs + stepMs,
+      open,
+      high: Math.max(high, open, close),
+      low: Math.min(low, open, close),
+      close,
+      tickCount: Number(correctedBar.tickCount || 0),
+      providerVolume: correctedBar.providerVolume ?? null,
+      volumeMode: correctedBar.volumeMode || state.volumeMode || null,
+      complete: true,
+      synthetic: false,
+      source: 'CORRECTION',
+      provider: correctedBar.provider || null,
+      correctionReason: reason,
+    };
+
+    this.#touchState(state, candle);
+    if (openTimeMs === state.lastClosedOpenTimeMs) {
+      state.lastClosedCandle = { ...candle };
+      state.lastClose = candle.close;
+    }
+
+    const publicCandle = serializeCandle(candle);
+    this.eventBus.emit('market.candle.corrected', { ...publicCandle, reason });
+
+    if (this.persistTimeframes.has(timeframe)) {
+      await this.persistCandle(candle);
+    }
+    return publicCandle;
+  }
+
   setVolumeMode(symbol, timeframe, mode) {
     const normalizedMode = ['provider', 'tick', 'unavailable'].includes(mode) ? mode : null;
     const state = this.#state(normalizeSymbol(symbol), timeframe);
