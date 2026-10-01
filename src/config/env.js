@@ -45,7 +45,7 @@ const schema = z.object({
   PLATFORM_EVENT_MAX_ATTEMPTS: positiveInt(12),
   PLATFORM_SNAPSHOT_COALESCE_MS: positiveInt(5000),
   MARKET_GATEWAY_ENABLED: booleanFromEnv.default(true),
-  MARKET_PROVIDER: z.enum(['twelve-data']).default('twelve-data'),
+  MARKET_PROVIDER: z.enum(['twelve-data', 'multi']).default('twelve-data'),
   MARKET_UNIVERSE_MODE: z.enum(['catalog', 'explicit']).default('catalog'),
   MARKET_SYMBOLS: z.string().default('EURUSD,XAUUSD'),
   MARKET_CANDLE_TIMEFRAMES: z.string().default('1m,5m,15m,30m,1h,4h,1d,1w'),
@@ -70,6 +70,12 @@ const schema = z.object({
   TWELVE_DATA_RECONNECT_MAX_MS: positiveInt(30000),
   TWELVE_DATA_HTTP_TIMEOUT_MS: positiveInt(10000),
   TWELVE_DATA_SUBSCRIBE_BATCH_SIZE: positiveInt(100),
+  ACCELPIX_API_KEY: z.string().optional(),
+  ACCELPIX_HOST: z.string().min(1).default('apidata.accelpix.in'),
+  ACCELPIX_HTTP_TIMEOUT_MS: positiveInt(10000),
+  ACCELPIX_RECONNECT_MIN_MS: positiveInt(1000),
+  ACCELPIX_RECONNECT_MAX_MS: positiveInt(30000),
+  ACCELPIX_MAX_SYMBOLS: positiveInt(100),
 });
 
 const platformEventsExplicitlyConfigured = Object.prototype.hasOwnProperty.call(process.env, 'PLATFORM_EVENTS_ENABLED');
@@ -102,11 +108,17 @@ const persistTimeframes = [...new Set([
 if (raw.MARKET_GATEWAY_ENABLED && !useCatalogUniverse && !symbols.length) throw new Error('MARKET_SYMBOLS must include at least one symbol when MARKET_UNIVERSE_MODE=explicit');
 if (
   raw.MARKET_GATEWAY_ENABLED
-  && raw.MARKET_PROVIDER === 'twelve-data'
+  && ['twelve-data', 'multi'].includes(raw.MARKET_PROVIDER)
   && (!raw.TWELVE_DATA_API_KEY || /^(your_|<)/i.test(raw.TWELVE_DATA_API_KEY))
 ) throw new Error('TWELVE_DATA_API_KEY is required when MARKET_GATEWAY_ENABLED=true');
+if (
+  raw.MARKET_GATEWAY_ENABLED
+  && raw.MARKET_PROVIDER === 'multi'
+  && (!raw.ACCELPIX_API_KEY || /^(your_|<)/i.test(raw.ACCELPIX_API_KEY))
+) throw new Error('ACCELPIX_API_KEY is required when MARKET_PROVIDER=multi');
 if (!raw.MARKET_WS_PATH.startsWith('/')) throw new Error('MARKET_WS_PATH must start with /');
 if (raw.TWELVE_DATA_RECONNECT_MAX_MS < raw.TWELVE_DATA_RECONNECT_MIN_MS) throw new Error('TWELVE_DATA_RECONNECT_MAX_MS must be >= TWELVE_DATA_RECONNECT_MIN_MS');
+if (raw.ACCELPIX_RECONNECT_MAX_MS < raw.ACCELPIX_RECONNECT_MIN_MS) throw new Error('ACCELPIX_RECONNECT_MAX_MS must be >= ACCELPIX_RECONNECT_MIN_MS');
 const resolvedPlatformEventsEnabled = platformEventsExplicitlyConfigured
   ? raw.PLATFORM_EVENTS_ENABLED
   : Boolean(raw.ACG_FUNDED_WEBHOOK_URL && raw.ACG_FUNDED_WEBHOOK_SECRET);
@@ -194,6 +206,14 @@ const env = Object.freeze({
     reconnectMaxMs: raw.TWELVE_DATA_RECONNECT_MAX_MS,
     httpTimeoutMs: raw.TWELVE_DATA_HTTP_TIMEOUT_MS,
     subscribeBatchSize: raw.TWELVE_DATA_SUBSCRIBE_BATCH_SIZE,
+  }),
+  accelpix: Object.freeze({
+    apiKey: raw.ACCELPIX_API_KEY || null,
+    host: raw.ACCELPIX_HOST,
+    httpTimeoutMs: raw.ACCELPIX_HTTP_TIMEOUT_MS,
+    reconnectMinMs: raw.ACCELPIX_RECONNECT_MIN_MS,
+    reconnectMaxMs: raw.ACCELPIX_RECONNECT_MAX_MS,
+    maxSymbols: raw.ACCELPIX_MAX_SYMBOLS,
   }),
 });
 
