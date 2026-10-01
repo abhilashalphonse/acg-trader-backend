@@ -87,3 +87,35 @@ test('returns null when symbol search only finds non-index instruments', () => {
 
   assert.equal(match, null);
 });
+
+
+test('name fallback can select an Index when Twelve Data uses a different index ticker', () => {
+  const rows = [
+    {
+      symbol: 'OTHER',
+      instrument_name: 'Nasdaq 100 Index',
+      exchange: 'NASDAQ',
+      instrument_type: 'Index',
+      country: 'United States',
+      currency: 'USD',
+    },
+    {
+      symbol: 'NDX01',
+      instrument_name: 'ChinaAMC Nasdaq 100 ETF',
+      exchange: 'SET',
+      instrument_type: 'ETF',
+      country: 'Thailand',
+      currency: 'THB',
+    },
+  ];
+
+  const match = chooseIndexSearchMatch(rows, {
+    symbol: 'US100',
+    providerSymbol: 'NDX',
+    name: 'Nasdaq 100',
+    quoteCurrency: 'USD',
+  }, { requireExactSymbol: false });
+
+  assert.equal(match.instrument_type, 'Index');
+  assert.equal(match.instrument_name, 'Nasdaq 100 Index');
+});

@@ -21,27 +21,36 @@ function normalizeSearchText(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-function chooseIndexSearchMatch(rows, subscription) {
-  const expectedSymbol = String(subscription?.providerSymbol || '').toUpperCase();
+function indexMatchScore(row, subscription) {
   const expectedCurrency = String(subscription?.quoteCurrency || '').toUpperCase();
-  const expectedNameTokens = new Set(normalizeSearchText(subscription?.name).split(' ').filter(token => token.length > 2));
+  const expectedName = normalizeSearchText(subscription?.name);
+  const expectedNameTokens = new Set(expectedName.split(' ').filter(token => token.length > 1));
+  const candidateName = normalizeSearchText(row?.instrument_name);
+  const candidateTokens = new Set(candidateName.split(' ').filter(token => token.length > 1));
 
+  let value = 0;
+  if (expectedCurrency && String(row?.currency || '').toUpperCase() === expectedCurrency) value += 5;
+  if (expectedName && candidateName === expectedName) value += 30;
+  else if (expectedName && (candidateName.includes(expectedName) || expectedName.includes(candidateName))) value += 18;
+  for (const token of expectedNameTokens) if (candidateTokens.has(token)) value += 2;
+  if (/united states/i.test(String(row?.country || '')) && /^US/.test(String(subscription?.symbol || ''))) value += 4;
+  return value;
+}
+
+function chooseIndexSearchMatch(rows, subscription, { requireExactSymbol = true } = {}) {
+  const expectedSymbol = String(subscription?.providerSymbol || '').toUpperCase();
   const candidates = (Array.isArray(rows) ? rows : []).filter(row => (
-    String(row?.symbol || '').toUpperCase() === expectedSymbol
-    && /index/i.test(String(row?.instrument_type || ''))
+    /index/i.test(String(row?.instrument_type || ''))
+    && (!requireExactSymbol || String(row?.symbol || '').toUpperCase() === expectedSymbol)
   ));
   if (!candidates.length) return null;
 
-  const score = row => {
-    let value = 0;
-    if (expectedCurrency && String(row?.currency || '').toUpperCase() === expectedCurrency) value += 4;
-    const nameTokens = new Set(normalizeSearchText(row?.instrument_name).split(' ').filter(token => token.length > 2));
-    for (const token of expectedNameTokens) if (nameTokens.has(token)) value += 1;
-    if (/united states/i.test(String(row?.country || '')) && /^US/.test(String(subscription?.symbol || ''))) value += 2;
-    return value;
-  };
+  const ranked = [...candidates]
+    .map(row => ({ row, score: indexMatchScore(row, subscription) }))
+    .sort((a, b) => b.score - a.score);
 
-  return [...candidates].sort((a, b) => score(b) - score(a))[0] || null;
+  if (!requireExactSymbol && ranked[0]?.score < 6) return null;
+  return ranked[0]?.row || null;
 }
 
 function qualifyProviderSymbol(match, fallback) {
@@ -161,22 +170,32 @@ class TwelveDataAdapter extends EventEmitter {
     const providerSymbol = String(subscription?.providerSymbol || '').trim();
     if (!providerSymbol) return { ...subscription, identityError: 'Missing Twelve Data index symbol' };
 
-    const params = new URLSearchParams({
-      symbol: providerSymbol,
-      outputsize: '120',
-      show_plan: 'true',
-      apikey: this.apiKey,
-    });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
     try {
-      const response = await this.fetchImpl(`${this.apiBase}/symbol_search?${params}`, { signal: controller.signal });
-      const body = await response.json();
-      if (!response.ok || body?.status === 'error') {
-        throw new Error(body?.message || `Twelve Data symbol search failed (${response.status})`);
+      const search = async term => {
+        const query = new URLSearchParams({
+          symbol: term,
+          outputsize: '120',
+          show_plan: 'true',
+          apikey: this.apiKey,
+        });
+        const response = await this.fetchImpl(`${this.apiBase}/symbol_search?${query}`, { signal: controller.signal });
+        const body = await response.json();
+        if (!response.ok || body?.status === 'error') {
+          throw new Error(body?.message || `Twelve Data symbol search failed (${response.status})`);
+        }
+        return body?.data || [];
+      };
+
+      const symbolRows = await search(providerSymbol);
+      let match = chooseIndexSearchMatch(symbolRows, subscription, { requireExactSymbol: true });
+
+      if (!match && subscription?.name) {
+        const nameRows = await search(String(subscription.name));
+        match = chooseIndexSearchMatch(nameRows, subscription, { requireExactSymbol: false });
       }
 
-      const match = chooseIndexSearchMatch(body?.data, subscription);
       if (!match) {
         return {
           ...subscription,
