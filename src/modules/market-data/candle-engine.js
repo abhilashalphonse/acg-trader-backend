@@ -78,6 +78,9 @@ class CandleEngine {
   async stop() {
     clearInterval(this.flushTimer);
     this.flushTimer = null;
+    for (const state of this.states.values()) {
+      if (state.hydration) this.#abortHydrationState(state, { replay: true });
+    }
     this.flushExpired(Date.now());
     await Promise.allSettled([...this.pendingWrites]);
   }
