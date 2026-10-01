@@ -24,6 +24,11 @@ function positiveNumber(value) {
   return number != null && number > 0 ? number : null;
 }
 
+function marketPrice(value) {
+  const number = positiveNumber(value);
+  return number == null ? null : Math.round(number * 10000) / 10000;
+}
+
 function nonNegativeNumber(value) {
   const number = finiteNumber(value);
   return number != null && number >= 0 ? number : null;
@@ -198,10 +203,10 @@ function mapHistoryRow(row, timeframe) {
   const openTimeMs = timeframe === '1d'
     ? parseAccelpixEodTimeMs(row?.td)
     : parseAccelpixIntradayTimeMs(row?.td);
-  const open = finiteNumber(row?.op);
-  const high = finiteNumber(row?.hp);
-  const low = finiteNumber(row?.lp);
-  const close = finiteNumber(row?.cp);
+  const open = marketPrice(row?.op);
+  const high = marketPrice(row?.hp);
+  const low = marketPrice(row?.lp);
+  const close = marketPrice(row?.cp);
   if (![openTimeMs, open, high, low, close].every(Number.isFinite)) return null;
   return {
     openTimeMs,
@@ -375,7 +380,7 @@ class AccelpixAdapter extends EventEmitter {
     const symbol = this.providerToCanonical.get(providerSymbol);
     if (!symbol) return;
 
-    const price = positiveNumber(message?.price);
+    const price = marketPrice(message?.price);
     if (price == null) return;
 
     const receivedAtMs = Date.now();
@@ -403,8 +408,8 @@ class AccelpixAdapter extends EventEmitter {
     if (!symbol) return;
 
     const state = this.#state(providerSymbol);
-    const bid = positiveNumber(message?.bidPrice);
-    const ask = positiveNumber(message?.askPrice);
+    const bid = marketPrice(message?.bidPrice);
+    const ask = marketPrice(message?.askPrice);
     if (bid != null) state.bid = bid;
     if (ask != null) state.ask = ask;
 
@@ -453,7 +458,7 @@ class AccelpixAdapter extends EventEmitter {
         throw error;
       }
 
-      const price = positiveNumber(row.pr);
+      const price = marketPrice(row.pr);
       if (price == null) {
         const error = new Error('Accelpix quote response did not include a valid price');
         error.statusCode = 502;
@@ -463,8 +468,8 @@ class AccelpixAdapter extends EventEmitter {
       return {
         providerSymbol,
         price,
-        bid: positiveNumber(row.bp),
-        ask: positiveNumber(row.ap),
+        bid: marketPrice(row.bp),
+        ask: marketPrice(row.ap),
         providerTimestampMs: null,
         dayVolume: nonNegativeNumber(row.vol),
         source: 'accelpix-rest',
@@ -559,4 +564,5 @@ module.exports = {
   nseIntradayBucketOpenTimeMs,
   aggregateNseIntradayBars,
   aggregateWeeklyEodBars,
+  marketPrice,
 };
