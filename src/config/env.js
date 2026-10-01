@@ -118,6 +118,7 @@ if (
   && (!raw.ACCELPIX_API_KEY || /^(your_|<)/i.test(raw.ACCELPIX_API_KEY))
 ) throw new Error('ACCELPIX_API_KEY is required when MARKET_PROVIDER=multi');
 if (!raw.MARKET_WS_PATH.startsWith('/')) throw new Error('MARKET_WS_PATH must start with /');
+if (raw.INDIA_MARKET_ENABLED && raw.MARKET_PROVIDER !== 'multi') throw new Error('INDIA_MARKET_ENABLED requires MARKET_PROVIDER=multi');
 if (raw.TWELVE_DATA_RECONNECT_MAX_MS < raw.TWELVE_DATA_RECONNECT_MIN_MS) throw new Error('TWELVE_DATA_RECONNECT_MAX_MS must be >= TWELVE_DATA_RECONNECT_MIN_MS');
 if (raw.ACCELPIX_RECONNECT_MAX_MS < raw.ACCELPIX_RECONNECT_MIN_MS) throw new Error('ACCELPIX_RECONNECT_MAX_MS must be >= ACCELPIX_RECONNECT_MIN_MS');
 const resolvedPlatformEventsEnabled = platformEventsExplicitlyConfigured
