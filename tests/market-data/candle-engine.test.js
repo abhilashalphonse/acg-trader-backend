@@ -592,3 +592,173 @@ test('same-timestamp ticks use sequence as the deterministic close tie-breaker',
   assert.equal(current.high, 1.11);
   assert.equal(current.low, 1.09);
 });
+
+
+test('hydrates provider OHLC, buffers racing ticks, and keeps REST/WS state version aligned', () => {
+  const bus = new EventEmitter();
+  const updates = [];
+  bus.on('market.candle.update', candle => updates.push(candle));
+  const engine = createEngine(bus);
+  const base = Math.floor((Date.now() + 10_000) / 5_000) * 5_000;
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 1000, sequence: 1, price: 105, dayVolume: 1000, source: 'test' });
+  const before = engine.getCurrent('EURUSD', '5s');
+  assert.equal(before.open, 105);
+  assert.equal(before.close, 105);
+
+  const hydration = engine.beginHydration('EURUSD', '5s');
+  assert.equal(hydration.owner, true);
+
+  // This tick must be buffered while the provider snapshot is in flight.
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 2500, sequence: 2, price: 115, dayVolume: 1010, source: 'test' });
+  assert.equal(engine.getCurrent('EURUSD', '5s').close, 105);
+
+  const hydrated = engine.completeHydration(hydration, {
+    symbol: 'EURUSD',
+    timeframe: '5s',
+    openTimeMs: base,
+    closeTimeMs: base + 5000,
+    open: 100,
+    high: 120,
+    low: 90,
+    close: 110,
+    tickCount: 0,
+    providerVolume: 120,
+    displayVolume: 120,
+    volumeMode: 'provider',
+    complete: false,
+    synthetic: false,
+    source: 'BACKFILL',
+    provider: 'test',
+  });
+
+  assert.equal(hydrated.open, 100);
+  assert.equal(hydrated.high, 120);
+  assert.equal(hydrated.low, 90);
+  assert.equal(hydrated.close, 115);
+  assert.equal(hydrated.displayVolume, 120);
+  assert.equal(updates.at(-1).stateVersion, hydrated.stateVersion);
+});
+
+test('repeated history reads cannot roll provider volume backward after hydration', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+  const base = Math.floor((Date.now() + 10_000) / 5_000) * 5_000;
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 1000, sequence: 1, price: 1.10, dayVolume: 1000, source: 'test' });
+  const hydration = engine.beginHydration('EURUSD', '5s');
+  engine.completeHydration(hydration, {
+    symbol: 'EURUSD',
+    timeframe: '5s',
+    openTimeMs: base,
+    closeTimeMs: base + 5000,
+    open: 1.09,
+    high: 1.11,
+    low: 1.08,
+    close: 1.10,
+    providerVolume: 120,
+    displayVolume: 120,
+    volumeMode: 'provider',
+    complete: false,
+  });
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 2000, sequence: 2, price: 1.11, dayVolume: 1005, source: 'test' });
+  assert.equal(engine.getCurrent('EURUSD', '5s').displayVolume, 125);
+
+  const repeated = engine.beginHydration('EURUSD', '5s');
+  assert.equal(repeated.skipped, true);
+  engine.reconcileCurrentVolume('EURUSD', '5s', {
+    openTimeMs: base,
+    providerVolume: 120,
+    displayVolume: 120,
+    volumeMode: 'provider',
+  });
+
+  assert.equal(engine.getCurrent('EURUSD', '5s').displayVolume, 125);
+});
+
+test('hydrated provider extrema survive rollover and become the authoritative completed candle', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+  const base = Math.floor((Date.now() + 10_000) / 5_000) * 5_000;
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 1000, sequence: 1, price: 105, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 2000, sequence: 2, price: 107, source: 'test' });
+
+  const hydration = engine.beginHydration('EURUSD', '5s');
+  engine.completeHydration(hydration, {
+    symbol: 'EURUSD',
+    timeframe: '5s',
+    openTimeMs: base,
+    closeTimeMs: base + 5000,
+    open: 100,
+    high: 120,
+    low: 90,
+    close: 106,
+    providerVolume: null,
+    volumeMode: 'unavailable',
+    complete: false,
+  });
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: base + 6000, sequence: 3, price: 108, source: 'test' });
+  const closed = engine.getLastClosed('EURUSD', '5s');
+
+  assert.equal(closed.open, 100);
+  assert.equal(closed.high, 120);
+  assert.equal(closed.low, 90);
+  assert.equal(closed.close, 107);
+  assert.equal(closed.complete, true);
+});
+
+test('hydration cannot reopen a bucket that has already been finalized', () => {
+  const bus = new EventEmitter();
+  const engine = createEngine(bus);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 1000, sequence: 1, price: 1.10, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 6000, sequence: 2, price: 1.20, source: 'test' });
+  assert.equal(engine.getLastClosed('EURUSD', '5s').openTimeMs, 0);
+
+  const hydration = engine.beginHydration('EURUSD', '5s');
+  engine.completeHydration(hydration, {
+    symbol: 'EURUSD',
+    timeframe: '5s',
+    openTimeMs: 0,
+    closeTimeMs: Date.now() + 5000,
+    open: 9,
+    high: 10,
+    low: 8,
+    close: 9,
+    complete: false,
+  });
+
+  assert.equal(engine.getLastClosed('EURUSD', '5s').open, 1.10);
+  assert.equal(engine.getCurrent('EURUSD', '5s').openTimeMs, 5000);
+});
+
+test('completed bar corrections use an explicit path without reopening live state', async () => {
+  const bus = new EventEmitter();
+  const corrections = [];
+  bus.on('market.candle.corrected', candle => corrections.push(candle));
+  const engine = createEngine(bus);
+
+  engine.processTick({ symbol: 'EURUSD', timeMs: 1000, sequence: 1, price: 1.10, source: 'test' });
+  engine.processTick({ symbol: 'EURUSD', timeMs: 6000, sequence: 2, price: 1.20, source: 'test' });
+
+  const corrected = await engine.reconcileCompletedCandle('EURUSD', '5s', {
+    openTimeMs: 0,
+    closeTimeMs: 5000,
+    open: 1.09,
+    high: 1.15,
+    low: 1.08,
+    close: 1.14,
+    providerVolume: 50,
+    volumeMode: 'provider',
+    provider: 'test',
+  }, { reason: 'test-correction' });
+
+  assert.ok(corrected);
+  assert.equal(corrected.complete, true);
+  assert.equal(corrected.close, 1.14);
+  assert.equal(engine.getCurrent('EURUSD', '5s').openTimeMs, 5000);
+  assert.equal(corrections.at(-1).reason, 'test-correction');
+});
