@@ -161,3 +161,76 @@ test('history pages are cursor-scoped, deduplicated, and expose an exclusive nex
     Candle.find = originalFind;
   }
 });
+
+
+test('cached partial provider bar does not become complete without final data and reconciles completed local OHLC', async () => {
+  const originalFind = Candle.find;
+  let localRows = [];
+  Candle.find = () => ({
+    sort() { return this; },
+    limit() { return this; },
+    async lean() { return localRows; },
+  });
+
+  let providerCalls = 0;
+  const stepMs = 300_000;
+  const openTimeMs = Date.now() - 30_000;
+
+  const service = new MarketHistoryService({
+    adapter: {
+      supportsHistory() { return true; },
+      async fetchHistorical() {
+        providerCalls += 1;
+        return [{
+          openTimeMs,
+          open: 100,
+          high: 110,
+          low: 95,
+          close: 105,
+          providerVolume: 120,
+        }];
+      },
+    },
+    instrumentRegistry: {
+      provider() { return 'twelve-data'; },
+      providerSymbol() { return 'TEST'; },
+    },
+    historyCache: new ProviderHistoryCache({ ttlByTimeframe: { '5m': 60_000 } }),
+    logger: { warn() {} },
+  });
+
+  try {
+    const first = await service.getCandles({ symbol: 'TEST', timeframe: '5m', limit: 10 });
+    assert.equal(first.length, 1);
+    assert.equal(first[0].complete, false);
+
+    localRows = [{
+      symbol: 'TEST',
+      timeframe: '5m',
+      openTime: new Date(openTimeMs),
+      closeTime: new Date(openTimeMs + stepMs),
+      open: '100',
+      high: '120',
+      low: '90',
+      close: '115',
+      tickCount: 20,
+      providerVolume: '150',
+      complete: true,
+      synthetic: false,
+      source: 'LIVE',
+      provider: 'twelve-data',
+    }];
+
+    const second = await service.getCandles({ symbol: 'TEST', timeframe: '5m', limit: 10 });
+    assert.equal(providerCalls, 1);
+    assert.equal(second.length, 1);
+    assert.equal(second[0].complete, true);
+    assert.equal(second[0].open, 100);
+    assert.equal(second[0].high, 120);
+    assert.equal(second[0].low, 90);
+    assert.equal(second[0].close, 115);
+    assert.equal(second[0].source, 'LIVE_RECONCILED');
+  } finally {
+    Candle.find = originalFind;
+  }
+});
