@@ -11,6 +11,7 @@ const { AccelpixAdapter } = require('./adapters/accelpix.adapter');
 const { MultiProviderAdapter } = require('./adapters/multi-provider.adapter');
 const { MarketGateway } = require('./market-gateway');
 const { MarketHistoryService } = require('./history.service');
+const { DayChangeService } = require('./day-change.service');
 const { createMarketWebSocketServer } = require('../../realtime/market-ws-server');
 const { ACG_INSTRUMENT_CATALOG } = require('../instruments/instrument-catalog');
 const { ACG_INDIA_PILOT_CATALOG } = require('../instruments/india-pilot-catalog');
@@ -38,12 +39,14 @@ function createMarketRuntime() {
     : twelveDataAdapter;
   const candleEngine = new CandleEngine({ eventBus, timeframes: env.market.candleTimeframes, persistTimeframes: env.market.persistTimeframes, flushIntervalMs: env.market.candleFlushIntervalMs, maxSyntheticGapBars: env.market.maxSyntheticGapBars, instrumentRegistry, logger });
   const historyService = new MarketHistoryService({ adapter, instrumentRegistry, persistTimeframes: env.market.persistTimeframes, logger });
+  const dayChangeService = new DayChangeService({ adapter, instrumentRegistry, quoteStore, eventBus, logger });
   const gateway = new MarketGateway({
     adapter,
     instrumentRegistry,
     quoteStore,
     candleEngine,
     eventBus,
+    dayChangeService,
     symbols: symbols,
     staleCheckMs: env.market.staleCheckMs,
     logger,
@@ -52,6 +55,7 @@ function createMarketRuntime() {
     // forced history reconciliation fetches authoritative missing OHLC.
     onStreamRecovered: () => {
       historyService.clearCache();
+      dayChangeService.invalidate?.();
       candleEngine.invalidateHydration?.();
     },
   });
@@ -91,6 +95,7 @@ function createMarketRuntime() {
     instrumentRegistry,
     eventBus,
     historyService,
+    dayChangeService,
     retainPriority(symbol) { return gateway.retainPriority(symbol); },
     releasePriority(symbol) { return gateway.releasePriority(symbol); },
     priorityCount(symbol) { return gateway.priorityCount(symbol); },
