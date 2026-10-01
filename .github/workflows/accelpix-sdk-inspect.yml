@@ -1,0 +1,28 @@
+name: Accelpix SDK Inspect
+
+on:
+  push:
+    branches:
+      - accelpix-integration
+    paths:
+      - .github/workflows/accelpix-sdk-inspect.yml
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: accelpix-integration
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Inspect SDK layout
+        run: |
+          cat node_modules/pix-apidata/package.json
+          echo "---FILES---"
+          find node_modules/pix-apidata -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+          echo "---ENTRY---"
+          node -e "console.log(require.resolve('pix-apidata'))"
