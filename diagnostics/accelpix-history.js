@@ -111,7 +111,7 @@ function summarize(label, result) {
 
 async function main() {
   const end = ymd(daysAgo(0));
-  const intraStart = ymd(daysAgo(35));
+  const intraStart = ymd(daysAgo(60));
   const eodStart = ymd(daysAgo(760));
 
   console.log('============================================================');
