@@ -82,6 +82,25 @@ function createMarketRouter(runtime, authService = null) {
     let candles = history;
     let hasMore = page.hasMore;
 
+    if (beforeMs == null) {
+      const lastClosedBeforeCorrection = runtime.candleEngine.getLastClosed?.(symbol, timeframe) || null;
+      const providerCorrection = lastClosedBeforeCorrection
+        ? history.find(candle => (
+          Number(candle.openTimeMs) === Number(lastClosedBeforeCorrection.openTimeMs)
+          && candle.complete === true
+          && ['BACKFILL', 'CANONICAL_BACKFILL'].includes(candle.source)
+        ))
+        : null;
+      if (providerCorrection) {
+        await runtime.candleEngine.reconcileCompletedCandle?.(
+          symbol,
+          timeframe,
+          providerCorrection,
+          { reason: 'provider-history-final' },
+        );
+      }
+    }
+
     // The latest REST page and WebSocket now serialize the exact same
     // authoritative engine state. Provider history seeds the active bucket;
     // ticks received while that snapshot is fetched are buffered and replayed
