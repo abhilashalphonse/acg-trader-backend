@@ -12,7 +12,7 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-const SYMBOLS = (process.env.ACCELPIX_DIAGNOSTIC_SYMBOLS || 'RELIANCE,RELIANCE-BSE')
+const SYMBOLS = (process.env.ACCELPIX_DIAGNOSTIC_SYMBOLS || 'RELIANCE,TCS,HDFCBANK,INFY,SBIN')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
