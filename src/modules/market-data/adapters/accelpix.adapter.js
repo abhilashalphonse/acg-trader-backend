@@ -1,6 +1,7 @@
 'use strict';
 
 const EventEmitter = require('events');
+const { createAccelpixSignalRClient } = require('./accelpix-signalr.client');
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const LIVE_TIMESTAMP_TOLERANCE_MS = 10 * 60 * 1000;
@@ -240,7 +241,11 @@ class AccelpixAdapter extends EventEmitter {
     this.reconnectMaxMs = reconnectMaxMs;
     this.maxSymbols = maxSymbols;
     this.logger = logger;
-    this.clientFactory = clientFactory || (() => require('pix-apidata'));
+    this.clientFactory = clientFactory || (() => createAccelpixSignalRClient({
+      reconnectMinMs: this.reconnectMinMs,
+      reconnectMaxMs: this.reconnectMaxMs,
+      logger: this.logger,
+    }));
     this.fetchImpl = fetchImpl;
 
     this.client = null;
@@ -292,9 +297,14 @@ class AccelpixAdapter extends EventEmitter {
       }
     }
 
-    // pix-apidata 1.2.8 documents unsubscribe operations but does not expose a
-    // public socket-close API. The backend process exits after graceful
-    // shutdown, so never reach into SDK internals to force-close SignalR.
+    if (this.client?.disconnect) {
+      try {
+        await this.client.disconnect();
+      } catch (error) {
+        this.logger?.warn?.({ err: error }, 'Accelpix SignalR disconnect failed during shutdown');
+      }
+    }
+
     this.emit('connection', { state: 'STOPPED', timestamp: Date.now() });
   }
 
@@ -351,6 +361,26 @@ class AccelpixAdapter extends EventEmitter {
         reason: error?.message || String(error || ''),
       });
       this.#scheduleReconnect();
+    });
+
+    this.client.callbacks.onReconnecting?.((error) => {
+      if (this.stopping) return;
+      this.emit('connection', {
+        state: 'DISCONNECTED',
+        timestamp: Date.now(),
+        reason: error?.message || String(error || 'SignalR reconnecting'),
+      });
+    });
+
+    this.client.callbacks.onReconnected?.(() => {
+      if (this.stopping) return;
+      this.retry = 0;
+      this.emit('connection', { state: 'LIVE', timestamp: Date.now(), recovered: true });
+    });
+
+    this.client.callbacks.onSubscriptionError?.((error) => {
+      if (this.stopping) return;
+      this.emit('adapter-error', error instanceof Error ? error : new Error(String(error || 'Accelpix subscription error')));
     });
 
     this.client.callbacks.onTrade?.(message => this.#handleTrade(message));
