@@ -201,7 +201,15 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
 
     if (action === 'subscribe') {
       for (const symbol of accepted.quotes) { const quote = runtime.quoteStore.get(symbol); if (quote) send(socket, 'market.quote', quote, { lossy: true }); }
-      for (const item of accepted.candles) { const candle = runtime.candleEngine.getCurrent(item.symbol, item.timeframe); if (candle) send(socket, 'market.candle.update', candle, { lossy: true }); }
+      for (const item of accepted.candles) {
+        try {
+          await runtime.hydrateCandle?.(item.symbol, item.timeframe);
+        } catch (error) {
+          logger?.warn?.({ err: error, symbol: item.symbol, timeframe: item.timeframe }, 'Candle hydration failed during subscription');
+        }
+        const candle = runtime.candleEngine.getCurrent(item.symbol, item.timeframe);
+        if (candle) send(socket, 'market.candle.update', candle, { lossy: true });
+      }
       if (accepted.accounts.length) await syncAccounts(socket, accepted.accounts, 'subscription');
     } else {
       for (const accountId of accepted.accounts) {
