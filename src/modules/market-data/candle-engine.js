@@ -226,6 +226,10 @@ class CandleEngine {
 
   flushExpired(nowMs) {
     for (const state of this.states.values()) {
+      // Never finalize a bucket while its provider snapshot is in flight.
+      // Ticks for this timeframe are buffered and must be replayed before the
+      // bar can cross the completion boundary.
+      if (state.hydration) continue;
       const stepMs = TIMEFRAME_MS[state.timeframe];
       if (!stepMs) continue;
 
