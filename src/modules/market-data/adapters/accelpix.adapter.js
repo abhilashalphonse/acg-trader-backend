@@ -511,7 +511,13 @@ class AccelpixAdapter extends EventEmitter {
       end = ymdInIst(endMs);
       path = `/api/fda/rest/${encodeURIComponent(providerSymbol)}/${start}/${end}/1`;
     } else {
-      const requestedDays = Math.max(30, Math.ceil(safeLimit * 1.8) + 15);
+      // Daily requests need calendar slack for weekends/holidays. Weekly
+      // requests must use the full two-year entitlement because ~160 requested
+      // weekly bars cannot exist inside a two-year plan; returning the full
+      // available window lets pagination report the real provider boundary.
+      const requestedDays = timeframe === '1w'
+        ? 730
+        : Math.max(30, Math.ceil(safeLimit * 1.8) + 15);
       const lookbackDays = Math.min(730, requestedDays);
       startMs = endMs - lookbackDays * 24 * 60 * 60 * 1000;
       start = ymdUtc(startMs);
