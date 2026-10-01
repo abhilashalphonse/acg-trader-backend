@@ -69,7 +69,7 @@ function createMarketRouter(runtime, authService = null) {
       page = await runtime.historyService.getCandlePage({ symbol, timeframe, limit, beforeMs });
 
       if (hydration?.owner) {
-        runtime.candleEngine.completeHydration?.(hydration, page.candles[page.candles.length - 1] || null);
+        runtime.candleEngine.completeHydration?.(hydration, page.candles[page.candles.length - 1] || null, page.candles);
       } else if (hydration && !hydration.skipped) {
         await runtime.candleEngine.waitForHydration?.(hydration);
       }

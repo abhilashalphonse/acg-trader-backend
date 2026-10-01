@@ -67,7 +67,7 @@ function createMarketRuntime() {
         beforeMs: null,
       });
       if (token.owner) {
-        candleEngine.completeHydration?.(token, page.candles[page.candles.length - 1] || null);
+        candleEngine.completeHydration?.(token, page.candles[page.candles.length - 1] || null, page.candles);
       } else {
         await candleEngine.waitForHydration?.(token);
       }

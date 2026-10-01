@@ -1,5 +1,7 @@
 'use strict';
 
+const PROCESS_EPOCH = Date.now();
+
 const { Candle } = require('./candle.model');
 const {
   TIMEFRAME_MS,
@@ -50,8 +52,10 @@ class CandleEngine {
     instrumentRegistry = null,
     syntheticTimeframes = DEFAULT_SYNTHETIC_TIMEFRAMES,
     persistCandle = persistCandleToMongo,
+    stateEpoch = PROCESS_EPOCH,
   }) {
     this.eventBus = eventBus;
+    this.stateEpoch = stateEpoch;
     this.timeframes = timeframes;
     this.persistTimeframes = new Set(persistTimeframes);
     this.flushIntervalMs = flushIntervalMs;
@@ -131,6 +135,7 @@ class CandleEngine {
     const state = this.#state(symbol, timeframe);
     if (state.hydration && !bypassHydration) {
       state.hydration.buffered.push({
+        bucket,
         tick: { ...tick },
         chartPrice,
         symbol,
@@ -176,7 +181,7 @@ class CandleEngine {
         candle.high = Math.max(candle.high, chartPrice);
         candle.low = Math.min(candle.low, chartPrice);
 
-        if (this.#isEarlierEvent(
+        if (!candle.providerOpenOwned && this.#isEarlierEvent(
           tick.timeMs,
           eventSequence,
           candle.firstEventTimeMs,
@@ -319,35 +324,59 @@ class CandleEngine {
     await state.hydration.done;
   }
 
-  completeHydration(token, historyBar) {
+  completeHydration(token, historyBar, historyBars = []) {
     const state = this.#hydrationState(token);
     if (!state) return this.getCurrent(token?.symbol, token?.timeframe);
     const hydration = state.hydration;
-
-    if (token.epoch !== this.hydrationEpoch || hydration.epoch !== this.hydrationEpoch) {
+    if (token.epoch !== this.hydrationEpoch) {
       this.#abortHydrationState(state, { replay: true });
       return this.getCurrent(token.symbol, token.timeframe);
     }
-
-    const historyOpenTimeMs = Number(historyBar?.openTimeMs);
-    const historyCloseTimeMs = Number(historyBar?.closeTimeMs);
-    const historyIsActive = Number.isFinite(historyOpenTimeMs)
-      && historyBar?.complete !== true
-      && (!Number.isFinite(historyCloseTimeMs) || historyCloseTimeMs > Date.now());
-
-    if (
-      !historyIsActive
-      || (state.lastClosedOpenTimeMs != null && historyOpenTimeMs <= state.lastClosedOpenTimeMs)
-      || (state.current && state.current.openTimeMs > historyOpenTimeMs)
-    ) {
-      this.#abortHydrationState(state, { replay: true });
-      return this.getCurrent(token.symbol, token.timeframe);
+    const buffered = hydration.buffered.slice().sort((a, b) =>
+      (a.tick.timeMs - b.tick.timeMs) || ((Number(a.tick.sequence) || 0) - (Number(b.tick.sequence) || 0)));
+    const latestOpen = Number(historyBar?.openTimeMs);
+    const targetOpen = state.current?.openTimeMs ?? buffered[0]?.bucket ?? latestOpen;
+    const snapshots = [...new Map([...historyBars, historyBar].filter(Boolean)
+      .filter(bar => Number.isFinite(Number(bar.openTimeMs)) && Number(bar.openTimeMs) >= targetOpen)
+      .map(bar => [Number(bar.openTimeMs), bar])).values()]
+      .sort((a, b) => Number(a.openTimeMs) - Number(b.openTimeMs));
+    state.hydration = null;
+    let index = 0;
+    let seededBucket = null;
+    const replay = item => this.#processTickForTimeframe(item.tick, item.chartPrice, item.symbol, item.timeframe, {
+      bypassHydration: true, continuityBroken: item.continuityBroken,
+      suppressProviderVolumeForBucket: seededBucket, emit: false,
+    });
+    try {
+      for (const snapshot of snapshots) {
+        const open = Number(snapshot.openTimeMs);
+        while (index < buffered.length && buffered[index].bucket < open) replay(buffered[index++]);
+        if (state.lastClosedOpenTimeMs != null && open <= state.lastClosedOpenTimeMs) continue;
+        if (state.current && open < state.current.openTimeMs) continue;
+        // Do not import unrelated completed history into an empty live engine.
+        if (!state.current && !buffered.length && snapshot.complete === true) continue;
+        if (this.#seedHydration(state, token, snapshot)) {
+          seededBucket = open;
+          state.historyHydratedOpenTimeMs = open;
+        }
+      }
+      while (index < buffered.length) replay(buffered[index++]);
+      if (seededBucket != null && state.current && state.current.closeTimeMs <= Date.now()) this.#closeCurrent(state);
+      if (state.current) this.#emitUpdate(state.current);
+    } finally {
+      hydration.resolveDone?.();
     }
+    return this.getCurrent(token.symbol, token.timeframe);
+  }
 
+  #seedHydration(state, token, historyBar) {
+    const historyOpenTimeMs = Number(historyBar.openTimeMs);
+    const historyCloseTimeMs = Number(historyBar.closeTimeMs);
     const existing = state.current?.openTimeMs === historyOpenTimeMs
       ? { ...state.current }
       : null;
     const numeric = value => {
+      if (value == null || value === '') return null;
       const number = Number(value);
       return Number.isFinite(number) ? number : null;
     };
@@ -355,10 +384,12 @@ class CandleEngine {
     const historyHigh = numeric(historyBar?.high);
     const historyLow = numeric(historyBar?.low);
     const historyClose = numeric(historyBar?.close);
-    if (![historyOpen, historyHigh, historyLow, historyClose].every(Number.isFinite)) {
-      this.#abortHydrationState(state, { replay: true });
-      return this.getCurrent(token.symbol, token.timeframe);
+    if (![historyOpen, historyHigh, historyLow, historyClose].every(value => Number.isFinite(value) && value > 0)
+      || historyLow > Math.min(historyOpen, historyClose) || historyHigh < Math.max(historyOpen, historyClose)) {
+      return false;
     }
+
+    if (state.current && state.current.openTimeMs < historyOpenTimeMs) this.#closeCurrent(state);
 
     const existingDisplay = existing ? resolveCandleVolume(existing, existing.volumeMode || state.volumeMode).displayVolume : null;
     const historyDisplay = numeric(historyBar?.displayVolume ?? historyBar?.providerVolume);
@@ -393,6 +424,7 @@ class CandleEngine {
       volumeMode,
       // Provider history owns the bar open once hydration succeeds. Buffered
       // in-bucket ticks may widen the range but cannot replace that open.
+      providerOpenOwned: true,
       firstEventTimeMs: historyOpenTimeMs,
       firstEventSequence: null,
       lastEventTimeMs: existing?.lastEventTimeMs ?? historyOpenTimeMs,
@@ -405,24 +437,7 @@ class CandleEngine {
       state.current.providerVolumeLiveAnchor = existingProviderVolume;
     }
 
-    const buffered = hydration.buffered
-      .slice()
-      .sort((a, b) => (a.tick.timeMs - b.tick.timeMs) || ((Number(a.tick.sequence) || 0) - (Number(b.tick.sequence) || 0)));
-    state.hydration = null;
-    state.historyHydratedOpenTimeMs = historyOpenTimeMs;
-
-    for (const item of buffered) {
-      this.#processTickForTimeframe(item.tick, item.chartPrice, item.symbol, item.timeframe, {
-        bypassHydration: true,
-        continuityBroken: item.continuityBroken,
-        suppressProviderVolumeForBucket: historyOpenTimeMs,
-        emit: false,
-      });
-    }
-
-    if (state.current) this.#emitUpdate(state.current);
-    hydration.resolveDone?.();
-    return this.getCurrent(token.symbol, token.timeframe);
+    return true;
   }
 
   abortHydration(token) {
@@ -434,6 +449,7 @@ class CandleEngine {
   invalidateHydration() {
     this.hydrationEpoch += 1;
     for (const state of this.states.values()) {
+      if (state.hydration) this.#abortHydrationState(state, { replay: true });
       state.historyHydratedOpenTimeMs = null;
     }
   }
@@ -441,6 +457,15 @@ class CandleEngine {
   async reconcileCompletedCandle(symbol, timeframe, correctedBar, { reason = 'provider-correction' } = {}) {
     const canonical = normalizeSymbol(symbol);
     const state = this.#state(canonical, timeframe);
+    const operation = state.correctionQueue.catch(() => {}).then(() =>
+      this.#applyCompletedCorrection(state, canonical, timeframe, correctedBar, reason));
+    state.correctionQueue = operation;
+    this.pendingWrites.add(operation);
+    operation.then(() => this.pendingWrites.delete(operation), () => this.pendingWrites.delete(operation));
+    return operation;
+  }
+
+  async #applyCompletedCorrection(state, canonical, timeframe, correctedBar, reason) {
     const openTimeMs = Number(correctedBar?.openTimeMs);
     const stepMs = TIMEFRAME_MS[timeframe];
     if (!Number.isFinite(openTimeMs) || !stepMs) return null;
@@ -451,11 +476,14 @@ class CandleEngine {
     if (state.current && openTimeMs >= state.current.openTimeMs) return null;
     if (state.lastClosedOpenTimeMs == null || openTimeMs > state.lastClosedOpenTimeMs) return null;
 
+    if ([correctedBar.open, correctedBar.high, correctedBar.low, correctedBar.close]
+      .some(value => value == null || String(value).trim() === '')) return null;
     const open = Number(correctedBar.open);
     const high = Number(correctedBar.high);
     const low = Number(correctedBar.low);
     const close = Number(correctedBar.close);
-    if (![open, high, low, close].every(Number.isFinite)) return null;
+    if (![open, high, low, close].every(value => Number.isFinite(value) && value > 0)
+      || low > Math.min(open, close) || high < Math.max(open, close)) return null;
 
     const candle = {
       symbol: canonical,
@@ -496,6 +524,9 @@ class CandleEngine {
       return serializeCandle(previous);
     }
 
+    if (this.persistTimeframes.has(timeframe)) {
+      await this.#queuePersistence(state, candle);
+    }
     this.#touchState(state, candle);
     if (openTimeMs === state.lastClosedOpenTimeMs) {
       state.lastClosedCandle = { ...candle };
@@ -505,9 +536,6 @@ class CandleEngine {
     const publicCandle = serializeCandle(candle);
     this.eventBus.emit('market.candle.corrected', { ...publicCandle, reason });
 
-    if (this.persistTimeframes.has(timeframe)) {
-      await this.persistCandle(candle);
-    }
     return publicCandle;
   }
 
@@ -586,6 +614,7 @@ class CandleEngine {
     if (!state || !candle) return;
     state.revision += 1;
     candle.stateVersion = state.revision;
+    candle.stateEpoch = this.stateEpoch;
   }
 
   #state(symbol, timeframe) {
@@ -599,6 +628,8 @@ class CandleEngine {
         lastClosedOpenTimeMs: null,
         lastClosedCandle: null,
         revision: 0,
+        correctionQueue: Promise.resolve(),
+        persistenceQueue: null,
         hydration: null,
         historyHydratedOpenTimeMs: null,
         consecutiveSyntheticClosed: 0,
@@ -798,11 +829,25 @@ class CandleEngine {
     // Synthetic carry-forward bars are display continuity only. Persisting
     // them turns a temporary no-tick interval into fake durable market history.
     if (!candle.synthetic && this.persistTimeframes.has(candle.timeframe)) {
-      const write = Promise.resolve(this.persistCandle(candle))
+      const write = this.#queuePersistence(state, candle)
         .catch(error => this.logger.error({ err: error, symbol: candle.symbol, timeframe: candle.timeframe }, 'Failed to persist closed market candle'))
         .finally(() => this.pendingWrites.delete(write));
       this.pendingWrites.add(write);
     }
+  }
+
+  #queuePersistence(state, candle) {
+    let write;
+    if (state.persistenceQueue) {
+      write = state.persistenceQueue.catch(() => {}).then(() => this.persistCandle(candle));
+    } else {
+      try { write = Promise.resolve(this.persistCandle(candle)); }
+      catch (error) { write = Promise.reject(error); }
+    }
+    state.persistenceQueue = write;
+    const settled = () => { if (state.persistenceQueue === write) state.persistenceQueue = null; };
+    write.then(settled, settled);
+    return write;
   }
 
   #observeClosedVolume(state, candle) {

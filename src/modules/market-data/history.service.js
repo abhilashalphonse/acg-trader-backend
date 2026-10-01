@@ -258,7 +258,7 @@ class MarketHistoryService {
   async #loadLocal(symbol, timeframe, limit, beforeMs = null) {
     const filter = { symbol, timeframe, synthetic: mongoose.trusted({ $ne: true }) };
     if (CANONICAL_UTC_HISTORY_SOURCE[timeframe]) {
-      filter.source = mongoose.trusted({ $in: ['LIVE', 'CANONICAL_BACKFILL'] });
+      filter.source = mongoose.trusted({ $in: ['LIVE', 'CANONICAL_BACKFILL', 'HYDRATED', 'CORRECTION'] });
     }
     if (Number.isFinite(Number(beforeMs)) && Number(beforeMs) > 0) {
       filter.openTime = mongoose.trusted({ $lt: new Date(Number(beforeMs)) });

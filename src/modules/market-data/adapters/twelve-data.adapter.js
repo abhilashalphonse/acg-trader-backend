@@ -318,12 +318,14 @@ class TwelveDataAdapter extends EventEmitter {
       return (body?.values || []).map(item => {
         const iso = String(item.datetime || '').includes('T') ? String(item.datetime) : String(item.datetime || '').replace(' ', 'T');
         const openTimeMs = Date.parse(`${iso}Z`);
+        if ([item.open, item.high, item.low, item.close].some(value => value == null || String(value).trim() === '')) return null;
         const open = Number(item.open);
         const high = Number(item.high);
         const low = Number(item.low);
         const close = Number(item.close);
         const providerVolume = optionalNonNegativeNumber(item.volume);
         if (![openTimeMs, open, high, low, close].every(Number.isFinite)) return null;
+        if (low <= 0 || low > Math.min(open, close) || high < Math.max(open, close)) return null;
         return { openTimeMs, open, high, low, close, providerVolume };
       }).filter(Boolean);
     } finally {
