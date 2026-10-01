@@ -374,3 +374,75 @@ test('gateway waits for asynchronous provider startup before reporting started',
 
   await gateway.stop();
 });
+
+
+test('provider subscription failure stays sticky and blocks REST recovery churn', async () => {
+  const { adapter, quoteStore, gateway } = createHarness();
+  await gateway.start();
+
+  quoteStore.set({
+    symbol: 'EURUSD',
+    sequence: 1,
+    price: 1.1,
+    last: 1.1,
+    bid: 1.09995,
+    ask: 1.10005,
+    receivedAtMs: Date.now() - 60000,
+    timeMs: Date.now() - 60000,
+    source: 'twelve-data',
+    providerSymbol: 'EUR/USD',
+    isSyntheticSpread: true,
+    isStale: false,
+  });
+
+  adapter.emit('subscription-status', {
+    event: 'subscribe-status',
+    status: 'warning',
+    success: [],
+    fails: [{ symbol: 'EUR/USD', message: 'pair is not supported' }],
+  });
+
+  assert.equal(gateway.status().symbols[0].state, 'SUBSCRIPTION_ERROR');
+  assert.equal(gateway.status().symbols[0].marketDataAvailable, false);
+  assert.equal(gateway.status().symbols[0].subscriptionError, 'pair is not supported');
+  assert.equal(quoteStore.get('EURUSD').isStale, true);
+
+  gateway.retainPriority('EURUSD');
+  await assert.rejects(
+    () => gateway.ensureFreshQuote('EURUSD', { force: true }),
+    error => error?.code === 'MARKET_SUBSCRIPTION_UNAVAILABLE',
+  );
+  assert.equal(adapter.latestCalls, 0);
+  assert.equal(gateway.status().symbols[0].state, 'SUBSCRIPTION_ERROR');
+
+  await gateway.stop();
+});
+
+test('a real provider price clears a prior subscription-unavailable state', async () => {
+  const { adapter, gateway } = createHarness();
+  await gateway.start();
+
+  adapter.emit('subscription-status', {
+    event: 'subscribe-status',
+    status: 'warning',
+    success: [],
+    fails: [{ symbol: 'EUR/USD', message: 'pair is not supported' }],
+  });
+  assert.equal(gateway.status().symbols[0].marketDataAvailable, false);
+
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.101,
+    bid: null,
+    ask: null,
+    providerTimestampMs: Date.now(),
+    dayVolume: null,
+  });
+
+  assert.equal(gateway.status().symbols[0].state, 'LIVE');
+  assert.equal(gateway.status().symbols[0].marketDataAvailable, true);
+  assert.equal(gateway.status().symbols[0].subscriptionError, null);
+
+  await gateway.stop();
+});
