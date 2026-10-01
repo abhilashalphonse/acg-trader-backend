@@ -281,12 +281,20 @@ class AccelpixAdapter extends EventEmitter {
     const providerSymbols = [...new Set(this.subscriptions.map(item => item.providerSymbol).filter(Boolean))];
     if (this.client?.stream?.unsubscribeAll && providerSymbols.length) {
       try {
-        await this.client.stream.unsubscribeAll(providerSymbols);
+        const unsubscribe = Promise.resolve(this.client.stream.unsubscribeAll(providerSymbols));
+        const timeoutMs = Math.min(2500, Math.max(500, Number(this.httpTimeoutMs) || 1000));
+        await Promise.race([
+          unsubscribe,
+          new Promise(resolve => setTimeout(resolve, timeoutMs)),
+        ]);
       } catch (error) {
         this.logger?.warn?.({ err: error }, 'Accelpix unsubscribe failed during shutdown');
       }
     }
 
+    // pix-apidata 1.2.8 documents unsubscribe operations but does not expose a
+    // public socket-close API. The backend process exits after graceful
+    // shutdown, so never reach into SDK internals to force-close SignalR.
     this.emit('connection', { state: 'STOPPED', timestamp: Date.now() });
   }
 
