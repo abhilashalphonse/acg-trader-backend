@@ -131,13 +131,13 @@ class MarketGateway {
     if (current && ageMs <= instrument.maxQuoteAgeMs) this.#setSymbolState(canonical, 'REFRESHING');
 
     const task = Promise.resolve()
-      .then(() => this.adapter.fetchLatestPrice({ providerSymbol: instrument.providerSymbol }))
+      .then(() => this.adapter.fetchLatestPrice({ provider: instrument.provider || 'twelve-data', providerSymbol: instrument.providerSymbol }))
       .then(raw => {
         this.#onPrice({
           ...raw,
           symbol: canonical,
           providerSymbol: instrument.providerSymbol,
-          source: raw?.source || 'twelve-data-rest',
+          source: raw?.source || ((instrument.provider || 'twelve-data') + '-rest'),
           quoteOnly: true,
         });
         const recovered = this.quoteStore.get(canonical);
@@ -343,7 +343,7 @@ class MarketGateway {
       providerTimestampMs: Number.isFinite(providerTimestampMs) ? Math.trunc(providerTimestampMs) : null,
       receivedAtMs,
       timeMs: marketTimeMs,
-      source: raw.source || 'twelve-data',
+      source: raw.source || raw.provider || this.instrumentRegistry.provider?.(symbol) || 'twelve-data',
       providerSymbol: raw.providerSymbol,
       isSyntheticSpread: normalizedPrices.isSyntheticSpread,
       dayVolume: raw.dayVolume,
