@@ -10,6 +10,7 @@ const {
   nseIntradayBucketOpenTimeMs,
   aggregateNseIntradayBars,
   aggregateWeeklyEodBars,
+  marketPrice,
 } = require('../../src/modules/market-data/adapters/accelpix.adapter');
 
 function fakeClient() {
@@ -247,4 +248,10 @@ test('weekly EOD aggregation anchors to Monday', () => {
   assert.equal(aggregated[0].low, 99);
   assert.equal(aggregated[0].close, 105);
   assert.equal(aggregated[0].providerVolume, 60);
+});
+
+
+test('normalizes Accelpix float32 price artifacts', () => {
+  assert.equal(marketPrice(1174.9000244140625), 1174.9);
+  assert.equal(marketPrice(1186.800048828125), 1186.8);
 });
