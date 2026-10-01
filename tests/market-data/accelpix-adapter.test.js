@@ -114,6 +114,7 @@ test('merges trade LTP with later best bid/ask updates', async () => {
   assert.equal(prices[1].bid, 1174.9);
   assert.equal(prices[1].ask, 1175);
   assert.equal(prices[1].providerTimestampMs, null);
+  assert.equal(prices[1].quoteOnly, true);
 
   await adapter.stop();
 });
