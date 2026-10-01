@@ -34,6 +34,7 @@ class MarketGateway {
     this.tickSanityFilter = tickSanityFilter || new TickSanityFilter();
     this.onStreamRecovered = typeof onStreamRecovered === 'function' ? onStreamRecovered : null;
     this.streamOutage = false;
+    this.providerOutages = new Set();
 
     this.connectionState = MARKET_CONNECTION_STATES.DISCONNECTED;
     this.symbolStates = new Map(this.symbols.map(symbol => [symbol, 'WAITING']));
@@ -48,6 +49,7 @@ class MarketGateway {
     this.onConnection = event => this.#onConnection(event);
     this.onAdapterError = error => this.#onAdapterError(error);
     this.onSubscriptionStatus = event => this.#onSubscriptionStatus(event);
+    this.onProviderConnection = event => this.#onProviderConnection(event);
   }
 
   async start() {
@@ -59,6 +61,7 @@ class MarketGateway {
     this.adapter.on('connection', this.onConnection);
     this.adapter.on('adapter-error', this.onAdapterError);
     this.adapter.on('subscription-status', this.onSubscriptionStatus);
+    this.adapter.on?.('provider-connection', this.onProviderConnection);
 
     this.adapter.start(this.instrumentRegistry.providerSubscriptions());
     this.staleTimer = setInterval(() => this.#checkQuoteFreshness(), this.staleCheckMs);
@@ -73,6 +76,7 @@ class MarketGateway {
     this.adapter.off('connection', this.onConnection);
     this.adapter.off('adapter-error', this.onAdapterError);
     this.adapter.off('subscription-status', this.onSubscriptionStatus);
+    this.adapter.off?.('provider-connection', this.onProviderConnection);
 
     await Promise.allSettled([...this.recoveryInFlight.values()]);
     this.recoveryInFlight.clear();
