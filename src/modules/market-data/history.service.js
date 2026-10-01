@@ -121,13 +121,24 @@ class MarketHistoryService {
           key: `${provider}:${providerSymbol}:${timeframe}:${cursorKey}`,
           timeframe,
           limit: fetchLimit,
-          load: () => this.adapter.fetchHistorical({
-            provider,
-            providerSymbol,
-            timeframe,
-            limit: fetchLimit,
-            beforeMs: cursor,
-          }),
+          load: async () => {
+            const snapshotAtMs = Date.now();
+            const bars = await this.adapter.fetchHistorical({
+              provider,
+              providerSymbol,
+              timeframe,
+              limit: fetchLimit,
+              beforeMs: cursor,
+            });
+            const stepMs = TIMEFRAME_MS[timeframe];
+            return (Array.isArray(bars) ? bars : []).map(bar => ({
+              ...bar,
+              snapshotComplete: Number.isFinite(stepMs)
+                ? Number(bar.openTimeMs) + stepMs <= snapshotAtMs
+                : Boolean(bar.complete),
+              snapshotAtMs,
+            }));
+          },
         });
         if (providerBars.length) {
           const hasMore = providerBars.length > safeLimit
@@ -174,6 +185,48 @@ class MarketHistoryService {
     const now = Date.now();
     const merged = bars.slice(-limit).map(bar => {
       const local = localByOpenTime.get(Number(bar.openTimeMs));
+      const snapshotComplete = typeof bar.snapshotComplete === 'boolean'
+        ? bar.snapshotComplete
+        : bar.openTimeMs + stepMs <= now;
+      const localComplete = local?.complete === true;
+
+      // A provider cache entry may have been captured while its bar was still
+      // active. Do not later relabel that stale partial snapshot as complete
+      // merely because wall-clock time advanced. If the live engine already
+      // finalized the bucket locally, merge that authoritative completed state
+      // instead; otherwise leave the cached provider snapshot incomplete until
+      // the provider cache refreshes.
+      if (!snapshotComplete && localComplete) {
+        const localOpen = Number(local.open);
+        const localHigh = Number(local.high);
+        const localLow = Number(local.low);
+        const localClose = Number(local.close);
+        const providerOpen = Number(bar.open);
+        const providerHigh = Number(bar.high);
+        const providerLow = Number(bar.low);
+        const providerClose = Number(bar.close);
+        const highs = [providerHigh, providerOpen, providerClose, localHigh, localOpen, localClose].filter(Number.isFinite);
+        const lows = [providerLow, providerOpen, providerClose, localLow, localOpen, localClose].filter(Number.isFinite);
+
+        return {
+          symbol,
+          timeframe,
+          openTimeMs: bar.openTimeMs,
+          closeTimeMs: bar.openTimeMs + stepMs,
+          open: Number.isFinite(providerOpen) ? providerOpen : localOpen,
+          high: highs.length ? Math.max(...highs) : localHigh,
+          low: lows.length ? Math.min(...lows) : localLow,
+          close: Number.isFinite(localClose) ? localClose : providerClose,
+          tickCount: Number(local?.tickCount || 0),
+          providerVolume: local?.providerVolume ?? bar.providerVolume,
+          complete: true,
+          synthetic: false,
+          source: 'LIVE_RECONCILED',
+          provider: local?.provider || provider,
+          stateVersion: Number.isFinite(Number(local?.stateVersion)) ? Number(local.stateVersion) : null,
+        };
+      }
+
       return {
         symbol,
         timeframe,
@@ -185,7 +238,7 @@ class MarketHistoryService {
         close: bar.close,
         tickCount: Number(local?.tickCount || 0),
         providerVolume: bar.providerVolume,
-        complete: bar.openTimeMs + stepMs <= now,
+        complete: snapshotComplete,
         synthetic: false,
         source: bar.canonicalUtc ? 'CANONICAL_BACKFILL' : 'BACKFILL',
         provider,
