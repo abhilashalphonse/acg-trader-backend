@@ -49,6 +49,7 @@ class InstrumentRegistry {
       return Object.freeze({
         symbol,
         configured: false,
+        provider: 'twelve-data',
         providerSymbol: defaultTwelveDataSymbol(symbol),
         tickSize: null,
         assetClass: null,
@@ -75,13 +76,18 @@ class InstrumentRegistry {
       });
     }
 
-    const providerSymbol = mapValue(doc.providerMappings, 'twelveData')
-      || mapValue(doc.providerMappings, 'twelve-data')
+    const accelpixSymbol = mapValue(doc.providerMappings, 'accelpix');
+    const twelveDataSymbol = mapValue(doc.providerMappings, 'twelveData')
+      || mapValue(doc.providerMappings, 'twelve-data');
+    const provider = accelpixSymbol ? 'accelpix' : 'twelve-data';
+    const providerSymbol = accelpixSymbol
+      || twelveDataSymbol
       || defaultTwelveDataSymbol(symbol);
 
     return Object.freeze({
       symbol,
       configured: true,
+      provider,
       providerSymbol,
       tickSize: decimalToNumber(doc.tickSize),
       assetClass: doc.assetClass || null,
@@ -118,12 +124,20 @@ class InstrumentRegistry {
     return this.items.get(normalizeSymbol(symbol)) || null;
   }
 
+  provider(symbol) {
+    return this.get(symbol)?.provider || 'twelve-data';
+  }
+
   providerSymbol(symbol) {
     return this.get(symbol)?.providerSymbol || defaultTwelveDataSymbol(symbol);
   }
 
   providerSubscriptions() {
-    return this.symbols.map(symbol => ({ symbol, providerSymbol: this.providerSymbol(symbol) }));
+    return this.symbols.map(symbol => ({
+      symbol,
+      provider: this.provider(symbol),
+      providerSymbol: this.providerSymbol(symbol),
+    }));
   }
 
   snapshot() {
