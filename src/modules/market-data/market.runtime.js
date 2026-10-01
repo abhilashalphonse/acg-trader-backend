@@ -50,8 +50,34 @@ function createMarketRuntime() {
     // Any history cached before/during a provider outage can be incomplete.
     // Clear it before clients receive the recovered gateway status so their
     // forced history reconciliation fetches authoritative missing OHLC.
-    onStreamRecovered: () => historyService.clearCache(),
+    onStreamRecovered: () => {
+      historyService.clearCache();
+      candleEngine.invalidateHydration?.();
+    },
   });
+  async function hydrateCandleState(symbol, timeframe) {
+    const token = candleEngine.beginHydration?.(symbol, timeframe);
+    if (!token || token.skipped) return candleEngine.getCurrent(symbol, timeframe);
+
+    try {
+      const page = await historyService.getCandlePage({
+        symbol,
+        timeframe,
+        limit: 2,
+        beforeMs: null,
+      });
+      if (token.owner) {
+        candleEngine.completeHydration?.(token, page.candles[page.candles.length - 1] || null);
+      } else {
+        await candleEngine.waitForHydration?.(token);
+      }
+      return candleEngine.getCurrent(symbol, timeframe);
+    } catch (error) {
+      if (token.owner) candleEngine.abortHydration?.(token);
+      throw error;
+    }
+  }
+
   let wsServer = null;
   let started = false;
 
@@ -69,6 +95,7 @@ function createMarketRuntime() {
     releasePriority(symbol) { return gateway.releasePriority(symbol); },
     priorityCount(symbol) { return gateway.priorityCount(symbol); },
     ensureFreshQuote(symbol, options) { return gateway.ensureFreshQuote(symbol, options); },
+    hydrateCandle(symbol, timeframe) { return hydrateCandleState(symbol, timeframe); },
     async start() {
       if (started) return;
       if (!env.market.enabled) {

@@ -60,31 +60,61 @@ function createMarketRouter(runtime, authService = null) {
       });
     }
 
-    const page = await runtime.historyService.getCandlePage({ symbol, timeframe, limit, beforeMs });
+    const hydration = beforeMs == null
+      ? runtime.candleEngine.beginHydration?.(symbol, timeframe)
+      : null;
+
+    let page;
+    try {
+      page = await runtime.historyService.getCandlePage({ symbol, timeframe, limit, beforeMs });
+
+      if (hydration?.owner) {
+        runtime.candleEngine.completeHydration?.(hydration, page.candles[page.candles.length - 1] || null);
+      } else if (hydration && !hydration.skipped) {
+        await runtime.candleEngine.waitForHydration?.(hydration);
+      }
+    } catch (error) {
+      if (hydration?.owner) runtime.candleEngine.abortHydration?.(hydration);
+      throw error;
+    }
+
     const history = page.candles;
     let candles = history;
     let hasMore = page.hasMore;
 
-    // Historical pagination is intentionally detached from the live candle.
-    // Older pages must be stable, non-overlapping provider history. Only the
-    // latest page inherits the active volume mode and merges the live bucket.
     if (beforeMs == null) {
-      const historyVolumeMode = history[history.length - 1]?.volumeMode || null;
-      if (historyVolumeMode) runtime.candleEngine.setVolumeMode?.(symbol, timeframe, historyVolumeMode);
-      let current = runtime.candleEngine.getCurrent(symbol, timeframe);
-
-      if (current) {
-        const last = history[history.length - 1];
-        if (last?.openTimeMs === current.openTimeMs) {
-          runtime.candleEngine.reconcileCurrentVolume?.(symbol, timeframe, last);
-          current = runtime.candleEngine.getCurrent(symbol, timeframe) || current;
-          candles = [...history.slice(0, -1), mergeCurrentCandle(last, current)];
-        } else {
-          const inheritedMode = last?.volumeMode || null;
-          if (inheritedMode) current = applyVolumeMode(current, inheritedMode);
-          candles = [...history, current];
-        }
+      const lastClosedBeforeCorrection = runtime.candleEngine.getLastClosed?.(symbol, timeframe) || null;
+      const providerCorrection = lastClosedBeforeCorrection
+        ? history.find(candle => (
+          Number(candle.openTimeMs) === Number(lastClosedBeforeCorrection.openTimeMs)
+          && candle.complete === true
+          && ['BACKFILL', 'CANONICAL_BACKFILL'].includes(candle.source)
+        ))
+        : null;
+      if (providerCorrection) {
+        await runtime.candleEngine.reconcileCompletedCandle?.(
+          symbol,
+          timeframe,
+          providerCorrection,
+          { reason: 'provider-history-final' },
+        );
       }
+    }
+
+    // The latest REST page and WebSocket now serialize the exact same
+    // authoritative engine state. Provider history seeds the active bucket;
+    // ticks received while that snapshot is fetched are buffered and replayed
+    // before the response is composed.
+    if (beforeMs == null) {
+      const byOpenTime = new Map(history.map(candle => [Number(candle.openTimeMs), candle]));
+      const lastClosed = runtime.candleEngine.getLastClosed?.(symbol, timeframe) || null;
+      const current = runtime.candleEngine.getCurrent(symbol, timeframe);
+
+      if (lastClosed) byOpenTime.set(Number(lastClosed.openTimeMs), lastClosed);
+      if (current) byOpenTime.set(Number(current.openTimeMs), current);
+
+      candles = [...byOpenTime.values()]
+        .sort((a, b) => Number(a.openTimeMs) - Number(b.openTimeMs));
 
       if (candles.length > limit) {
         hasMore = true;

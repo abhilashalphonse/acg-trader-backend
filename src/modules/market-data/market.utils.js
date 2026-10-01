@@ -85,6 +85,7 @@ function serializeCandle(candle) {
     synthetic: Boolean(candle.synthetic),
     source: candle.source || 'LIVE',
     provider: candle.provider || null,
+    stateVersion: Number.isFinite(Number(candle.stateVersion)) ? Number(candle.stateVersion) : null,
   };
 }
 
