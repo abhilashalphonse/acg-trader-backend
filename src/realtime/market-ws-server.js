@@ -382,7 +382,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       // If the client already receives full-frequency ticks for this symbol,
       // the tick contains the same bid/ask/last fields. Suppress the duplicate
       // quote stream and let the frontend mirror the tick into quote state.
-      if (state.ticks.has(quote.symbol)) continue;
+      if (state.ticks.has(quote.symbol) && quote.referenceUpdate !== true) continue;
 
       scheduleLatest(
         state,
