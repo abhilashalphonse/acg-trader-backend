@@ -397,6 +397,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
   const broadcastTick = tick => { for (const socket of wss.clients) if (subscriptions.get(socket)?.ticks.has(tick.symbol)) send(socket, 'market.tick', tick, { lossy: true }); };
   const broadcastCandleUpdate = candle => { const key = `${candle.symbol}:${candle.timeframe}`; for (const socket of wss.clients) if (subscriptions.get(socket)?.candles.has(key)) send(socket, 'market.candle.update', candle, { lossy: true }); };
   const broadcastCandleClosed = candle => { const key = `${candle.symbol}:${candle.timeframe}`; for (const socket of wss.clients) if (subscriptions.get(socket)?.candles.has(key)) send(socket, 'market.candle.closed', candle); };
+  const broadcastCandleCorrected = candle => { const key = `${candle.symbol}:${candle.timeframe}`; for (const socket of wss.clients) if (subscriptions.get(socket)?.candles.has(key)) send(socket, 'market.candle.corrected', candle); };
   const broadcastStatus = status => { for (const socket of wss.clients) send(socket, 'market.status', status); };
 
   const eventRoutes = new Map([
@@ -436,6 +437,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
   runtime.eventBus.on('market.tick', broadcastTick);
   runtime.eventBus.on('market.candle.update', broadcastCandleUpdate);
   runtime.eventBus.on('market.candle.closed', broadcastCandleClosed);
+  runtime.eventBus.on('market.candle.corrected', broadcastCandleCorrected);
   runtime.eventBus.on('market.status', broadcastStatus);
 
   const heartbeatTimer = setInterval(() => {
@@ -510,6 +512,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       runtime.eventBus.off('market.tick', broadcastTick);
       runtime.eventBus.off('market.candle.update', broadcastCandleUpdate);
       runtime.eventBus.off('market.candle.closed', broadcastCandleClosed);
+      runtime.eventBus.off('market.candle.corrected', broadcastCandleCorrected);
       runtime.eventBus.off('market.status', broadcastStatus);
       for (const [sourceEvent, listener] of tradingListeners) runtime.eventBus.off(sourceEvent, listener);
       for (const socket of wss.clients) socket.terminate();
