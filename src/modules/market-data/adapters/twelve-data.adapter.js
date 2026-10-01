@@ -17,6 +17,39 @@ function optionalNonNegativeNumber(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+function normalizeSearchText(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function chooseIndexSearchMatch(rows, subscription) {
+  const expectedSymbol = String(subscription?.providerSymbol || '').toUpperCase();
+  const expectedCurrency = String(subscription?.quoteCurrency || '').toUpperCase();
+  const expectedNameTokens = new Set(normalizeSearchText(subscription?.name).split(' ').filter(token => token.length > 2));
+
+  const candidates = (Array.isArray(rows) ? rows : []).filter(row => (
+    String(row?.symbol || '').toUpperCase() === expectedSymbol
+    && /index/i.test(String(row?.instrument_type || ''))
+  ));
+  if (!candidates.length) return null;
+
+  const score = row => {
+    let value = 0;
+    if (expectedCurrency && String(row?.currency || '').toUpperCase() === expectedCurrency) value += 4;
+    const nameTokens = new Set(normalizeSearchText(row?.instrument_name).split(' ').filter(token => token.length > 2));
+    for (const token of expectedNameTokens) if (nameTokens.has(token)) value += 1;
+    if (/united states/i.test(String(row?.country || '')) && /^US/.test(String(subscription?.symbol || ''))) value += 2;
+    return value;
+  };
+
+  return [...candidates].sort((a, b) => score(b) - score(a))[0] || null;
+}
+
+function qualifyProviderSymbol(match, fallback) {
+  const symbol = String(match?.symbol || fallback || '').trim();
+  const exchange = String(match?.exchange || '').trim();
+  return symbol && exchange ? `${symbol}:${exchange}` : symbol;
+}
+
 function formatUtcApiDateTime(timeMs) {
   const date = new Date(Number(timeMs));
   if (!Number.isFinite(date.getTime())) return '';
@@ -24,7 +57,7 @@ function formatUtcApiDateTime(timeMs) {
 }
 
 class TwelveDataAdapter extends EventEmitter {
-  constructor({ apiKey, wsUrl, apiBase, heartbeatMs, reconnectMinMs, reconnectMaxMs, httpTimeoutMs, subscribeBatchSize = 100, logger }) {
+  constructor({ apiKey, wsUrl, apiBase, heartbeatMs, reconnectMinMs, reconnectMaxMs, httpTimeoutMs, subscribeBatchSize = 100, logger, fetchImpl = globalThis.fetch }) {
     super();
     this.apiKey = apiKey;
     this.wsUrl = wsUrl;
@@ -35,6 +68,7 @@ class TwelveDataAdapter extends EventEmitter {
     this.httpTimeoutMs = httpTimeoutMs;
     this.subscribeBatchSize = Math.max(1, Number(subscribeBatchSize) || 100);
     this.logger = logger;
+    this.fetchImpl = fetchImpl;
 
     this.socket = null;
     this.heartbeatTimer = null;
@@ -43,12 +77,45 @@ class TwelveDataAdapter extends EventEmitter {
     this.stopping = false;
     this.subscriptions = [];
     this.providerToCanonical = new Map();
+    this.resolvedProviderSymbols = new Map();
+    this.subscriptionIdentity = new Map();
+    this.rejectedProviderSymbols = new Map();
+    this.requestedByResolvedProviderSymbol = new Map();
   }
 
-  start(subscriptions) {
-    this.subscriptions = subscriptions.map(item => ({ ...item }));
-    this.providerToCanonical = new Map(this.subscriptions.map(item => [item.providerSymbol, item.symbol]));
+  async start(subscriptions) {
+    const requested = (Array.isArray(subscriptions) ? subscriptions : []).map(item => ({ ...item }));
     this.stopping = false;
+    this.resolvedProviderSymbols.clear();
+    this.subscriptionIdentity.clear();
+    this.rejectedProviderSymbols.clear();
+    this.requestedByResolvedProviderSymbol.clear();
+
+    const resolved = await this.#resolveSubscriptionIdentities(requested);
+    this.subscriptions = resolved.filter(item => !item.identityError);
+    this.providerToCanonical = new Map();
+
+    for (const item of this.subscriptions) {
+      const resolvedSymbol = item.resolvedProviderSymbol || item.providerSymbol;
+      this.providerToCanonical.set(resolvedSymbol, item.symbol);
+      this.providerToCanonical.set(item.providerSymbol, item.symbol);
+      this.resolvedProviderSymbols.set(item.providerSymbol, resolvedSymbol);
+      this.requestedByResolvedProviderSymbol.set(resolvedSymbol, item.providerSymbol);
+      this.subscriptionIdentity.set(item.providerSymbol, item);
+    }
+
+    const rejected = resolved.filter(item => item.identityError);
+    if (rejected.length) {
+      for (const item of rejected) this.rejectedProviderSymbols.set(item.providerSymbol, item.identityError);
+      this.emit('subscription-status', {
+        event: 'subscribe-status',
+        status: 'error',
+        success: [],
+        fails: rejected.map(item => ({ symbol: item.providerSymbol, message: item.identityError })),
+        provider: 'twelve-data',
+      });
+    }
+
     this.#connect();
   }
 
@@ -70,6 +137,82 @@ class TwelveDataAdapter extends EventEmitter {
         });
         try { socket.close(1000, 'ACG market gateway shutdown'); } catch { resolve(); }
       });
+    }
+  }
+
+  async #resolveSubscriptionIdentities(subscriptions) {
+    const result = [];
+    const indexSubscriptions = subscriptions.filter(item => String(item?.assetClass || '').toUpperCase() === 'INDEX');
+    const nonIndexSubscriptions = subscriptions.filter(item => String(item?.assetClass || '').toUpperCase() !== 'INDEX');
+    result.push(...nonIndexSubscriptions);
+
+    const queue = [...indexSubscriptions];
+    const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (queue.length) {
+        const item = queue.shift();
+        result.push(await this.#resolveIndexSubscription(item));
+      }
+    });
+    await Promise.all(workers);
+    return result;
+  }
+
+  async #resolveIndexSubscription(subscription) {
+    const providerSymbol = String(subscription?.providerSymbol || '').trim();
+    if (!providerSymbol) return { ...subscription, identityError: 'Missing Twelve Data index symbol' };
+
+    const params = new URLSearchParams({
+      symbol: providerSymbol,
+      outputsize: '120',
+      show_plan: 'true',
+      apikey: this.apiKey,
+    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
+    try {
+      const response = await this.fetchImpl(`${this.apiBase}/symbol_search?${params}`, { signal: controller.signal });
+      const body = await response.json();
+      if (!response.ok || body?.status === 'error') {
+        throw new Error(body?.message || `Twelve Data symbol search failed (${response.status})`);
+      }
+
+      const match = chooseIndexSearchMatch(body?.data, subscription);
+      if (!match) {
+        return {
+          ...subscription,
+          identityError: `Twelve Data index identity could not be resolved for ${providerSymbol}`,
+        };
+      }
+
+      const resolvedProviderSymbol = qualifyProviderSymbol(match, providerSymbol);
+      this.logger?.info?.({
+        symbol: subscription.symbol,
+        providerSymbol,
+        resolvedProviderSymbol,
+        instrumentName: match.instrument_name,
+        exchange: match.exchange,
+      }, 'Resolved Twelve Data index identity');
+
+      return {
+        ...subscription,
+        resolvedProviderSymbol,
+        resolvedIdentity: {
+          instrumentName: match.instrument_name || null,
+          instrumentType: match.instrument_type || null,
+          exchange: match.exchange || null,
+          micCode: match.mic_code || null,
+          country: match.country || null,
+          currency: match.currency || null,
+        },
+      };
+    } catch (error) {
+      this.logger?.warn?.({ err: error, symbol: subscription.symbol, providerSymbol }, 'Twelve Data index identity resolution failed');
+      return {
+        ...subscription,
+        identityError: `Twelve Data index identity resolution failed for ${providerSymbol}`,
+      };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -120,7 +263,7 @@ class TwelveDataAdapter extends EventEmitter {
 
   #subscribeAll() {
     if (this.socket?.readyState !== WebSocket.OPEN || !this.subscriptions.length) return;
-    const providerSymbols = [...new Set(this.subscriptions.map(item => item.providerSymbol).filter(Boolean))];
+    const providerSymbols = [...new Set(this.subscriptions.map(item => item.resolvedProviderSymbol || item.providerSymbol).filter(Boolean))];
     for (let offset = 0; offset < providerSymbols.length; offset += this.subscribeBatchSize) {
       const batch = providerSymbols.slice(offset, offset + this.subscribeBatchSize);
       this.socket.send(JSON.stringify({
@@ -159,7 +302,7 @@ class TwelveDataAdapter extends EventEmitter {
     }
 
     if (data.event === 'price') {
-      const canonical = this.providerToCanonical.get(data.symbol);
+      const canonical = this.providerToCanonical.get(data.symbol) || this.providerToCanonical.get(String(data.symbol || '').split(':')[0]);
       const price = Number(data.price);
       if (!canonical || !Number.isFinite(price)) return;
 
@@ -182,7 +325,17 @@ class TwelveDataAdapter extends EventEmitter {
     }
 
     if (data.event === 'subscribe-status' || data.event === 'unsubscribe-status') {
-      this.emit('subscription-status', data);
+      const normalizeProviderSymbol = value => {
+        const symbol = typeof value === 'string' ? value : value?.symbol;
+        const requested = this.requestedByResolvedProviderSymbol.get(String(symbol || '')) || symbol;
+        return typeof value === 'string' ? requested : { ...value, symbol: requested };
+      };
+      const normalized = {
+        ...data,
+        success: Array.isArray(data.success) ? data.success.map(normalizeProviderSymbol) : data.success,
+        fails: Array.isArray(data.fails) ? data.fails.map(normalizeProviderSymbol) : data.fails,
+      };
+      this.emit('subscription-status', normalized);
       if (data.status === 'error') this.emit('adapter-error', new Error(data.message || `Twelve Data ${data.event} failed`));
       return;
     }
@@ -193,14 +346,21 @@ class TwelveDataAdapter extends EventEmitter {
   }
 
   async fetchLatestPrice({ providerSymbol }) {
+    const requestedProviderSymbol = String(providerSymbol || '');
+    if (this.rejectedProviderSymbols.has(requestedProviderSymbol)) {
+      const error = new Error(this.rejectedProviderSymbols.get(requestedProviderSymbol));
+      error.code = 'TWELVE_DATA_SYMBOL_IDENTITY_MISMATCH';
+      throw error;
+    }
+    const resolvedProviderSymbol = this.resolvedProviderSymbols.get(requestedProviderSymbol) || requestedProviderSymbol;
     const params = new URLSearchParams({
-      symbol: providerSymbol,
+      symbol: resolvedProviderSymbol,
       apikey: this.apiKey,
     });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
     try {
-      const response = await fetch(`${this.apiBase}/price?${params}`, { signal: controller.signal });
+      const response = await this.fetchImpl(`${this.apiBase}/price?${params}`, { signal: controller.signal });
       const body = await response.json();
       if (!response.ok || body?.status === 'error') {
         const error = new Error(body?.message || `Twelve Data latest-price request failed (${response.status})`);
@@ -214,7 +374,7 @@ class TwelveDataAdapter extends EventEmitter {
         throw error;
       }
       return {
-        providerSymbol,
+        providerSymbol: requestedProviderSymbol,
         price,
         bid: null,
         ask: null,
@@ -233,6 +393,13 @@ class TwelveDataAdapter extends EventEmitter {
   }
 
   async fetchHistorical({ providerSymbol, timeframe, limit = 160, beforeMs = null }) {
+    const requestedProviderSymbol = String(providerSymbol || '');
+    if (this.rejectedProviderSymbols.has(requestedProviderSymbol)) {
+      const error = new Error(this.rejectedProviderSymbols.get(requestedProviderSymbol));
+      error.code = 'TWELVE_DATA_SYMBOL_IDENTITY_MISMATCH';
+      throw error;
+    }
+    const resolvedProviderSymbol = this.resolvedProviderSymbols.get(requestedProviderSymbol) || requestedProviderSymbol;
     const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 160));
     const cursor = Number.isFinite(Number(beforeMs)) && Number(beforeMs) > 0
       ? Math.trunc(Number(beforeMs))
@@ -241,7 +408,8 @@ class TwelveDataAdapter extends EventEmitter {
     const canonicalSource = CANONICAL_UTC_HISTORY_SOURCE[timeframe];
     if (canonicalSource) {
       return this.#fetchCanonicalUtcHistorical({
-        providerSymbol,
+        providerSymbol: resolvedProviderSymbol,
+        requestedProviderSymbol,
         timeframe,
         sourceTimeframe: canonicalSource,
         limit: safeLimit,
@@ -249,14 +417,15 @@ class TwelveDataAdapter extends EventEmitter {
       });
     }
     return this.#fetchTimeSeries({
-      providerSymbol,
+      providerSymbol: resolvedProviderSymbol,
+      requestedProviderSymbol,
       timeframe,
       limit: safeLimit,
       endDateMs,
     });
   }
 
-  async #fetchCanonicalUtcHistorical({ providerSymbol, timeframe, sourceTimeframe, limit, endDateMs: initialEndDateMs = null }) {
+  async #fetchCanonicalUtcHistorical({ providerSymbol, requestedProviderSymbol = providerSymbol, timeframe, sourceTimeframe, limit, endDateMs: initialEndDateMs = null }) {
     const barsPerTarget = canonicalSourceBarsPerTarget(timeframe);
     if (!barsPerTarget) return [];
 
@@ -270,6 +439,7 @@ class TwelveDataAdapter extends EventEmitter {
       const pageSize = Math.min(5000, remaining);
       const chunk = await this.#fetchTimeSeries({
         providerSymbol,
+        requestedProviderSymbol,
         timeframe: sourceTimeframe,
         limit: pageSize,
         endDateMs,
@@ -290,7 +460,7 @@ class TwelveDataAdapter extends EventEmitter {
     return aggregateCanonicalUtcBars([...sourceByTime.values()], timeframe).slice(-limit);
   }
 
-  async #fetchTimeSeries({ providerSymbol, timeframe, limit, endDateMs = null }) {
+  async #fetchTimeSeries({ providerSymbol, requestedProviderSymbol = providerSymbol, timeframe, limit, endDateMs = null }) {
     const interval = TWELVE_DATA_HISTORY_INTERVALS[timeframe];
     if (!interval) return [];
 
@@ -307,10 +477,18 @@ class TwelveDataAdapter extends EventEmitter {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
     try {
-      const response = await fetch(`${this.apiBase}/time_series?${params}`, { signal: controller.signal });
+      const response = await this.fetchImpl(`${this.apiBase}/time_series?${params}`, { signal: controller.signal });
       const body = await response.json();
       if (!response.ok || body?.status === 'error') {
         const error = new Error(body?.message || `Twelve Data history request failed (${response.status})`);
+        error.statusCode = 502;
+        throw error;
+      }
+
+      const identity = this.subscriptionIdentity.get(requestedProviderSymbol);
+      if (String(identity?.assetClass || '').toUpperCase() === 'INDEX' && !/index/i.test(String(body?.meta?.type || ''))) {
+        const error = new Error(`Twelve Data resolved ${requestedProviderSymbol} as ${body?.meta?.type || 'unknown instrument type'} instead of Index`);
+        error.code = 'TWELVE_DATA_SYMBOL_IDENTITY_MISMATCH';
         error.statusCode = 502;
         throw error;
       }
@@ -334,4 +512,4 @@ class TwelveDataAdapter extends EventEmitter {
   }
 }
 
-module.exports = { TwelveDataAdapter };
+module.exports = { TwelveDataAdapter, chooseIndexSearchMatch, qualifyProviderSymbol };

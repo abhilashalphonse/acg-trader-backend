@@ -53,6 +53,8 @@ class InstrumentRegistry {
         providerSymbol: defaultTwelveDataSymbol(symbol),
         tickSize: null,
         assetClass: null,
+        name: symbol,
+        quoteCurrency: null,
         tradingSessions: Object.freeze([]),
         tradingHolidays: Object.freeze([]),
         timezone: 'UTC',
@@ -91,6 +93,8 @@ class InstrumentRegistry {
       providerSymbol,
       tickSize: decimalToNumber(doc.tickSize),
       assetClass: doc.assetClass || null,
+      name: doc.name || symbol,
+      quoteCurrency: doc.quoteCurrency || null,
       tradingSessions: freezeSessions(doc.tradingSessions),
       tradingHolidays: freezeHolidays(doc.tradingHolidays),
       timezone: String(doc.timezone || 'UTC'),
@@ -133,11 +137,17 @@ class InstrumentRegistry {
   }
 
   providerSubscriptions() {
-    return this.symbols.map(symbol => ({
-      symbol,
-      provider: this.provider(symbol),
-      providerSymbol: this.providerSymbol(symbol),
-    }));
+    return this.symbols.map(symbol => {
+      const instrument = this.get(symbol);
+      return {
+        symbol,
+        provider: instrument?.provider || 'twelve-data',
+        providerSymbol: instrument?.providerSymbol || defaultTwelveDataSymbol(symbol),
+        assetClass: instrument?.assetClass || null,
+        name: instrument?.name || symbol,
+        quoteCurrency: instrument?.quoteCurrency || null,
+      };
+    });
   }
 
   snapshot() {
