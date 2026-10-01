@@ -14,6 +14,7 @@ function createInstrumentIdentityService({ apiKey, apiBase, timeoutMs = 10000, l
 
     const assetClass = String(document.assetClass || '').toUpperCase();
     if (!REMOTE_ASSET_CLASSES.has(assetClass)) return emptyIdentity('UNSUPPORTED');
+    if (isAccelpixOnly(document)) return emptyIdentity('UNSUPPORTED');
 
     const cached = normalizeStoredIdentity(document.identity);
     if (isFreshIdentity(cached)) return cached;
@@ -92,6 +93,13 @@ function createInstrumentIdentityService({ apiKey, apiBase, timeoutMs = 10000, l
   return { resolve };
 }
 
+function isAccelpixOnly(document) {
+  const mappings = document?.providerMappings;
+  const accelpix = mappings instanceof Map ? mappings.get('accelpix') : mappings?.accelpix;
+  const twelveData = mappings instanceof Map ? mappings.get('twelveData') : mappings?.twelveData;
+  return Boolean(accelpix) && !twelveData;
+}
+
 function providerSymbolFor(document) {
   const mappings = document?.providerMappings;
   const mapped = mappings instanceof Map ? mappings.get('twelveData') : mappings?.twelveData;
@@ -145,4 +153,5 @@ module.exports = {
   normalizeStoredIdentity,
   isFreshIdentity,
   providerSymbolFor,
+  isAccelpixOnly,
 };
