@@ -255,3 +255,93 @@ test('normalizes Accelpix float32 price artifacts', () => {
   assert.equal(marketPrice(1174.9000244140625), 1174.9);
   assert.equal(marketPrice(1186.800048828125), 1186.8);
 });
+
+
+test('latest intraday history overlays the current NSE session even when the long range ends yesterday', async () => {
+  const requests = [];
+  const fetchImpl = async url => {
+    const requestUrl = String(url);
+    requests.push(requestUrl);
+    const path = new URL(requestUrl).pathname;
+    const parts = path.split('/').filter(Boolean);
+    const start = parts.at(-3);
+    const end = parts.at(-2);
+    const isSingleDayMinuteRequest = parts.at(-1) === '1' && start === end;
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        if (isSingleDayMinuteRequest) {
+          return [
+            { tkr: 'RELIANCE', td: '2026-10-01 09:15:00', op: 1170, hp: 1172, lp: 1169, cp: 1171, vol: 100 },
+            { tkr: 'RELIANCE', td: '2026-10-01 09:16:00', op: 1171, hp: 1173, lp: 1170, cp: 1172, vol: 120 },
+          ];
+        }
+        return [
+          { tkr: 'RELIANCE', td: '2026-09-30 15:29:00', op: 1160, hp: 1161, lp: 1159, cp: 1160.5, vol: 80 },
+        ];
+      },
+    };
+  };
+
+  const adapter = new AccelpixAdapter({
+    apiKey: 'secret',
+    fetchImpl,
+    clientFactory: () => fakeClient(),
+  });
+
+  const bars = await adapter.fetchHistorical({
+    providerSymbol: 'RELIANCE',
+    timeframe: '1m',
+    limit: 10,
+  });
+
+  assert.equal(requests.length, 2);
+  assert.equal(bars.at(-1).openTimeMs, Date.parse('2026-10-01T03:46:00.000Z'));
+  assert.equal(bars.at(-1).close, 1172);
+});
+
+test('latest D1 history builds today from current-session minute aggregation when EOD has no current day', async () => {
+  const fetchImpl = async url => {
+    const path = new URL(String(url)).pathname;
+    const parts = path.split('/').filter(Boolean);
+    const isMinuteRequest = parts.at(-1) === '1';
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        if (isMinuteRequest) {
+          return [
+            { tkr: 'RELIANCE', td: '2026-10-01 09:15:00', op: 1170, hp: 1172, lp: 1169, cp: 1171, vol: 100 },
+            { tkr: 'RELIANCE', td: '2026-10-01 10:00:00', op: 1171, hp: 1175, lp: 1170, cp: 1174, vol: 200 },
+          ];
+        }
+        return [
+          { tkr: 'RELIANCE', td: '2026-09-30 00:00:00', op: 1160, hp: 1170, lp: 1150, cp: 1165, vol: 1000 },
+        ];
+      },
+    };
+  };
+
+  const adapter = new AccelpixAdapter({
+    apiKey: 'secret',
+    fetchImpl,
+    clientFactory: () => fakeClient(),
+  });
+
+  const bars = await adapter.fetchHistorical({
+    providerSymbol: 'RELIANCE',
+    timeframe: '1d',
+    limit: 10,
+  });
+
+  const today = bars.find(bar => bar.openTimeMs === Date.parse('2026-10-01T00:00:00.000Z'));
+  assert.ok(today);
+  assert.equal(today.open, 1170);
+  assert.equal(today.high, 1175);
+  assert.equal(today.low, 1169);
+  assert.equal(today.close, 1174);
+  assert.equal(today.providerVolume, 300);
+});

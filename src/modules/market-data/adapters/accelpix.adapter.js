@@ -165,6 +165,41 @@ function aggregateNseIntradayBars(sourceBars, timeframe) {
   return [...buckets.values()].sort((a, b) => a.openTimeMs - b.openTimeMs);
 }
 
+function mergeBarsByOpenTime(baseBars, overlayBars) {
+  const byTime = new Map();
+  for (const bar of Array.isArray(baseBars) ? baseBars : []) {
+    if (Number.isFinite(Number(bar?.openTimeMs))) byTime.set(Number(bar.openTimeMs), { ...bar });
+  }
+  for (const bar of Array.isArray(overlayBars) ? overlayBars : []) {
+    if (Number.isFinite(Number(bar?.openTimeMs))) byTime.set(Number(bar.openTimeMs), { ...bar });
+  }
+  return [...byTime.values()].sort((a, b) => a.openTimeMs - b.openTimeMs);
+}
+
+function nseTradingDateUtcMidnight(timeMs) {
+  const local = new Date(Number(timeMs) + IST_OFFSET_MS);
+  return Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
+}
+
+function aggregateCurrentNseDailyBar(minuteBars) {
+  const bars = (Array.isArray(minuteBars) ? minuteBars : [])
+    .filter(bar => Number.isFinite(Number(bar?.openTimeMs)))
+    .sort((a, b) => a.openTimeMs - b.openTimeMs);
+  if (!bars.length) return null;
+
+  return {
+    openTimeMs: nseTradingDateUtcMidnight(bars[0].openTimeMs),
+    open: bars[0].open,
+    high: Math.max(...bars.map(bar => bar.high)),
+    low: Math.min(...bars.map(bar => bar.low)),
+    close: bars[bars.length - 1].close,
+    providerVolume: bars.reduce((sum, bar) => {
+      const volume = nonNegativeNumber(bar.providerVolume);
+      return volume == null ? sum : sum + volume;
+    }, 0),
+  };
+}
+
 function aggregateWeeklyEodBars(sourceBars) {
   const buckets = new Map();
   for (const bar of sourceBars) {
@@ -522,6 +557,29 @@ class AccelpixAdapter extends EventEmitter {
     return ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'].includes(timeframe);
   }
 
+  async #fetchHistoryArray(path) {
+    const url = new URL(`${this.scheme}://${this.host}${path}`);
+    url.searchParams.set('api_token', this.apiKey);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
+    try {
+      const response = await this.fetchImpl(url, {
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      });
+      const body = await response.json();
+      if (!response.ok || !Array.isArray(body)) {
+        const error = new Error(`Accelpix history request failed (${response.status})`);
+        error.statusCode = response.status || 502;
+        throw error;
+      }
+      return body;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async fetchHistorical({ providerSymbol, timeframe, limit = 160, beforeMs = null }) {
     if (!this.supportsHistory(timeframe)) return [];
 
@@ -563,40 +621,57 @@ class AccelpixAdapter extends EventEmitter {
       path = `/api/fda/rest/${encodeURIComponent(providerSymbol)}/${start}/${end}`;
     }
 
-    const url = new URL(`${this.scheme}://${this.host}${path}`);
-    url.searchParams.set('api_token', this.apiKey);
+    const body = await this.#fetchHistoryArray(path);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.httpTimeoutMs);
-    try {
-      const response = await this.fetchImpl(url, {
-        headers: { accept: 'application/json' },
-        signal: controller.signal,
-      });
-      const body = await response.json();
-      if (!response.ok || !Array.isArray(body)) {
-        const error = new Error(`Accelpix history request failed (${response.status})`);
-        error.statusCode = response.status || 502;
-        throw error;
+    const sourceTimeframe = intraday ? '1m' : '1d';
+    let sourceBars = body
+      .map(row => mapHistoryRow(row, sourceTimeframe))
+      .filter(Boolean)
+      .filter(bar => cursor == null || bar.openTimeMs < cursor)
+      .sort((a, b) => a.openTimeMs - b.openTimeMs);
+
+    // Accelpix documents current-day minute history as live tick aggregation,
+    // but large historical ranges can be served from a historical cache before
+    // the current session has been folded in. Always request the current NSE
+    // trading date separately on the latest page and overlay it. This guarantees
+    // that today's bars are present from 09:15 IST onward instead of ending at
+    // the previous trading day.
+    if (cursor == null) {
+      try {
+        const currentDate = ymdInIst(endMs);
+        const liveRows = await this.#fetchHistoryArray(
+          `/api/fda/rest/${encodeURIComponent(providerSymbol)}/${currentDate}/${currentDate}/1`,
+        );
+        const liveMinuteBars = liveRows
+          .map(row => mapHistoryRow(row, '1m'))
+          .filter(Boolean)
+          .sort((a, b) => a.openTimeMs - b.openTimeMs);
+
+        if (liveMinuteBars.length) {
+          if (intraday) {
+            sourceBars = mergeBarsByOpenTime(sourceBars, liveMinuteBars);
+          } else {
+            const currentDay = aggregateCurrentNseDailyBar(liveMinuteBars);
+            if (currentDay) sourceBars = mergeBarsByOpenTime(sourceBars, [currentDay]);
+          }
+        }
+      } catch (error) {
+        // Do not make the whole chart unavailable when only the current-session
+        // overlay fails. The websocket candle remains available as a fallback.
+        this.logger?.warn?.(
+          { err: error, providerSymbol, timeframe },
+          'Accelpix current-day candle overlay failed',
+        );
       }
-
-      const sourceTimeframe = intraday ? '1m' : '1d';
-      const sourceBars = body
-        .map(row => mapHistoryRow(row, sourceTimeframe))
-        .filter(Boolean)
-        .filter(bar => cursor == null || bar.openTimeMs < cursor)
-        .sort((a, b) => a.openTimeMs - b.openTimeMs);
-
-      const bars = intraday
-        ? aggregateNseIntradayBars(sourceBars, timeframe)
-        : timeframe === '1w'
-          ? aggregateWeeklyEodBars(sourceBars)
-          : sourceBars;
-
-      return bars.slice(-safeLimit);
-    } finally {
-      clearTimeout(timeout);
     }
+
+    const bars = intraday
+      ? aggregateNseIntradayBars(sourceBars, timeframe)
+      : timeframe === '1w'
+        ? aggregateWeeklyEodBars(sourceBars)
+        : sourceBars;
+
+    return bars.slice(-safeLimit);
   }
 }
 
@@ -608,5 +683,7 @@ module.exports = {
   nseIntradayBucketOpenTimeMs,
   aggregateNseIntradayBars,
   aggregateWeeklyEodBars,
+  aggregateCurrentNseDailyBar,
+  mergeBarsByOpenTime,
   marketPrice,
 };
