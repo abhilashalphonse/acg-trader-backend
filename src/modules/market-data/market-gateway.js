@@ -63,7 +63,7 @@ class MarketGateway {
     this.adapter.on('subscription-status', this.onSubscriptionStatus);
     this.adapter.on?.('provider-connection', this.onProviderConnection);
 
-    this.adapter.start(this.instrumentRegistry.providerSubscriptions());
+    await this.adapter.start(this.instrumentRegistry.providerSubscriptions());
     this.staleTimer = setInterval(() => this.#checkQuoteFreshness(), this.staleCheckMs);
     this.staleTimer.unref?.();
   }
