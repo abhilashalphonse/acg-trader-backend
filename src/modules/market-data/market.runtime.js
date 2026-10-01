@@ -13,12 +13,16 @@ const { MarketGateway } = require('./market-gateway');
 const { MarketHistoryService } = require('./history.service');
 const { createMarketWebSocketServer } = require('../../realtime/market-ws-server');
 const { ACG_INSTRUMENT_CATALOG } = require('../instruments/instrument-catalog');
+const { ACG_INDIA_PILOT_CATALOG } = require('../instruments/india-pilot-catalog');
 
 function createMarketRuntime() {
   const eventBus = new EventEmitter();
   eventBus.setMaxListeners(0);
+  const catalogUniverse = env.market.provider === 'multi'
+    ? [...ACG_INSTRUMENT_CATALOG, ...ACG_INDIA_PILOT_CATALOG]
+    : ACG_INSTRUMENT_CATALOG;
   const symbols = env.market.useCatalogUniverse
-    ? ACG_INSTRUMENT_CATALOG.filter(item => item.chartEnabled && item.status === 'ACTIVE').map(item => item.symbol)
+    ? catalogUniverse.filter(item => item.chartEnabled && item.status === 'ACTIVE').map(item => item.symbol)
     : env.market.symbols;
   const instrumentRegistry = new InstrumentRegistry({ symbols: symbols, defaultMaxQuoteAgeMs: env.market.defaultMaxQuoteAgeMs, logger });
   const quoteStore = new QuoteStore();
