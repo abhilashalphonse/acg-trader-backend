@@ -237,6 +237,52 @@ class MarketGateway {
     this.#emitGatewayStatus({ code: event.code, reason: event.reason, recovered });
   }
 
+  #onProviderConnection(event) {
+    const provider = event?.provider;
+    if (!provider || provider === 'multi-provider') return;
+
+    const affectedSymbols = this.instrumentRegistry.providerSubscriptions()
+      .filter(item => item.provider === provider)
+      .map(item => item.symbol);
+
+    if (!affectedSymbols.length) return;
+
+    if (['DISCONNECTED', 'ERROR', 'STOPPED'].includes(event.state)) {
+      this.providerOutages.add(provider);
+      for (const symbol of affectedSymbols) {
+        this.candleEngine.setSymbolLive(symbol, false);
+        this.tickSanityFilter.resetPending(symbol);
+
+        const quote = this.quoteStore.get(symbol);
+        const instrument = this.instrumentRegistry.get(symbol);
+        const ageMs = this.#quoteAgeMs(quote);
+        if (!quote || !instrument || ageMs > instrument.maxQuoteAgeMs) {
+          const staleQuote = this.quoteStore.markStale(symbol, true);
+          if (staleQuote) this.eventBus.emit('market.quote', staleQuote);
+          this.#setSymbolState(symbol, 'DISCONNECTED');
+        }
+      }
+    } else if (event.state === 'LIVE' && this.providerOutages.has(provider)) {
+      this.providerOutages.delete(provider);
+      try {
+        this.onStreamRecovered?.({
+          provider,
+          timestamp: Number(event.timestamp) || Date.now(),
+        });
+      } catch (error) {
+        this.logger?.warn?.({ err: error, provider }, 'Market provider recovery hook failed');
+      }
+    }
+
+    this.eventBus.emit('market.status', {
+      scope: 'provider',
+      provider,
+      state: event.state,
+      timestamp: Number(event.timestamp) || Date.now(),
+      reason: event.reason || '',
+    });
+  }
+
   #onAdapterError(error) {
     const provider = error?.provider || this.adapter.providerName || 'twelve-data';
     this.logger.warn({ err: error, provider }, 'Market-data provider error');
