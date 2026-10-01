@@ -18,7 +18,8 @@ const { ACG_INDIA_PILOT_CATALOG } = require('../instruments/india-pilot-catalog'
 function createMarketRuntime() {
   const eventBus = new EventEmitter();
   eventBus.setMaxListeners(0);
-  const catalogUniverse = env.market.provider === 'multi'
+  const includeIndiaPilot = env.market.provider === 'multi' && env.instrumentCatalogAutoSeed;
+  const catalogUniverse = includeIndiaPilot
     ? [...ACG_INSTRUMENT_CATALOG, ...ACG_INDIA_PILOT_CATALOG]
     : ACG_INSTRUMENT_CATALOG;
   const symbols = env.market.useCatalogUniverse
