@@ -30,7 +30,8 @@
     "pino-http": "^10.5.0",
     "ws": "^8.18.0",
     "zod": "^3.25.76",
-    "pix-apidata": "1.2.8"
+    "@microsoft/signalr": "8.0.29",
+    "@microsoft/signalr-protocol-msgpack": "8.0.29"
   },
   "engines": {
     "node": ">=20"
