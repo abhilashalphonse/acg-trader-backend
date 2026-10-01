@@ -6,7 +6,7 @@ const apidata = require('pix-apidata');
 
 const API_KEY = process.env.ACCELPIX_API_KEY;
 const HOST = process.env.ACCELPIX_HOST || 'apidata.accelpix.in';
-const SYMBOLS = (process.env.ACCELPIX_DIAGNOSTIC_SYMBOLS || 'RELIANCE,RELIANCE-BSE')
+const SYMBOLS = (process.env.ACCELPIX_DIAGNOSTIC_SYMBOLS || 'RELIANCE,TCS,HDFCBANK,INFY,SBIN')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -145,12 +145,12 @@ async function finish() {
       '->', s.lastArrivalMs ? new Date(s.lastArrivalMs).toISOString() : null);
   }
 
-  const nse = stats.get('RELIANCE');
-  const bse = stats.get('RELIANCE-BSE');
-
   console.log('\nChecks:');
-  console.log('NSE realtime packets:', nse && (nse.trade + nse.best + nse.refs) > 0 ? 'PASS' : 'FAIL');
-  console.log('BSE realtime packets:', bse && (bse.trade + bse.best + bse.refs) > 0 ? 'PASS' : 'FAIL');
+  for (const symbol of SYMBOLS) {
+    const s = stats.get(symbol);
+    const live = s && (s.trade + s.best + s.refs) > 0;
+    console.log(`${symbol} realtime packets:`, live ? 'PASS' : 'FAIL');
+  }
   console.log('=============================================\n');
 
   process.exit(0);
