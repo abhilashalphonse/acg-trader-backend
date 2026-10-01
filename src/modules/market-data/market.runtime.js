@@ -50,7 +50,10 @@ function createMarketRuntime() {
     // Any history cached before/during a provider outage can be incomplete.
     // Clear it before clients receive the recovered gateway status so their
     // forced history reconciliation fetches authoritative missing OHLC.
-    onStreamRecovered: () => historyService.clearCache(),
+    onStreamRecovered: () => {
+      historyService.clearCache();
+      candleEngine.invalidateHydration?.();
+    },
   });
   let wsServer = null;
   let started = false;
