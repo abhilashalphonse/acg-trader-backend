@@ -56,6 +56,7 @@ class DayChangeService {
     quoteStore,
     eventBus,
     logger = null,
+    maxConcurrentLoads = 6,
   }) {
     this.adapter = adapter;
     this.instrumentRegistry = instrumentRegistry;
@@ -64,6 +65,9 @@ class DayChangeService {
     this.logger = logger;
     this.cache = new Map();
     this.inFlight = new Map();
+    this.maxConcurrentLoads = Math.max(1, Number(maxConcurrentLoads) || 6);
+    this.activeLoads = 0;
+    this.loadWaiters = [];
   }
 
   decorate(quote) {
@@ -108,8 +112,7 @@ class DayChangeService {
     const existing = this.inFlight.get(canonical);
     if (existing) return existing;
 
-    const task = Promise.resolve()
-      .then(async () => {
+    const task = this.#withLoadSlot(async () => {
         const provider = instrument.provider || 'twelve-data';
         if (!this.adapter.supportsHistory?.('1d', provider)) return null;
 
@@ -148,6 +151,19 @@ class DayChangeService {
 
     this.inFlight.set(canonical, task);
     return task;
+  }
+
+  async #withLoadSlot(work) {
+    if (this.activeLoads >= this.maxConcurrentLoads) {
+      await new Promise(resolve => this.loadWaiters.push(resolve));
+    }
+    this.activeLoads += 1;
+    try {
+      return await work();
+    } finally {
+      this.activeLoads = Math.max(0, this.activeLoads - 1);
+      this.loadWaiters.shift()?.();
+    }
   }
 
   invalidate(symbol = null) {
