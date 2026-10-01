@@ -207,3 +207,43 @@ test('fetchHistorical converts 1-minute IST bars to UTC', async () => {
   assert.equal(bars[0].openTimeMs, Date.parse('2026-10-01T03:45:00.000Z'));
   assert.equal(bars[0].providerVolume, 10000);
 });
+
+
+test('NSE M30 aggregation uses the 09:15 IST session anchor', () => {
+  const bars = [
+    { openTimeMs: Date.parse('2026-10-01T03:45:00.000Z'), open: 100, high: 101, low: 99, close: 100.5, providerVolume: 10 },
+    { openTimeMs: Date.parse('2026-10-01T03:46:00.000Z'), open: 100.5, high: 102, low: 100, close: 101.5, providerVolume: 20 },
+    { openTimeMs: Date.parse('2026-10-01T04:14:00.000Z'), open: 101.5, high: 103, low: 101, close: 102.5, providerVolume: 30 },
+    { openTimeMs: Date.parse('2026-10-01T04:15:00.000Z'), open: 102.5, high: 104, low: 102, close: 103.5, providerVolume: 40 },
+  ];
+
+  assert.equal(
+    nseIntradayBucketOpenTimeMs(Date.parse('2026-10-01T04:02:00.000Z'), '30m'),
+    Date.parse('2026-10-01T03:45:00.000Z'),
+  );
+
+  const aggregated = aggregateNseIntradayBars(bars, '30m');
+  assert.equal(aggregated.length, 2);
+  assert.equal(aggregated[0].openTimeMs, Date.parse('2026-10-01T03:45:00.000Z'));
+  assert.equal(aggregated[0].open, 100);
+  assert.equal(aggregated[0].high, 103);
+  assert.equal(aggregated[0].low, 99);
+  assert.equal(aggregated[0].close, 102.5);
+  assert.equal(aggregated[0].providerVolume, 60);
+});
+
+test('weekly EOD aggregation anchors to Monday', () => {
+  const aggregated = aggregateWeeklyEodBars([
+    { openTimeMs: Date.parse('2026-09-28T00:00:00.000Z'), open: 100, high: 103, low: 99, close: 102, providerVolume: 10 },
+    { openTimeMs: Date.parse('2026-09-29T00:00:00.000Z'), open: 102, high: 105, low: 101, close: 104, providerVolume: 20 },
+    { openTimeMs: Date.parse('2026-10-01T00:00:00.000Z'), open: 104, high: 106, low: 103, close: 105, providerVolume: 30 },
+  ]);
+
+  assert.equal(aggregated.length, 1);
+  assert.equal(aggregated[0].openTimeMs, Date.parse('2026-09-28T00:00:00.000Z'));
+  assert.equal(aggregated[0].open, 100);
+  assert.equal(aggregated[0].high, 106);
+  assert.equal(aggregated[0].low, 99);
+  assert.equal(aggregated[0].close, 105);
+  assert.equal(aggregated[0].providerVolume, 60);
+});
