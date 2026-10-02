@@ -268,6 +268,12 @@ class MarketHistoryService {
     this.historyCache.clear();
   }
 
+  invalidateSeries(symbol, timeframe) {
+    const provider = this.instrumentRegistry.provider?.(symbol) || 'twelve-data';
+    const providerSymbol = this.instrumentRegistry.providerSymbol(symbol);
+    this.historyCache.invalidatePrefix(`${provider}:${providerSymbol}:${timeframe}:`);
+  }
+
   async #loadLocal(symbol, timeframe, limit, beforeMs = null) {
     const filter = { symbol, timeframe, synthetic: mongoose.trusted({ $ne: true }) };
     if (CANONICAL_UTC_HISTORY_SOURCE[timeframe]) {

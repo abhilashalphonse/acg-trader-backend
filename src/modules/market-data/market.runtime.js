@@ -6,6 +6,7 @@ const { logger } = require('../../infrastructure/logger/logger');
 const { InstrumentRegistry } = require('./instrument-registry');
 const { QuoteStore } = require('./quote-store');
 const { CandleEngine } = require('./candle-engine');
+const { ClosedCandleReconciler } = require('./closed-candle-reconciler');
 const { TwelveDataAdapter } = require('./adapters/twelve-data.adapter');
 const { AccelpixAdapter } = require('./adapters/accelpix.adapter');
 const { MultiProviderAdapter } = require('./adapters/multi-provider.adapter');
@@ -39,6 +40,11 @@ function createMarketRuntime() {
     : twelveDataAdapter;
   const candleEngine = new CandleEngine({ eventBus, timeframes: env.market.candleTimeframes, persistTimeframes: env.market.persistTimeframes, flushIntervalMs: env.market.candleFlushIntervalMs, maxSyntheticGapBars: env.market.maxSyntheticGapBars, instrumentRegistry, logger });
   const historyService = new MarketHistoryService({ adapter, instrumentRegistry, persistTimeframes: env.market.persistTimeframes, logger });
+  const closedCandleReconciler = new ClosedCandleReconciler({
+    eventBus, adapter, instrumentRegistry, candleEngine, logger,
+    requestIntervalMs: env.market.closedCandleRequestIntervalMs,
+    invalidateHistory: (symbol, timeframe) => historyService.invalidateSeries(symbol, timeframe),
+  });
   const dayChangeService = new DayChangeService({ adapter, instrumentRegistry, quoteStore, eventBus, logger });
   const gateway = new MarketGateway({
     adapter,
@@ -108,7 +114,9 @@ function createMarketRuntime() {
         logger.warn('Market Gateway is disabled by configuration');
         return;
       }
-      await gateway.start();
+      if (env.market.closedCandleReconciliationEnabled) closedCandleReconciler.start();
+      try { await gateway.start(); }
+      catch (error) { await closedCandleReconciler.stop(); throw error; }
       started = true;
       logger.info({ symbols: symbols, timeframes: env.market.candleTimeframes }, 'ACG Market Gateway started');
     },
@@ -118,6 +126,7 @@ function createMarketRuntime() {
       return wsServer;
     },
     async stop() {
+      await closedCandleReconciler.stop();
       if (wsServer) { await wsServer.close(); wsServer = null; }
       if (env.market.enabled && started) await gateway.stop();
       started = false;
@@ -126,7 +135,7 @@ function createMarketRuntime() {
       const websocket = wsServer?.health?.() || { clients: 0, accountSubscriptions: 0, path: env.market.wsPath };
       const historyCache = historyService.cacheStats?.() || null;
       if (!env.market.enabled) return { enabled: false, state: 'DISABLED', symbols: symbols, websocket, historyCache };
-      return { enabled: true, ...gateway.status(), websocket, historyCache };
+      return { enabled: true, ...gateway.status(), websocket, historyCache, closedCandleReconciliation: closedCandleReconciler.status() };
     },
   };
 }

@@ -69,7 +69,7 @@ class ProviderHistoryCache {
           // A provider disconnect clears the cache while old REST requests may
           // still be resolving. Never let a pre-outage response repopulate the
           // post-recovery cache after that invalidation.
-          if (bars.length && loadGeneration === this.generation) {
+          if (bars.length && loadGeneration === this.generation && this.inFlight.get(cacheKey)?.promise === promise) {
             this.#set(cacheKey, timeframe, requestedLimit, bars);
           }
           return bars;
@@ -102,6 +102,12 @@ class ProviderHistoryCache {
     this.entries.clear();
     this.inFlight.clear();
     this.totalBars = 0;
+  }
+
+  invalidatePrefix(prefix) {
+    for (const key of this.entries.keys()) if (key.startsWith(prefix)) this.#delete(key);
+    // Detached requests may finish, but cannot repopulate an invalidated entry.
+    for (const key of this.inFlight.keys()) if (key.startsWith(prefix)) this.inFlight.delete(key);
   }
 
   #get(key, timeframe, limit) {
