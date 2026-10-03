@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isInstrumentSessionOpen, assertInstrumentSessionOpen, sessionAlignedBucketOpenTimeMs } = require('../../src/modules/instruments/session-calendar');
+const { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, sessionAlignedBucketOpenTimeMs } = require('../../src/modules/instruments/session-calendar');
 
 function instrument(overrides = {}) {
   return {
@@ -69,5 +69,24 @@ test('NSE one-hour buckets stay aligned to 09:15 rather than UTC clock hours', (
   assert.equal(
     sessionAlignedBucketOpenTimeMs(nse, tickMs, 60 * 60 * 1000),
     ms('2026-10-01T04:45:00.000Z'), // 10:15 IST
+  );
+});
+
+
+test('candle overlap rejects a fully closed Saturday bar but preserves Sunday reopen boundary', () => {
+  const fxWeek = instrument({
+    tradingSessions: [
+      { days: [0], open: '22:00', close: '23:59' },
+      { days: [1, 2, 3, 4], open: '00:00', close: '23:59' },
+      { days: [5], open: '00:00', close: '22:00' },
+    ],
+  });
+  assert.equal(
+    candleOverlapsInstrumentSession(fxWeek, ms('2026-10-03T12:00:00.000Z'), ms('2026-10-03T12:30:00.000Z')),
+    false,
+  );
+  assert.equal(
+    candleOverlapsInstrumentSession(fxWeek, ms('2026-10-04T20:00:00.000Z'), ms('2026-10-05T00:00:00.000Z')),
+    true,
   );
 });
