@@ -162,6 +162,24 @@ function isSameDayMinuteOpen(minuteOfDay, open, close) {
   return minuteOfDay >= open && minuteOfDay < closeExclusive;
 }
 
+function candleOverlapsInstrumentSession(instrument, openTimeMs, closeTimeMs) {
+  const openMs = Number(openTimeMs);
+  const closeMs = Number(closeTimeMs);
+  if (!Number.isFinite(openMs) || !Number.isFinite(closeMs) || closeMs <= openMs) return true;
+  if (isInstrumentSessionOpen(instrument, openMs)) return true;
+
+  // Session configuration is minute-granular. Probe minute boundaries through
+  // the candle interval so higher-timeframe bars that contain the reopening
+  // (for example Sunday 20:00-00:00 H4) are preserved.
+  const minuteMs = 60 * 1000;
+  const firstWholeMinute = Math.floor(openMs / minuteMs) * minuteMs + minuteMs;
+  for (let probe = firstWholeMinute; probe < closeMs; probe += minuteMs) {
+    if (isInstrumentSessionOpen(instrument, probe)) return true;
+  }
+
+  return isInstrumentSessionOpen(instrument, closeMs - 1);
+}
+
 function parseClock(value) {
   const match = /^(\d{2}):(\d{2})$/.exec(String(value || ''));
   if (!match) return null;
@@ -173,4 +191,4 @@ function parseClock(value) {
 
 function pad(value) { return String(value).padStart(2, '0'); }
 
-module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs };
+module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs };
