@@ -18,7 +18,8 @@
     "audit:funded-risk-policy": "node scripts/audit-funded-risk-policy.js",
     "diagnostic:accelpix": "node diagnostics/accelpix-symbol-master.js",
     "diagnostic:accelpix-history": "node diagnostics/accelpix-history.js",
-    "diagnostic:accelpix-live": "node diagnostics/accelpix-live.js"
+    "diagnostic:accelpix-live": "node diagnostics/accelpix-live.js",
+    "maintenance:closed-session-candles": "node scripts/cleanup-out-of-session-candles.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
