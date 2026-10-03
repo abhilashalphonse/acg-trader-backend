@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { challengeSyncSchema, policyTransitionSchema } = require('../../src/modules/trading/account-control.routes');
+const { challengeSyncSchema, policyTransitionSchema, provisionSchema } = require('../../src/modules/trading/account-control.routes');
 const { serializeAccount } = require('../../src/modules/trading/trading.serializer');
 
 test('challenge sync accepts authoritative Funded risk policy version metadata', () => {
@@ -110,4 +110,51 @@ test('account serialization exposes V2 capabilities only when version and five n
   });
   assert.equal(mismatched.capabilities.fundedV2Confirmed, false);
   assert.equal(mismatched.capabilities.optionalStopLoss, false);
+});
+
+
+test('provisioning contract accepts only the approved trading-permission invariants', () => {
+  const parsed = provisionSchema.parse({
+    externalRef: 'ACG-1:phase:1',
+    ownerExternalRef: 'customer-1',
+    initialBalance: '100000',
+    tradingPermissions: {
+      newsTrading: false,
+      weekendHolding: true,
+      highImpactOnly: true,
+      newsRestrictionBeforeMinutes: 5,
+      newsRestrictionAfterMinutes: 5,
+      closeReduceAlwaysAllowed: true,
+      pendingEntriesBlocked: true,
+      weekendCloseBufferMinutes: 5,
+      weekendBreach: false,
+      carryToMaster: true,
+    },
+  });
+  assert.equal(parsed.tradingPermissions.newsTrading, false);
+  assert.equal(parsed.tradingPermissions.weekendHolding, true);
+  assert.throws(() => provisionSchema.parse({
+    externalRef: 'ACG-2:phase:1',
+    ownerExternalRef: 'customer-2',
+    initialBalance: '100000',
+    tradingPermissions: { newsTrading: false, newsRestrictionBeforeMinutes: 30 },
+  }));
+});
+
+test('account serialization treats missing historical trading permissions as permissive', () => {
+  const serialized = serializeAccount({
+    _id: '507f1f77bcf86cd799439011',
+    accountCode: 'ACG-LEGACY',
+    accountType: 'CHALLENGE',
+    currency: 'USD',
+    leverage: 100,
+    status: 'ACTIVE',
+    tradingEnabled: true,
+    state: {},
+    riskPolicy: {},
+    metadata: new Map(),
+  });
+  assert.equal(serialized.tradingPermissions.newsTrading, true);
+  assert.equal(serialized.tradingPermissions.weekendHolding, true);
+  assert.equal(serialized.tradingPermissions.newsRestrictionBeforeMinutes, 5);
 });
