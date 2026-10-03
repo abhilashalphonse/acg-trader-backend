@@ -155,6 +155,57 @@ test('fills only short missing-candle gaps with synthetic bars when feed continu
 });
 
 
+test('rejects weekend ticks and resumes at Sunday reopen without fabricating closed-session candles', () => {
+  const bus = new EventEmitter();
+  const closed = [];
+  const updates = [];
+  bus.on('market.candle.closed', candle => closed.push(candle));
+  bus.on('market.candle.update', candle => updates.push(candle));
+
+  const fxWeek = [
+    { days: [0], open: '22:00', close: '23:59' },
+    { days: [1, 2, 3, 4], open: '00:00', close: '23:59' },
+    { days: [5], open: '00:00', close: '22:00' },
+  ];
+  const engine = new CandleEngine({
+    eventBus: bus,
+    timeframes: ['30m'],
+    persistTimeframes: [],
+    flushIntervalMs: 100000,
+    maxSyntheticGapBars: 12,
+    instrumentRegistry: alwaysOpenRegistry({ tradingSessions: fxWeek }),
+    logger,
+    persistCandle: async () => {},
+  });
+
+  const fridayLastBar = Date.UTC(2026, 9, 2, 21, 45, 0);
+  engine.processTick(tick(fridayLastBar, 4137.5));
+  engine.flushExpired(Date.UTC(2026, 9, 2, 22, 0, 0));
+
+  assert.equal(closed.length, 1);
+  assert.equal(closed[0].openTimeMs, Date.UTC(2026, 9, 2, 21, 30, 0));
+  assert.equal(engine.getCurrent('EURUSD', '30m'), null);
+
+  const updatesBeforeWeekendTick = updates.length;
+  engine.processTick(tick(Date.UTC(2026, 9, 3, 12, 0, 0), 4137.6));
+  engine.flushExpired(Date.UTC(2026, 9, 3, 18, 0, 0));
+
+  assert.equal(engine.getCurrent('EURUSD', '30m'), null);
+  assert.equal(closed.length, 1);
+  assert.equal(updates.length, updatesBeforeWeekendTick);
+
+  const sundayReopen = Date.UTC(2026, 9, 4, 22, 5, 0);
+  engine.processTick(tick(sundayReopen, 4138.2));
+
+  const reopened = engine.getCurrent('EURUSD', '30m');
+  assert.ok(reopened);
+  assert.equal(reopened.openTimeMs, Date.UTC(2026, 9, 4, 22, 0, 0));
+  assert.equal(reopened.open, 4138.2);
+  assert.equal(reopened.close, 4138.2);
+  assert.equal(reopened.synthetic, false);
+  assert.equal(closed.length, 1);
+});
+
 test('keeps live chart candles on the provider price series when execution midpoint differs', () => {
   const bus = new EventEmitter();
   const engine = createEngine(bus);
