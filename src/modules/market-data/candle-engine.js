@@ -105,6 +105,25 @@ class CandleEngine {
     if (!Number.isFinite(chartPrice)) return;
 
     const symbol = normalizeSymbol(tick.symbol);
+    const instrument = this.instrumentRegistry?.get?.(symbol) || null;
+
+    // Defense in depth: even if a provider or gateway leaks a price message
+    // outside the configured market session, it must never mutate OHLC state.
+    // Mark continuity broken so the first tick after reopen cannot backfill the
+    // closed interval with carry-forward candles.
+    if (instrument) {
+      try {
+        if (!isInstrumentSessionOpen(instrument, tick.timeMs)) {
+          this.setSymbolLive(symbol, false);
+          return;
+        }
+      } catch (error) {
+        this.setSymbolLive(symbol, false);
+        this.logger?.warn?.({ err: error, symbol, timeMs: tick.timeMs }, 'Rejected tick because market-session validation failed');
+        return;
+      }
+    }
+
     const continuityBroken = this.continuityBroken.has(symbol);
     this.symbolFeedLive.set(symbol, true);
 
