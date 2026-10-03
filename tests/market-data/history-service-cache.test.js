@@ -234,3 +234,102 @@ test('cached partial provider bar does not become complete without final data an
     Candle.find = originalFind;
   }
 });
+
+
+test('history filters fully closed weekend bars and keeps the Friday-to-reopen series contiguous', async () => {
+  const restore = stubLocalRows([]);
+  const calls = [];
+  const fxWeek = [
+    { days: [0], open: '22:00', close: '23:59' },
+    { days: [1, 2, 3, 4], open: '00:00', close: '23:59' },
+    { days: [5], open: '00:00', close: '22:00' },
+  ];
+  const instrument = {
+    symbol: 'AUDCAD',
+    configured: true,
+    provider: 'twelve-data',
+    providerSymbol: 'AUD/CAD',
+    status: 'ACTIVE',
+    timezone: 'UTC',
+    tradingSessions: fxWeek,
+    tradingHolidays: [],
+  };
+
+  const service = new MarketHistoryService({
+    adapter: {
+      supportsHistory() { return true; },
+      async fetchHistorical(args) {
+        calls.push(args);
+        return [
+          { openTimeMs: Date.UTC(2026, 9, 2, 21, 30), open: 0.99, high: 0.991, low: 0.989, close: 0.9905, providerVolume: null },
+          { openTimeMs: Date.UTC(2026, 9, 3, 12, 0), open: 0.9905, high: 0.9906, low: 0.9904, close: 0.9905, providerVolume: null },
+          { openTimeMs: Date.UTC(2026, 9, 4, 22, 0), open: 0.991, high: 0.992, low: 0.9908, close: 0.9915, providerVolume: null },
+        ];
+      },
+    },
+    instrumentRegistry: {
+      get() { return instrument; },
+      provider() { return 'twelve-data'; },
+      providerSymbol() { return 'AUD/CAD'; },
+    },
+    historyCache: new ProviderHistoryCache(),
+    logger: { warn() {} },
+  });
+
+  try {
+    const bars = await service.getCandles({ symbol: 'AUDCAD', timeframe: '30m', limit: 10 });
+    assert.deepEqual(bars.map(bar => bar.openTimeMs), [
+      Date.UTC(2026, 9, 2, 21, 30),
+      Date.UTC(2026, 9, 4, 22, 0),
+    ]);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].limit > 11, 'session-aware provider fetch must bridge the closed weekend');
+  } finally {
+    restore();
+  }
+});
+
+test('history preserves a higher-timeframe candle that spans the Sunday reopen', async () => {
+  const restore = stubLocalRows([]);
+  const fxWeek = [
+    { days: [0], open: '22:00', close: '23:59' },
+    { days: [1, 2, 3, 4], open: '00:00', close: '23:59' },
+    { days: [5], open: '00:00', close: '22:00' },
+  ];
+  const instrument = {
+    symbol: 'XAUUSD',
+    configured: true,
+    provider: 'twelve-data',
+    providerSymbol: 'XAU/USD',
+    status: 'ACTIVE',
+    timezone: 'UTC',
+    tradingSessions: fxWeek,
+    tradingHolidays: [],
+  };
+  const service = new MarketHistoryService({
+    adapter: {
+      supportsHistory() { return true; },
+      async fetchHistorical() {
+        return [{
+          openTimeMs: Date.UTC(2026, 9, 4, 20, 0),
+          open: 4300, high: 4310, low: 4290, close: 4305, providerVolume: null,
+        }];
+      },
+    },
+    instrumentRegistry: {
+      get() { return instrument; },
+      provider() { return 'twelve-data'; },
+      providerSymbol() { return 'XAU/USD'; },
+    },
+    historyCache: new ProviderHistoryCache(),
+    logger: { warn() {} },
+  });
+
+  try {
+    const bars = await service.getCandles({ symbol: 'XAUUSD', timeframe: '4h', limit: 10 });
+    assert.equal(bars.length, 1);
+    assert.equal(bars[0].openTimeMs, Date.UTC(2026, 9, 4, 20, 0));
+  } finally {
+    restore();
+  }
+});
