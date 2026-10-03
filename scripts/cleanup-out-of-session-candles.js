@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const { Candle } = require('../src/modules/market-data/candle.model');
 const { Instrument } = require('../src/modules/instruments/instrument.model');
 const { isInstrumentSessionOpen } = require('../src/modules/instruments/session-calendar');
+const { TIMEFRAME_MS } = require('../src/modules/market-data/market.constants');
 
 const BATCH_SIZE = 1000;
 
@@ -18,6 +19,31 @@ function requestedSymbols() {
 
 function summaryKey(row) {
   return `${row.timeframe || 'unknown'}:${row.source || 'unknown'}`;
+}
+
+function candleCloseTimeMs(row, openTimeMs) {
+  const stored = new Date(row?.closeTime).getTime();
+  if (Number.isFinite(stored) && stored > openTimeMs) return stored;
+  const stepMs = TIMEFRAME_MS[row?.timeframe];
+  if (Number.isFinite(stepMs) && stepMs > 0) return openTimeMs + stepMs;
+  return null;
+}
+
+function candleOverlapsOpenSession(instrument, openTimeMs, closeTimeMs) {
+  if (!Number.isFinite(openTimeMs) || !Number.isFinite(closeTimeMs) || closeTimeMs <= openTimeMs) {
+    // Cleanup is intentionally conservative: unknown boundaries are preserved.
+    return true;
+  }
+
+  if (isInstrumentSessionOpen(instrument, openTimeMs)) return true;
+
+  const minuteMs = 60 * 1000;
+  const firstWholeMinute = Math.floor(openTimeMs / minuteMs) * minuteMs + minuteMs;
+  for (let probe = firstWholeMinute; probe < closeTimeMs; probe += minuteMs) {
+    if (isInstrumentSessionOpen(instrument, probe)) return true;
+  }
+
+  return isInstrumentSessionOpen(instrument, closeTimeMs - 1);
 }
 
 async function deleteIds(ids) {
@@ -59,10 +85,13 @@ async function main() {
       let scanned = 0;
       let candidates = 0;
       let deleted = 0;
+      let boundaryOverlapsPreserved = 0;
       let pendingDeleteIds = [];
+      const sampleCandidates = [];
+      const samplePreservedBoundaryCandles = [];
 
       const cursor = Candle.find({ symbol: instrument.symbol })
-        .select('_id openTime timeframe source synthetic')
+        .select('_id openTime closeTime timeframe source synthetic')
         .sort({ _id: 1 })
         .lean()
         .cursor({ batchSize: BATCH_SIZE });
@@ -74,10 +103,32 @@ async function main() {
         const openTimeMs = new Date(row.openTime).getTime();
         if (!Number.isFinite(openTimeMs) || isInstrumentSessionOpen(calendarInstrument, openTimeMs)) continue;
 
+        const closeTimeMs = candleCloseTimeMs(row, openTimeMs);
+        if (candleOverlapsOpenSession(calendarInstrument, openTimeMs, closeTimeMs)) {
+          boundaryOverlapsPreserved += 1;
+          if (samplePreservedBoundaryCandles.length < 5) {
+            samplePreservedBoundaryCandles.push({
+              timeframe: row.timeframe,
+              source: row.source || null,
+              openTime: new Date(openTimeMs).toISOString(),
+              closeTime: Number.isFinite(closeTimeMs) ? new Date(closeTimeMs).toISOString() : null,
+            });
+          }
+          continue;
+        }
+
         candidates += 1;
         summary.outOfSessionCandles += 1;
         const key = summaryKey(row);
         byBucket[key] = (byBucket[key] || 0) + 1;
+        if (sampleCandidates.length < 8) {
+          sampleCandidates.push({
+            timeframe: row.timeframe,
+            source: row.source || null,
+            openTime: new Date(openTimeMs).toISOString(),
+            closeTime: Number.isFinite(closeTimeMs) ? new Date(closeTimeMs).toISOString() : null,
+          });
+        }
 
         if (apply) {
           pendingDeleteIds.push(row._id);
@@ -101,13 +152,16 @@ async function main() {
           scanned,
           candidates,
           deleted,
+          boundaryOverlapsPreserved,
           timezone: instrument.timezone || 'UTC',
           byTimeframeAndSource: byBucket,
+          sampleCandidates,
+          samplePreservedBoundaryCandles,
         };
       }
 
       process.stdout.write(
-        `${instrument.symbol}: scanned=${scanned} outOfSession=${candidates}${apply ? ` deleted=${deleted}` : ''}\n`,
+        `${instrument.symbol}: scanned=${scanned} fullyClosed=${candidates} boundaryPreserved=${boundaryOverlapsPreserved}${apply ? ` deleted=${deleted}` : ''}\n`,
       );
     }
 
@@ -120,7 +174,11 @@ async function main() {
   }
 }
 
-main().catch(error => {
-  console.error(error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(error => {
+    console.error(error);
+    process.exit(1);
+  });
+}
+
+module.exports = { candleCloseTimeMs, candleOverlapsOpenSession };
