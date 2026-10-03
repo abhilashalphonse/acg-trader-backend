@@ -536,7 +536,7 @@ class TwelveDataAdapter extends EventEmitter {
       throw error;
     }
     const resolvedProviderSymbol = this.resolvedProviderSymbols.get(requestedProviderSymbol) || requestedProviderSymbol;
-    const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 160));
+    const safeLimit = Math.max(1, Math.min(5000, Number(limit) || 160));
     const cursor = Number.isFinite(Number(beforeMs)) && Number(beforeMs) > 0
       ? Math.trunc(Number(beforeMs))
       : null;
