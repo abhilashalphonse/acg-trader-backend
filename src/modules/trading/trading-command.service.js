@@ -29,13 +29,33 @@ class TradingCommandService {
         const result = await this.marketOrderService.closeMarketPosition({ accountId, positionId, clientOrderId, volume: null, requestedPrice: null, source: command.source || 'API' });
         results.push({ positionId, status: 'CLOSED', clientOrderId, result });
       } catch (error) {
+        if (error?.code === 'MARKET_SESSION_CLOSED') {
+          results.push({
+            positionId,
+            status: 'SKIPPED_CLOSED_SESSION',
+            clientOrderId,
+            error: { code: error.code, message: error?.message || 'Market session is closed' },
+          });
+          continue;
+        }
+
         this.logger?.warn({ err: error, accountId, positionId, clientOrderId }, 'Close-all could not close a position');
         results.push({ positionId, status: 'FAILED', clientOrderId, error: { code: error?.code || 'COMMAND_FAILED', message: error?.message || 'Position close failed' } });
       }
     }
 
+    const closed = results.filter(item => item.status === 'CLOSED').length;
+    const skipped = results.filter(item => item.status === 'SKIPPED_CLOSED_SESSION').length;
     const failed = results.filter(item => item.status === 'FAILED').length;
-    return { operation: 'CLOSE_ALL', complete: failed === 0, requested: positions.length, closed: positions.length - failed, failed, results };
+    return {
+      operation: 'CLOSE_ALL',
+      complete: closed === positions.length,
+      requested: positions.length,
+      closed,
+      skipped,
+      failed,
+      results,
+    };
   }
 }
 
