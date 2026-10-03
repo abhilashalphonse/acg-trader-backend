@@ -64,3 +64,23 @@ test('protective/system close reasons retain their existing execution path', () 
     }));
   }
 });
+
+
+test('manual session gate does not change missing or operationally inactive instrument close semantics', () => {
+  assert.doesNotThrow(() => assertManualCloseSessionOpen({
+    instrument: null,
+    source: 'WEB',
+    reason: null,
+    nowMs: SATURDAY,
+  }));
+
+  assert.doesNotThrow(() => assertManualCloseSessionOpen({
+    instrument: fxInstrument({
+      status: 'HALTED',
+      tradingSessions: [{ days: [6], open: '00:00', close: '23:59' }],
+    }),
+    source: 'WEB',
+    reason: null,
+    nowMs: SATURDAY,
+  }));
+});
