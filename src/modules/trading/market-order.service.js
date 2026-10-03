@@ -732,8 +732,12 @@ function closeEvents(response, fullClose) {
 function assertManualCloseSessionOpen({ instrument, source = 'API', reason = null, nowMs = Date.now() } = {}) {
   const normalizedSource = String(source || 'API').toUpperCase();
   const isManualClose = reason == null && normalizedSource !== 'SYSTEM';
-  if (!isManualClose) return;
-  assertInstrumentSessionOpen(instrument, nowMs);
+  if (!isManualClose || !instrument) return;
+
+  // This gate is specifically about the configured trading session. Preserve
+  // the existing close behavior for an operationally HALTED/DISABLED
+  // instrument; planMarketClose remains authoritative for other close checks.
+  assertInstrumentSessionOpen({ ...instrument, status: 'ACTIVE' }, nowMs);
 }
 
 function normalizeOpenCommand(command) {
