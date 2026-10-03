@@ -78,7 +78,7 @@ function createAccountControlRouter(runtime, authService) {
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const { limit } = parse(observabilityQuerySchema, req.query || {});
 
-    const [account, openPositions, closedPositions, deals, orders, lifecycle, policyTransitions] = await Promise.all([
+    const [account, openPositions, closedPositions, deals, orders, lifecycle, policyTransitions, tradingPolicyShadowEvents] = await Promise.all([
       runtime.accountControlService.getById(accountId),
       runtime.tradingHistoryService.positions(accountId, { limit, status: 'OPEN' }),
       runtime.tradingHistoryService.positions(accountId, { limit, status: 'CLOSED' }),
@@ -94,6 +94,7 @@ function createAccountControlRouter(runtime, authService) {
         .sort({ createdAt: -1, _id: -1 })
         .limit(limit)
         .lean(),
+      runtime.tradingPermissionPolicyService.listShadowEvents(accountId, { limit }),
     ]);
 
     res.json({
@@ -115,6 +116,23 @@ function createAccountControlRouter(runtime, authService) {
         actorRef: event.actorRef || null,
         metadata: event.metadata instanceof Map ? Object.fromEntries(event.metadata) : (event.metadata || {}),
         createdAt: event.createdAt ? new Date(event.createdAt).toISOString() : null,
+      })),
+      tradingPolicyShadowEvents: tradingPolicyShadowEvents.map(event => ({
+        id: String(event._id),
+        type: event.type,
+        symbol: event.symbol,
+        action: event.action,
+        referenceId: event.referenceId || null,
+        eventId: event.eventId || null,
+        eventTitle: event.eventTitle || null,
+        eventCurrency: event.eventCurrency || null,
+        eventAt: event.eventAt ? new Date(event.eventAt).toISOString() : null,
+        windowFrom: event.windowFrom ? new Date(event.windowFrom).toISOString() : null,
+        windowUntil: event.windowUntil ? new Date(event.windowUntil).toISOString() : null,
+        weekendCloseAt: event.weekendCloseAt ? new Date(event.weekendCloseAt).toISOString() : null,
+        weekendAutoCloseAt: event.weekendAutoCloseAt ? new Date(event.weekendAutoCloseAt).toISOString() : null,
+        enforcementEnabled: event.enforcementEnabled === true,
+        observedAt: event.observedAt ? new Date(event.observedAt).toISOString() : null,
       })),
       policyTransitions: policyTransitions.map(transition => ({
         id: String(transition._id),
