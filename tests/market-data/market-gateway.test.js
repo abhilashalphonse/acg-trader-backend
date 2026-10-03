@@ -28,7 +28,7 @@ class FakeAdapter extends EventEmitter {
   }
 }
 
-function createHarness({ onStreamRecovered = null } = {}) {
+function createHarness({ onStreamRecovered = null, instrumentOverrides = {} } = {}) {
   const adapter = new FakeAdapter();
   const quoteStore = new QuoteStore();
   const eventBus = new EventEmitter();
@@ -49,9 +49,13 @@ function createHarness({ onStreamRecovered = null } = {}) {
     softQuoteAgeMs: 5000,
     maxQuoteAgeMs: 30000,
     spread: { mode: 'SYNTHETIC', fixedPoints: 10, markupPoints: 0 },
+    tradingSessions: [],
+    tradingHolidays: [],
+    timezone: 'UTC',
     status: 'ACTIVE',
     chartEnabled: true,
     executionEnabled: false,
+    ...instrumentOverrides,
   };
   const registry = {
     async load() {},
@@ -181,6 +185,76 @@ test('REST quote recovery never reopens candle continuity or emits a market tick
   assert.equal(recovered.price, 1.102);
   assert.deepEqual(processedTicks.map(tick => tick.price), [1.1]);
   assert.equal(feedStates.at(-1).live, false);
+
+  await gateway.stop();
+});
+
+test('keeps an old provider timestamp as market event time instead of rewriting it to receipt time', async () => {
+  const { adapter, processedTicks, gateway } = createHarness();
+  await gateway.start();
+
+  const providerTime = Date.UTC(2026, 9, 2, 21, 59, 30);
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1,
+    bid: null,
+    ask: null,
+    providerTimestampMs: providerTime,
+    dayVolume: null,
+  });
+
+  assert.equal(processedTicks.length, 1);
+  assert.equal(processedTicks[0].timeMs, providerTime);
+  assert.ok(processedTicks[0].receivedAtMs > providerTime);
+
+  await gateway.stop();
+});
+
+test('closed-session websocket prices remain quotes but never become market ticks or candles', async () => {
+  const fxWeek = [
+    { days: [0], open: '22:00', close: '23:59' },
+    { days: [1, 2, 3, 4], open: '00:00', close: '23:59' },
+    { days: [5], open: '00:00', close: '22:00' },
+  ];
+  const { adapter, quoteStore, eventBus, feedStates, processedTicks, gateway } = createHarness({
+    instrumentOverrides: { tradingSessions: fxWeek, timezone: 'UTC' },
+  });
+  const emittedMarketTicks = [];
+  eventBus.on('market.tick', tick => emittedMarketTicks.push(tick));
+  await gateway.start();
+
+  const saturday = Date.UTC(2026, 9, 3, 12, 0, 0);
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1,
+    bid: null,
+    ask: null,
+    providerTimestampMs: saturday,
+    dayVolume: null,
+  });
+
+  assert.equal(quoteStore.get('EURUSD').price, 1.1);
+  assert.equal(processedTicks.length, 0);
+  assert.equal(emittedMarketTicks.length, 0);
+  assert.equal(feedStates.at(-1).live, false);
+
+  const sundayReopen = Date.UTC(2026, 9, 4, 22, 5, 0);
+  adapter.emit('price', {
+    symbol: 'EURUSD',
+    providerSymbol: 'EUR/USD',
+    price: 1.1001,
+    bid: null,
+    ask: null,
+    providerTimestampMs: sundayReopen,
+    dayVolume: null,
+  });
+
+  assert.equal(processedTicks.length, 1);
+  assert.equal(processedTicks[0].timeMs, sundayReopen);
+  assert.equal(emittedMarketTicks.length, 1);
+  assert.equal(feedStates.at(-1).live, true);
 
   await gateway.stop();
 });
