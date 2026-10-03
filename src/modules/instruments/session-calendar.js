@@ -154,6 +154,72 @@ function sessionAlignedBucketOpenTimeMs(instrument, timeMs, stepMs) {
   return sessionOpenMs + Math.floor((numericTime - sessionOpenMs) / numericStep) * numericStep;
 }
 
+function nextWeekendCloseTimeMs(instrument, nowMs = Date.now()) {
+  if (!instrument) return null;
+  const sessions = Array.isArray(instrument.tradingSessions) ? instrument.tradingSessions : [];
+  if (!sessions.length) return null;
+
+  // A Saturday trading session means there is no normal Friday weekend shutdown
+  // that ACG can safely infer (for example 24/7 crypto). Do not guess.
+  if (sessions.some(session => (session.days || []).map(Number).includes(WEEKDAY.SAT))) return null;
+
+  const timezone = String(instrument.timezone || 'UTC');
+  const local = zonedParts(nowMs, timezone);
+  let daysUntilFriday = (WEEKDAY.FRI - local.weekday + 7) % 7;
+  const baseDate = addLocalCalendarDays(local, daysUntilFriday);
+  const holidays = new Set((instrument.tradingHolidays || []).map(String));
+  const fridayKey = `${baseDate.year}-${pad(baseDate.month)}-${pad(baseDate.day)}`;
+  if (holidays.has(fridayKey)) return null;
+
+  const candidates = [];
+  for (const session of sessions) {
+    const days = Array.isArray(session.days) ? session.days.map(Number) : [];
+    if (!days.includes(WEEKDAY.FRI)) continue;
+    const open = parseClock(session.open);
+    const close = parseClock(session.close);
+    if (open == null || close == null) continue;
+
+    let closeDate = baseDate;
+    let closeHour = Math.floor(close / 60);
+    let closeMinute = close % 60;
+    if (open > close) closeDate = addLocalCalendarDays(baseDate, 1);
+    if (close === 23 * 60 + 59) {
+      closeDate = addLocalCalendarDays(baseDate, 1);
+      closeHour = 0;
+      closeMinute = 0;
+    }
+
+    let candidate = zonedDateTimeToUtcMs({
+      year: closeDate.year,
+      month: closeDate.month,
+      day: closeDate.day,
+      hour: closeHour,
+      minute: closeMinute,
+    }, timezone);
+
+    if (candidate <= nowMs && daysUntilFriday === 0) {
+      const nextFriday = addLocalCalendarDays(baseDate, 7);
+      let nextCloseDate = nextFriday;
+      if (open > close || close === 23 * 60 + 59) nextCloseDate = addLocalCalendarDays(nextFriday, 1);
+      candidate = zonedDateTimeToUtcMs({
+        year: nextCloseDate.year,
+        month: nextCloseDate.month,
+        day: nextCloseDate.day,
+        hour: close === 23 * 60 + 59 ? 0 : Math.floor(close / 60),
+        minute: close === 23 * 60 + 59 ? 0 : close % 60,
+      }, timezone);
+    }
+    candidates.push(candidate);
+  }
+
+  return candidates.length ? Math.max(...candidates.filter(Number.isFinite)) : null;
+}
+
+function addLocalCalendarDays(parts, days) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + Number(days || 0)));
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+}
+
 function isSameDayMinuteOpen(minuteOfDay, open, close) {
   // Session configuration is minute-granular and cannot represent 24:00.
   // Treat 23:59 as the end-of-day sentinel so an intended all-day session
@@ -191,4 +257,4 @@ function parseClock(value) {
 
 function pad(value) { return String(value).padStart(2, '0'); }
 
-module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs };
+module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs, nextWeekendCloseTimeMs };
