@@ -41,6 +41,7 @@ class MarketGateway {
 
     this.connectionState = MARKET_CONNECTION_STATES.DISCONNECTED;
     this.symbolStates = new Map(this.symbols.map(symbol => [symbol, 'WAITING']));
+    this.sessionStates = new Map();
     this.sequences = new Map(this.symbols.map(symbol => [symbol, 0]));
     this.priorityRefs = new Map();
     this.recoveryInFlight = new Map();
@@ -207,6 +208,7 @@ class MarketGateway {
           provider: this.instrumentRegistry.provider?.(symbol) || 'twelve-data',
           providerSymbol: this.instrumentRegistry.providerSymbol(symbol),
           configured: Boolean(instrument?.configured),
+          sessionOpen: this.#sessionOpenAt(instrument, now),
           lastReceivedAt: quote?.receivedAtMs ? new Date(quote.receivedAtMs).toISOString() : null,
           ageMs: quote?.receivedAtMs ? Math.max(0, now - quote.receivedAtMs) : null,
           softQuoteAgeMs: instrument?.softQuoteAgeMs ?? null,
@@ -441,6 +443,10 @@ class MarketGateway {
     const sequence = (this.sequences.get(symbol) || 0) + 1;
     this.sequences.set(symbol, sequence);
 
+    // The quote carries the authoritative backend session state for the event
+    // time. Frontends also receive wall-clock session transition events from
+    // #checkQuoteFreshness(), so they do not need to infer exchange calendars.
+    const sessionOpen = this.#sessionOpenAt(instrument, marketTimeMs);
     const baseTick = {
       symbol,
       sequence,
@@ -465,6 +471,7 @@ class MarketGateway {
       isSyntheticSpread: normalizedPrices.isSyntheticSpread,
       dayVolume: raw.dayVolume,
       isStale: false,
+      sessionOpen,
     };
     const tick = Object.freeze(this.dayChangeService?.decorate?.(baseTick) || baseTick);
 
@@ -478,12 +485,6 @@ class MarketGateway {
     // closed. Keep the last quote visible/fresh, but never turn those messages
     // into market ticks or OHLC. The event timestamp is used deliberately so a
     // delayed in-session tick stays attached to its real market time.
-    let sessionOpen = false;
-    try {
-      sessionOpen = isInstrumentSessionOpen(instrument, marketTimeMs);
-    } catch (error) {
-      this.logger?.warn?.({ err: error, symbol, marketTimeMs }, 'Market-session validation failed; treating tick as quote-only');
-    }
 
     // REST latest-price recovery is also quote-only. Neither a REST snapshot
     // nor an out-of-session websocket message may reopen candle continuity.
@@ -513,6 +514,8 @@ class MarketGateway {
       const quote = this.quoteStore.get(symbol);
       const instrument = this.instrumentRegistry.get(symbol);
       if (!instrument) continue;
+
+      this.#syncSessionState(symbol, instrument, now);
 
       if (this.subscriptionErrors.has(symbol)) {
         this.candleEngine.setSymbolLive(symbol, false);
@@ -564,15 +567,48 @@ class MarketGateway {
     return instrument?.softQuoteAgeMs ?? instrument?.maxQuoteAgeMs ?? 5000;
   }
 
+  #sessionOpenAt(instrument, timeMs = Date.now()) {
+    if (!instrument) return false;
+    try {
+      return isInstrumentSessionOpen(instrument, timeMs);
+    } catch (error) {
+      this.logger?.warn?.({ err: error, symbol: instrument?.symbol, timeMs }, 'Market-session validation failed; treating session as closed');
+      return false;
+    }
+  }
+
+  #syncSessionState(symbol, instrument, nowMs = Date.now()) {
+    const sessionOpen = this.#sessionOpenAt(instrument, nowMs);
+    const previous = this.sessionStates.get(symbol);
+    if (previous === sessionOpen) return sessionOpen;
+
+    this.sessionStates.set(symbol, sessionOpen);
+    if (!sessionOpen) this.candleEngine.setSymbolLive(symbol, false);
+    this.eventBus.emit('market.status', {
+      scope: 'symbol',
+      symbol,
+      state: this.symbolStates.get(symbol) || 'WAITING',
+      sessionOpen,
+      timestamp: nowMs,
+      reason: 'session-transition',
+    });
+    return sessionOpen;
+  }
+
   #setSymbolState(symbol, state) {
     const previous = this.symbolStates.get(symbol);
     if (previous === state) return;
     this.symbolStates.set(symbol, state);
+    const instrument = this.instrumentRegistry.get(symbol);
+    const now = Date.now();
+    const sessionOpen = this.#sessionOpenAt(instrument, now);
+    this.sessionStates.set(symbol, sessionOpen);
     this.eventBus.emit('market.status', {
       scope: 'symbol',
       symbol,
       state,
-      timestamp: Date.now(),
+      sessionOpen,
+      timestamp: now,
     });
   }
 
