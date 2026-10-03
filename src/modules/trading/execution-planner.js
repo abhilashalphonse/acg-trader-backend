@@ -285,6 +285,13 @@ function validateInstrumentForClose(instrument) { if (!instrument) throw new App
 
 function validateQuote(quote, instrument, nowMs) {
   if (!quote) throw new AppError('No live quote is available for this symbol', { statusCode: 503, code: 'QUOTE_UNAVAILABLE' });
+  if (quote.sessionOpen === false) {
+    throw new AppError('Waiting for the first executable quote from the open session', {
+      statusCode: 503,
+      code: 'EXECUTABLE_QUOTE_UNAVAILABLE',
+      details: { reason: 'OUT_OF_SESSION_QUOTE' },
+    });
+  }
   const receivedAtMs = Number(quote.receivedAtMs);
   const maxAgeMs = Number(instrument.maxQuoteAgeMs || 5000);
   const ageMs = Number.isFinite(receivedAtMs) ? Math.max(0, nowMs - receivedAtMs) : Number.POSITIVE_INFINITY;

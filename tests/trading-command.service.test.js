@@ -95,3 +95,41 @@ test('close all reports partial failure without losing successful closes', async
   assert.equal(result.failed, 1);
   assert.equal(result.results[1].error.code, 'STALE_QUOTE');
 });
+
+
+test('close all skips closed-session positions and continues sequentially', async () => {
+  const positions = [
+    basePosition,
+    { ...basePosition, _id: '64b000000000000000000002', symbol: 'XAUUSD' },
+    { ...basePosition, _id: '64b000000000000000000003', symbol: 'GBPUSD' },
+  ];
+  const order = [];
+  const { service, calls } = createService({
+    positions,
+    closeImpl: async command => {
+      order.push(command.positionId);
+      if (command.positionId.endsWith('2')) {
+        const error = new Error('Market session is closed');
+        error.code = 'MARKET_SESSION_CLOSED';
+        throw error;
+      }
+      return { operation: 'CLOSE', position: { id: command.positionId, status: 'CLOSED' } };
+    },
+  });
+
+  const result = await service.closeAllPositions({
+    accountId: basePosition.accountId,
+    clientRequestId: 'close-all-session-aware',
+    source: 'WEB',
+  });
+
+  assert.deepEqual(order, positions.map(position => position._id));
+  assert.equal(calls.close.length, 3);
+  assert.equal(result.complete, false);
+  assert.equal(result.requested, 3);
+  assert.equal(result.closed, 2);
+  assert.equal(result.skipped, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(result.results[1].status, 'SKIPPED_CLOSED_SESSION');
+  assert.equal(result.results[1].error.code, 'MARKET_SESSION_CLOSED');
+});

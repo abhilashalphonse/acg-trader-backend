@@ -236,6 +236,7 @@ test('closed-session websocket prices remain quotes but never become market tick
   });
 
   assert.equal(quoteStore.get('EURUSD').price, 1.1);
+  assert.equal(quoteStore.get('EURUSD').sessionOpen, false);
   assert.equal(processedTicks.length, 0);
   assert.equal(emittedMarketTicks.length, 0);
   assert.equal(feedStates.at(-1).live, false);
@@ -253,6 +254,7 @@ test('closed-session websocket prices remain quotes but never become market tick
 
   assert.equal(processedTicks.length, 1);
   assert.equal(processedTicks[0].timeMs, sundayReopen);
+  assert.equal(quoteStore.get('EURUSD').sessionOpen, true);
   assert.equal(emittedMarketTicks.length, 1);
   assert.equal(feedStates.at(-1).live, true);
 
@@ -517,6 +519,21 @@ test('a real provider price clears a prior subscription-unavailable state', asyn
   assert.equal(gateway.status().symbols[0].state, 'LIVE');
   assert.equal(gateway.status().symbols[0].marketDataAvailable, true);
   assert.equal(gateway.status().symbols[0].subscriptionError, null);
+
+  await gateway.stop();
+});
+
+
+test('gateway status exposes authoritative wall-clock session state', async () => {
+  const { gateway } = createHarness({
+    instrumentOverrides: { tradingSessions: [], timezone: 'UTC' },
+  });
+  await gateway.start();
+
+  const status = gateway.status();
+  assert.equal(status.symbols.length, 1);
+  assert.equal(status.symbols[0].symbol, 'EURUSD');
+  assert.equal(status.symbols[0].sessionOpen, true);
 
   await gateway.stop();
 });
