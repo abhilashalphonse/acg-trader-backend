@@ -54,7 +54,23 @@ function serializeAccount(doc) {
       allowedSymbols: Array.isArray(policy.allowedSymbols) ? policy.allowedSymbols : [],
     },
     challenge: { phase: metadata.phase || metadata.challengePhase || null, status: metadata.challengeStatus || null, externalChallengeId: metadata.challengeId || null, fundedAccountId: metadata.fundedAccountId || null, payoutStatus: metadata.payoutStatus || null, riskPolicyVersion: metadata.riskPolicyVersion || null },
+    tradingPermissions: serializeTradingPermissions(account.tradingPermissions),
     capabilities: accountCapabilities({ account, policy, metadata }),
+  };
+}
+
+function serializeTradingPermissions(value = {}) {
+  return {
+    newsTrading: value?.newsTrading !== false,
+    weekendHolding: value?.weekendHolding !== false,
+    highImpactOnly: value?.highImpactOnly !== false,
+    newsRestrictionBeforeMinutes: Number(value?.newsRestrictionBeforeMinutes ?? 5),
+    newsRestrictionAfterMinutes: Number(value?.newsRestrictionAfterMinutes ?? 5),
+    closeReduceAlwaysAllowed: value?.closeReduceAlwaysAllowed !== false,
+    pendingEntriesBlocked: value?.pendingEntriesBlocked !== false,
+    weekendCloseBufferMinutes: Number(value?.weekendCloseBufferMinutes ?? 5),
+    weekendBreach: value?.weekendBreach === true,
+    carryToMaster: value?.carryToMaster !== false,
   };
 }
 
@@ -83,4 +99,4 @@ function accountCapabilities({ account, policy, metadata }) {
 
 function plain(doc) { return typeof doc?.toObject === 'function' ? doc.toObject({ getters: false, virtuals: false }) : doc; }
 
-module.exports = { serializeOrder, serializeDeal, serializePosition, serializeAccount, decimalString, accountCapabilities };
+module.exports = { serializeOrder, serializeDeal, serializePosition, serializeAccount, serializeTradingPermissions, decimalString, accountCapabilities };
