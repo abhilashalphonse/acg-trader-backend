@@ -24,6 +24,10 @@ test('session calendar opens inside configured weekday session', () => {
   assert.equal(isInstrumentSessionOpen(instrument(), ms('2026-09-17T12:00:00.000Z')), true);
 });
 
+test('23:59 close acts as end-of-day instead of creating a false one-minute closure', () => {
+  assert.equal(isInstrumentSessionOpen(instrument(), ms('2026-09-17T23:59:30.000Z')), true);
+});
+
 test('session calendar closes after Friday cutoff and on weekend', () => {
   assert.equal(isInstrumentSessionOpen(instrument(), ms('2026-09-18T22:30:00.000Z')), false);
   assert.equal(isInstrumentSessionOpen(instrument(), ms('2026-09-19T12:00:00.000Z')), false);
