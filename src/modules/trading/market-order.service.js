@@ -18,6 +18,7 @@ const {
   compareDecimal,
 } = require('../../shared/decimal/decimal');
 const { normalizeSymbol } = require('../market-data/market.utils');
+const { assertInstrumentSessionOpen } = require('../instruments/session-calendar');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { Instrument } = require('../instruments/instrument.model');
 const { Order } = require('./order.model');
@@ -244,6 +245,14 @@ class MarketOrderService {
             'instrument_read',
             () => this.instrumentModel.findOne({ symbol: normalizeSymbol(position.symbol) }).session(session),
           );
+
+          assertManualCloseSessionOpen({
+            instrument,
+            source: normalized.source,
+            reason: normalized.reason,
+            nowMs,
+          });
+
           if (!quoteSnapshot) quoteSnapshot = this.quoteStore.get(position.symbol);
 
           const plan = planMarketClose({
@@ -720,6 +729,17 @@ function closeEvents(response, fullClose) {
   ];
 }
 
+function assertManualCloseSessionOpen({ instrument, source = 'API', reason = null, nowMs = Date.now() } = {}) {
+  const normalizedSource = String(source || 'API').toUpperCase();
+  const isManualClose = reason == null && normalizedSource !== 'SYSTEM';
+  if (!isManualClose || !instrument) return;
+
+  // This gate is specifically about the configured trading session. Preserve
+  // the existing close behavior for an operationally HALTED/DISABLED
+  // instrument; planMarketClose remains authoritative for other close checks.
+  assertInstrumentSessionOpen({ ...instrument, status: 'ACTIVE' }, nowMs);
+}
+
 function normalizeOpenCommand(command) {
   return {
     accountId: String(command?.accountId || '').trim(),
@@ -902,4 +922,5 @@ module.exports = {
   hasExposureLimits,
   serializeOpenExecution,
   marginLevel,
+  assertManualCloseSessionOpen,
 };
