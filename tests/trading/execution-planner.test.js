@@ -113,6 +113,21 @@ test('dynamic execution applies volume-band price adjustment and explicit per-si
   assert.equal(plan.pricingModel, 'ACG_DYNAMIC');
 });
 
+test('market execution waits for an in-session executable quote after reopen', () => {
+  assert.throws(
+    () => planMarketOpen({
+      account: account(),
+      instrument: instrument(),
+      quote: quote({ sessionOpen: false }),
+      side: 'BUY',
+      volume: '1',
+      nowMs: 10_100,
+    }),
+    error => error.code === 'EXECUTABLE_QUOTE_UNAVAILABLE'
+      && error.details?.reason === 'OUT_OF_SESSION_QUOTE',
+  );
+});
+
 test('market execution rejects stale quotes and disabled instruments', () => {
   assert.throws(
     () => planMarketOpen({ account: account(), instrument: instrument(), quote: quote({ isStale: true }), side: 'BUY', volume: '1', nowMs: 10_100 }),
