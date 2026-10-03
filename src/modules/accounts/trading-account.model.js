@@ -30,6 +30,19 @@ const riskPolicySchema = new Schema({
   allowedSymbols: [{ type: String, uppercase: true, trim: true }],
 }, { _id: false });
 
+const tradingPermissionsSchema = new Schema({
+  newsTrading: { type: Boolean, default: true },
+  weekendHolding: { type: Boolean, default: true },
+  highImpactOnly: { type: Boolean, default: true },
+  newsRestrictionBeforeMinutes: { type: Number, default: 5, min: 0, max: 120 },
+  newsRestrictionAfterMinutes: { type: Number, default: 5, min: 0, max: 120 },
+  closeReduceAlwaysAllowed: { type: Boolean, default: true },
+  pendingEntriesBlocked: { type: Boolean, default: true },
+  weekendCloseBufferMinutes: { type: Number, default: 5, min: 0, max: 120 },
+  weekendBreach: { type: Boolean, default: false },
+  carryToMaster: { type: Boolean, default: true },
+}, { _id: false });
+
 const accountStateSchema = new Schema({
   initialBalance: { type: Decimal128, required: true },
   balance: { type: Decimal128, required: true },
@@ -57,6 +70,7 @@ const tradingAccountSchema = new Schema({
 
   state: { type: accountStateSchema, required: true },
   riskPolicy: { type: riskPolicySchema, required: true, default: () => ({}) },
+  tradingPermissions: { type: tradingPermissionsSchema, required: true, default: () => ({}) },
   riskDayKey: { type: String, required: true, index: true },
   riskTimezone: { type: String, default: 'UTC' },
   tradingEnabled: { type: Boolean, default: true, index: true },
@@ -93,4 +107,4 @@ tradingAccountSchema.index({ tenantId: 1, ownerExternalRef: 1, federationEnabled
 
 const TradingAccount = mongoose.models.TradingAccount || mongoose.model('TradingAccount', tradingAccountSchema);
 
-module.exports = { TradingAccount, tradingAccountSchema };
+module.exports = { TradingAccount, tradingAccountSchema, tradingPermissionsSchema };

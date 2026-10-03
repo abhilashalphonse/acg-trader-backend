@@ -92,6 +92,7 @@ class AccountControlService {
             provisioningContractHash: input.provisioningContractHash,
             state: buildInitialState(input.initialBalance),
             riskPolicy: input.riskPolicy,
+            tradingPermissions: input.tradingPermissions,
             riskDayKey: input.riskDayKey,
             riskTimezone: input.riskTimezone,
             metadata: input.metadata,
@@ -805,6 +806,7 @@ function normalizeProvisionCommand(command) {
   const riskTimezone = String(command?.riskTimezone || 'UTC').trim() || 'UTC';
   const provisionDayKey = dayKeyInTimezone(new Date(), riskTimezone);
   const riskPolicy = normalizeRiskPolicy(command?.riskPolicy);
+  const tradingPermissions = normalizeTradingPermissions(command?.tradingPermissions);
   const metadata = normalizeMetadata(command?.metadata);
   const input = {
     tenantId,
@@ -818,6 +820,7 @@ function normalizeProvisionCommand(command) {
     initialBalance,
     activate: command?.activate !== false,
     riskPolicy,
+    tradingPermissions,
     riskDayKey: String(command?.riskDayKey || provisionDayKey).trim(),
     riskTimezone,
     metadata,
@@ -825,6 +828,21 @@ function normalizeProvisionCommand(command) {
   input.provisioningContractHash = provisioningContractHash(input);
   return input;
 }
+function normalizeTradingPermissions(value = {}) {
+  return {
+    newsTrading: value?.newsTrading !== false,
+    weekendHolding: value?.weekendHolding !== false,
+    highImpactOnly: true,
+    newsRestrictionBeforeMinutes: 5,
+    newsRestrictionAfterMinutes: 5,
+    closeReduceAlwaysAllowed: true,
+    pendingEntriesBlocked: true,
+    weekendCloseBufferMinutes: 5,
+    weekendBreach: false,
+    carryToMaster: true,
+  };
+}
+
 function normalizeRiskPolicy(policy = {}) {
   const dailyLimit = normalizeDecimal(policy?.dailyLoss?.limit ?? '0');
   const maxLimit = normalizeDecimal(policy?.maxLoss?.limit ?? '0');

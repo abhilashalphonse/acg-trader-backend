@@ -13,8 +13,20 @@ const patchNullableDecimal = z.union([z.string().min(1), z.number().finite(), z.
 const limitRule = z.object({ limit: decimalInput, reference: z.string().trim().min(1).max(64).optional() }).strict();
 const riskPolicy = z.object({ dailyLoss: limitRule.optional(), maxLoss: limitRule.optional(), profitTarget: decimalInput.optional(), breachAction: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).optional(), maxOpenPositions: z.number().int().positive().nullable().optional(), maxPositionsPerSymbol: z.number().int().positive().nullable().optional(), maxPendingOrders: z.number().int().positive().nullable().optional(), maxPendingOrdersPerSymbol: z.number().int().positive().nullable().optional(), maxPositionVolume: nullableDecimal, maxSymbolVolume: nullableDecimal, maxTotalVolume: nullableDecimal, maxRiskPerTradePercent: nullableDecimal, maxAggregateRiskPercent: nullableDecimal, maxMarginUsagePercent: nullableDecimal, maxSingleOrderMarginPercentOfFree: nullableDecimal, maxSymbolMarginPercentOfPermitted: nullableDecimal, allowedSymbols: z.array(z.string().trim().min(1).max(32)).optional() }).strict().optional();
 const riskPolicyPatch = z.object({ dailyLoss: limitRule.optional(), maxLoss: limitRule.optional(), profitTarget: decimalInput.optional(), breachAction: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).optional(), maxOpenPositions: z.number().int().positive().nullable().optional(), maxPositionsPerSymbol: z.number().int().positive().nullable().optional(), maxPendingOrders: z.number().int().positive().nullable().optional(), maxPendingOrdersPerSymbol: z.number().int().positive().nullable().optional(), maxPositionVolume: patchNullableDecimal, maxSymbolVolume: patchNullableDecimal, maxTotalVolume: patchNullableDecimal, maxRiskPerTradePercent: patchNullableDecimal, maxAggregateRiskPercent: patchNullableDecimal, maxMarginUsagePercent: patchNullableDecimal, maxSingleOrderMarginPercentOfFree: patchNullableDecimal, maxSymbolMarginPercentOfPermitted: patchNullableDecimal, allowedSymbols: z.array(z.string().trim().min(1).max(32)).optional() }).strict().optional();
+const tradingPermissions = z.object({
+  newsTrading: z.boolean().optional().default(true),
+  weekendHolding: z.boolean().optional().default(true),
+  highImpactOnly: z.literal(true).optional().default(true),
+  newsRestrictionBeforeMinutes: z.literal(5).optional().default(5),
+  newsRestrictionAfterMinutes: z.literal(5).optional().default(5),
+  closeReduceAlwaysAllowed: z.literal(true).optional().default(true),
+  pendingEntriesBlocked: z.literal(true).optional().default(true),
+  weekendCloseBufferMinutes: z.literal(5).optional().default(5),
+  weekendBreach: z.literal(false).optional().default(false),
+  carryToMaster: z.literal(true).optional().default(true),
+}).strict();
 const metadataValue = z.union([z.string(), z.number(), z.boolean()]);
-const provisionSchema = z.object({ externalRef: z.string().trim().min(1).max(256), ownerExternalRef: z.string().trim().min(1).max(256).nullable().optional(), userId: objectId.nullable().optional(), accountCode: z.string().trim().min(1).max(64).optional(), accountType: z.enum(['DEMO', 'CHALLENGE', 'FUNDED']).optional().default('CHALLENGE'), currency: z.string().trim().min(3).max(8).optional().default('USD'), leverage: z.number().int().positive().max(10000).optional().default(100), initialBalance: decimalInput, activate: z.boolean().optional().default(true), riskPolicy, riskDayKey: z.string().trim().min(1).max(32).optional(), riskTimezone: z.string().trim().min(1).max(64).optional().default('UTC'), metadata: z.record(metadataValue).optional() }).strict().superRefine((value, ctx) => { if (!value.ownerExternalRef && !value.userId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ownerExternalRef'], message: 'Either ownerExternalRef or userId is required' }); });
+const provisionSchema = z.object({ externalRef: z.string().trim().min(1).max(256), ownerExternalRef: z.string().trim().min(1).max(256).nullable().optional(), userId: objectId.nullable().optional(), accountCode: z.string().trim().min(1).max(64).optional(), accountType: z.enum(['DEMO', 'CHALLENGE', 'FUNDED']).optional().default('CHALLENGE'), currency: z.string().trim().min(3).max(8).optional().default('USD'), leverage: z.number().int().positive().max(10000).optional().default(100), initialBalance: decimalInput, activate: z.boolean().optional().default(true), riskPolicy, tradingPermissions: tradingPermissions.optional(), riskDayKey: z.string().trim().min(1).max(32).optional(), riskTimezone: z.string().trim().min(1).max(64).optional().default('UTC'), metadata: z.record(metadataValue).optional() }).strict().superRefine((value, ctx) => { if (!value.ownerExternalRef && !value.userId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ownerExternalRef'], message: 'Either ownerExternalRef or userId is required' }); });
 const restrictSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), cancelPending: z.boolean().optional() }).strict();
 const disableSchema = restrictSchema.extend({ liquidate: z.boolean().optional() }).strict();
 const breachSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), action: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).nullable().optional() }).strict();
@@ -37,6 +49,7 @@ const policyTransitionSchema = z.object({
 
 const challengeSyncSchema = z.object({
   riskPolicy: riskPolicyPatch,
+  tradingPermissions: tradingPermissions.optional(),
   dailyStartEquity: decimalInput.optional(),
   riskDayKey: z.string().trim().min(1).max(32).optional(),
   riskTimezone: z.string().trim().min(1).max(64).optional(),
@@ -65,7 +78,7 @@ function createAccountControlRouter(runtime, authService) {
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const { limit } = parse(observabilityQuerySchema, req.query || {});
 
-    const [account, openPositions, closedPositions, deals, orders, lifecycle, policyTransitions] = await Promise.all([
+    const [account, openPositions, closedPositions, deals, orders, lifecycle, policyTransitions, tradingPolicyShadowEvents] = await Promise.all([
       runtime.accountControlService.getById(accountId),
       runtime.tradingHistoryService.positions(accountId, { limit, status: 'OPEN' }),
       runtime.tradingHistoryService.positions(accountId, { limit, status: 'CLOSED' }),
@@ -81,6 +94,7 @@ function createAccountControlRouter(runtime, authService) {
         .sort({ createdAt: -1, _id: -1 })
         .limit(limit)
         .lean(),
+      runtime.tradingPermissionPolicyService.listShadowEvents(accountId, { limit }),
     ]);
 
     res.json({
@@ -102,6 +116,23 @@ function createAccountControlRouter(runtime, authService) {
         actorRef: event.actorRef || null,
         metadata: event.metadata instanceof Map ? Object.fromEntries(event.metadata) : (event.metadata || {}),
         createdAt: event.createdAt ? new Date(event.createdAt).toISOString() : null,
+      })),
+      tradingPolicyShadowEvents: tradingPolicyShadowEvents.map(event => ({
+        id: String(event._id),
+        type: event.type,
+        symbol: event.symbol,
+        action: event.action,
+        referenceId: event.referenceId || null,
+        eventId: event.eventId || null,
+        eventTitle: event.eventTitle || null,
+        eventCurrency: event.eventCurrency || null,
+        eventAt: event.eventAt ? new Date(event.eventAt).toISOString() : null,
+        windowFrom: event.windowFrom ? new Date(event.windowFrom).toISOString() : null,
+        windowUntil: event.windowUntil ? new Date(event.windowUntil).toISOString() : null,
+        weekendCloseAt: event.weekendCloseAt ? new Date(event.weekendCloseAt).toISOString() : null,
+        weekendAutoCloseAt: event.weekendAutoCloseAt ? new Date(event.weekendAutoCloseAt).toISOString() : null,
+        enforcementEnabled: event.enforcementEnabled === true,
+        observedAt: event.observedAt ? new Date(event.observedAt).toISOString() : null,
       })),
       policyTransitions: policyTransitions.map(transition => ({
         id: String(transition._id),
@@ -141,6 +172,7 @@ function createAccountControlRouter(runtime, authService) {
       if (patch.dailyStartEquity !== undefined) doc.state.dailyStartEquity = patch.dailyStartEquity;
       if (patch.riskDayKey !== undefined) doc.riskDayKey = patch.riskDayKey;
       if (patch.riskTimezone !== undefined) doc.riskTimezone = patch.riskTimezone;
+      if (patch.tradingPermissions !== undefined) doc.tradingPermissions = patch.tradingPermissions;
       const metadata = doc.metadata || new Map();
       const metadataPatch = { challengePhase: patch.phase, challengeStatus: patch.challengeStatus, challengeId: patch.challengeId, payoutStatus: patch.payoutStatus, riskPolicyVersion: patch.riskPolicyVersion };
       for (const [key, value] of Object.entries(metadataPatch)) if (value !== undefined) { if (value === null) metadata.delete(key); else metadata.set(key, String(value)); }
@@ -172,4 +204,4 @@ function parseId(value) { const result = objectId.safeParse(value); if (!result.
 function parse(schema, value) { const result = schema.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
 function validationError(error) { return new AppError('Invalid account control command', { statusCode: 400, code: 'INVALID_ACCOUNT_CONTROL_COMMAND', details: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) }); }
 
-module.exports = { createAccountControlRouter, provisionSchema, restrictSchema, disableSchema, breachSchema, closeSchema, flattenSchema, lifecycleQuerySchema, observabilityQuerySchema, challengeSyncSchema, policyTransitionSchema };
+module.exports = { createAccountControlRouter, provisionSchema, tradingPermissions, restrictSchema, disableSchema, breachSchema, closeSchema, flattenSchema, lifecycleQuerySchema, observabilityQuerySchema, challengeSyncSchema, policyTransitionSchema };

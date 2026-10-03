@@ -84,6 +84,7 @@ class PendingOrderService {
     commandQueue = new AccountCommandQueue(),
     idempotencyService = new IdempotencyService(),
     postFillRiskService = null,
+    tradingPermissionPolicyService = null,
     runTransaction = runMongoTransaction,
   }) {
     Object.assign(this, {
@@ -101,6 +102,7 @@ class PendingOrderService {
       commandQueue,
       idempotencyService,
       postFillRiskService,
+      tradingPermissionPolicyService,
       runTransaction,
     });
   }
@@ -267,6 +269,27 @@ class PendingOrderService {
     return this.commandQueue.run(String(accountId), async () => {
       const executionNowMs = Date.now();
       const quoteSnapshot = Object.freeze({ ...tick });
+
+      // Pending entries are exposure-increasing actions. In shadow mode we log
+      // the trigger that would be blocked; once enforcement is explicitly
+      // enabled the order remains pending instead of being rejected.
+      const previewOrder = await this.orderModel.findById(orderId).lean();
+      if (previewOrder && String(previewOrder.accountId) === String(accountId) && ACTIVE_PENDING_STATUSES.includes(previewOrder.status)) {
+        const previewAction = detectPendingOrderAction({ order: previewOrder, tick: quoteSnapshot, nowMs: executionNowMs });
+        if (previewAction?.action === 'FILL' && this.tradingPermissionPolicyService) {
+          const decision = await this.tradingPermissionPolicyService.evaluateExposureIncrease({
+            accountId: String(accountId),
+            symbol: previewOrder.symbol,
+            action: 'PENDING_TRIGGER',
+            referenceId: String(previewOrder._id),
+            nowMs: executionNowMs,
+          });
+          if (!decision.allowed) {
+            return { skipped: true, order: serializeOrder(previewOrder), restriction: decision.status };
+          }
+        }
+      }
+
       const result = await this.runTransaction(async session => {
         const order = await this.orderModel.findById(orderId).session(session);
         if (!order || String(order.accountId) !== String(accountId)) return { skipped: true, order: order ? serializeOrder(order) : null };

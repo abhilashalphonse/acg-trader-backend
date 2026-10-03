@@ -149,6 +149,9 @@ test('normalizeProvisionCommand builds a tenant-scoped challenge account safely'
   assert.equal(command.accountType, 'CHALLENGE');
   assert.equal(command.initialBalance, '100000');
   assert.deepEqual(command.riskPolicy.allowedSymbols, ['EURUSD', 'XAUUSD']);
+  assert.equal(command.tradingPermissions.newsTrading, true);
+  assert.equal(command.tradingPermissions.weekendHolding, true);
+  assert.equal(command.tradingPermissions.newsRestrictionBeforeMinutes, 5);
   assert.equal(buildInitialState('100000').freeMargin, '100000');
 });
 
@@ -926,4 +929,21 @@ test('migrated V1 provisioning replay accepts V2 only when an authorized transit
     error => error.code === 'ACCOUNT_PROVISIONING_CONFLICT'
       && error.details.mismatches.includes('provisioningContract'),
   );
+});
+
+
+test('provision persists explicit account trading permissions without changing product invariants', async () => {
+  const models = createFakeModels();
+  const service = createService(models);
+  const created = await service.provision({
+    tenantId: TENANT_ID,
+    externalRef: 'challenge-permissions',
+    ownerExternalRef: 'user-permissions',
+    initialBalance: '100000',
+    tradingPermissions: { newsTrading: false, weekendHolding: false },
+  });
+  assert.equal(created.account.tradingPermissions.newsTrading, false);
+  assert.equal(created.account.tradingPermissions.weekendHolding, false);
+  assert.equal(created.account.tradingPermissions.closeReduceAlwaysAllowed, true);
+  assert.equal(created.account.tradingPermissions.weekendBreach, false);
 });

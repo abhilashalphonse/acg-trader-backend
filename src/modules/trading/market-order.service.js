@@ -778,7 +778,7 @@ function normalizeSource(source) {
 function normalizeCloseReason(reason) {
   if (reason === null || reason === undefined || reason === '') return null;
   const value = String(reason).toUpperCase();
-  if (!['STOP_LOSS', 'TAKE_PROFIT', 'MARGIN_STOP_OUT'].includes(value)) {
+  if (!['STOP_LOSS', 'TAKE_PROFIT', 'MARGIN_STOP_OUT', 'WEEKEND_HOLDING_POLICY'].includes(value)) {
     throw new AppError('Invalid system close reason', { statusCode: 400, code: 'INVALID_CLOSE_REASON' });
   }
   return value;

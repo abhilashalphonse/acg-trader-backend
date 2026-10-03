@@ -27,6 +27,8 @@ const { RiskStreamService } = require('./risk-stream.service');
 const { PostFillRiskService } = require('./post-fill-risk.service');
 const { BreachCleanupEngine } = require('./breach-cleanup-engine');
 const { MarginStopOutEngine } = require('./margin-stop-out-engine');
+const { TradingPermissionPolicyService } = require('./trading-permission-policy.service');
+const { WeekendHoldingEngine } = require('./weekend-holding.engine');
 
 function createTradingRuntime({ marketRuntime }) {
   const eventBus = marketRuntime.eventBus;
@@ -54,6 +56,7 @@ function createTradingRuntime({ marketRuntime }) {
   const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
   const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
   const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger });
+  const tradingPermissionPolicyService = new TradingPermissionPolicyService({ logger });
   const breachCleanupEngine = new BreachCleanupEngine({ accountControlService, logger });
   const marginStopOutEngine = new MarginStopOutEngine({
     eventBus,
@@ -66,10 +69,18 @@ function createTradingRuntime({ marketRuntime }) {
   });
   const accountLedgerService = new AccountLedgerService({ eventBus, commandQueue, logger });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus, marketOrderService, logger });
-  const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, logger });
+  const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, logger });
   const pendingOrderAmendService = new PendingOrderAmendService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
   const tradingHistoryService = new TradingHistoryService();
   const pendingOrderEngine = new PendingOrderEngine({ eventBus, pendingOrderService, marketPriority, logger });
+  const weekendHoldingEngine = new WeekendHoldingEngine({
+    policyService: tradingPermissionPolicyService,
+    marketOrderService,
+    pendingOrderService,
+    intervalMs: env.tradingPermissions.weekendScanIntervalMs,
+    enforcementEnabled: env.tradingPermissions.weekendEnforcementEnabled,
+    logger,
+  });
   const positionProtectionService = new PositionProtectionService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
   const trailingStopService = new TrailingStopService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
   const trailingStopEngine = new TrailingStopEngine({ eventBus, trailingStopService, logger });
@@ -90,6 +101,7 @@ function createTradingRuntime({ marketRuntime }) {
       await marginStopOutEngine.start();
       await protectionTriggerEngine.start();
       await pendingOrderEngine.start();
+      weekendHoldingEngine.start();
       await trailingStopEngine.start();
 
       started = true;
@@ -98,6 +110,7 @@ function createTradingRuntime({ marketRuntime }) {
     } catch (error) {
       reconciliationService.stopPeriodic();
       await trailingStopEngine.stop().catch(() => undefined);
+      weekendHoldingEngine.stop();
       await pendingOrderEngine.stop().catch(() => undefined);
       await protectionTriggerEngine.stop().catch(() => undefined);
       await marginStopOutEngine.stop().catch(() => undefined);
@@ -117,6 +130,7 @@ function createTradingRuntime({ marketRuntime }) {
 
     // Stop event-driven producers first and wait for their current work.
     await trailingStopEngine.stop();
+    weekendHoldingEngine.stop();
     await pendingOrderEngine.stop();
     await protectionTriggerEngine.stop();
     await marginStopOutEngine.stop();
@@ -150,6 +164,12 @@ function createTradingRuntime({ marketRuntime }) {
       platformEvents: platformEventRelay.health(),
       protection: protectionTriggerEngine.health(),
       pendingOrders: pendingOrderEngine.health(),
+      tradingPermissions: {
+        shadowEnabled: env.tradingPermissions.shadowEnabled,
+        newsEnforcementEnabled: env.tradingPermissions.newsEnforcementEnabled,
+        weekendEnforcementEnabled: env.tradingPermissions.weekendEnforcementEnabled,
+        weekendScannerRunning: Boolean(weekendHoldingEngine.timer),
+      },
       trailing: trailingStopEngine.health(),
       reconciliation,
       capabilities: {
@@ -204,6 +224,9 @@ function createTradingRuntime({ marketRuntime }) {
         recoveryVerification: true,
         propChallengeRiskEngine: true,
         riskEngine: true,
+        tradingPermissionShadowMode: env.tradingPermissions.shadowEnabled,
+        newsTradingPolicy: true,
+        weekendHoldingPolicy: true,
       },
     };
   }
@@ -222,6 +245,8 @@ function createTradingRuntime({ marketRuntime }) {
     platformEventRelay,
     pendingOrderService,
     pendingOrderAmendService,
+    tradingPermissionPolicyService,
+    weekendHoldingEngine,
     tradingHistoryService,
     positionProtectionService,
     trailingStopService,
