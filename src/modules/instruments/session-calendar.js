@@ -28,7 +28,7 @@ function isInstrumentSessionOpen(instrument, nowMs = Date.now()) {
     if (open == null || close == null) continue;
 
     if (open <= close) {
-      if (days.includes(currentDay) && minuteOfDay >= open && minuteOfDay < close) return true;
+      if (days.includes(currentDay) && isSameDayMinuteOpen(minuteOfDay, open, close)) return true;
       continue;
     }
 
@@ -108,7 +108,7 @@ function activeSessionOpenTimeMs(instrument, nowMs) {
     if (open == null || close == null) continue;
 
     if (open <= close) {
-      if (!days.includes(currentDay) || minuteOfDay < open || minuteOfDay >= close) continue;
+      if (!days.includes(currentDay) || !isSameDayMinuteOpen(minuteOfDay, open, close)) continue;
       return zonedDateTimeToUtcMs({
         year: local.year,
         month: local.month,
@@ -152,6 +152,14 @@ function sessionAlignedBucketOpenTimeMs(instrument, timeMs, stepMs) {
   if (!Number.isFinite(sessionOpenMs) || numericTime < sessionOpenMs) return null;
 
   return sessionOpenMs + Math.floor((numericTime - sessionOpenMs) / numericStep) * numericStep;
+}
+
+function isSameDayMinuteOpen(minuteOfDay, open, close) {
+  // Session configuration is minute-granular and cannot represent 24:00.
+  // Treat 23:59 as the end-of-day sentinel so an intended all-day session
+  // does not create a false one-minute closure from 23:59:00 to midnight.
+  const closeExclusive = close === 23 * 60 + 59 ? 24 * 60 : close;
+  return minuteOfDay >= open && minuteOfDay < closeExclusive;
 }
 
 function parseClock(value) {
