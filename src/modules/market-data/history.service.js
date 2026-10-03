@@ -10,6 +10,38 @@ const {
 const { normalizeSymbol, serializeCandle, clampInteger } = require('./market.utils');
 const { AppError } = require('../../shared/errors/app-error');
 const { ProviderHistoryCache } = require('./history-cache');
+const { candleOverlapsInstrumentSession } = require('../instruments/session-calendar');
+
+function historyCalendarInstrument(instrumentRegistry, symbol) {
+  const instrument = instrumentRegistry?.get?.(symbol) || null;
+  if (!instrument || !Array.isArray(instrument.tradingSessions) || !instrument.tradingSessions.length) return null;
+  // Historical validity is based on the configured calendar, not whether the
+  // instrument happens to be operationally halted/disabled right now.
+  return { ...instrument, status: 'ACTIVE' };
+}
+
+function providerFetchLimitForSession(instrument, timeframe, fetchLimit, provider) {
+  const stepMs = TIMEFRAME_MS[timeframe];
+  if (provider !== 'twelve-data' || !instrument || !Number.isFinite(stepMs) || stepMs <= 0) return fetchLimit;
+
+  // Twelve Data may return quiet/flat rows through a closed weekend. Request
+  // enough raw bars to bridge a normal weekend/holiday closure, then discard
+  // closed-session rows before handing history to the chart.
+  const closureBufferMs = 72 * 60 * 60 * 1000;
+  const extraBars = Math.ceil(closureBufferMs / stepMs) + 4;
+  return Math.min(5000, Math.max(fetchLimit, fetchLimit + extraBars));
+}
+
+function filterBarsToTradingSession(bars, instrument, timeframe) {
+  if (!instrument) return Array.isArray(bars) ? bars : [];
+  const stepMs = TIMEFRAME_MS[timeframe];
+  if (!Number.isFinite(stepMs) || stepMs <= 0) return Array.isArray(bars) ? bars : [];
+  return (Array.isArray(bars) ? bars : []).filter(bar => {
+    const openTimeMs = Number(bar?.openTimeMs ?? new Date(bar?.openTime).getTime());
+    if (!Number.isFinite(openTimeMs)) return false;
+    return candleOverlapsInstrumentSession(instrument, openTimeMs, openTimeMs + stepMs);
+  });
+}
 
 function positiveNumber(value) {
   const number = Number(value);
@@ -109,10 +141,17 @@ class MarketHistoryService {
     const cursor = Number.isFinite(Number(beforeMs)) && Number(beforeMs) > 0
       ? Math.trunc(Number(beforeMs))
       : null;
+    const calendarInstrument = historyCalendarInstrument(this.instrumentRegistry, canonical);
     const rows = await this.#loadLocal(canonical, timeframe, fetchLimit, cursor);
-    const localByOpenTime = new Map(rows.map(row => [new Date(row.openTime).getTime(), row]));
+    const filteredLocalRows = filterBarsToTradingSession(
+      rows.map(row => ({ ...row, openTimeMs: new Date(row.openTime).getTime() })),
+      calendarInstrument,
+      timeframe,
+    );
+    const localByOpenTime = new Map(filteredLocalRows.map(row => [Number(row.openTimeMs), row]));
 
     const provider = this.instrumentRegistry.provider?.(canonical) || 'twelve-data';
+    const providerFetchLimit = providerFetchLimitForSession(calendarInstrument, timeframe, fetchLimit, provider);
     if (this.adapter.supportsHistory(timeframe, provider)) {
       try {
         const providerSymbol = this.instrumentRegistry.providerSymbol(canonical);
@@ -127,11 +166,12 @@ class MarketHistoryService {
               provider,
               providerSymbol,
               timeframe,
-              limit: fetchLimit,
+              limit: providerFetchLimit,
               beforeMs: cursor,
             });
             const stepMs = TIMEFRAME_MS[timeframe];
-            return (Array.isArray(bars) ? bars : []).map(bar => ({
+            const sessionBars = filterBarsToTradingSession(bars, calendarInstrument, timeframe);
+            return sessionBars.map(bar => ({
               ...bar,
               snapshotComplete: Number.isFinite(stepMs)
                 ? Number(bar.openTimeMs) + stepMs <= snapshotAtMs
@@ -182,7 +222,7 @@ class MarketHistoryService {
       }
     }
 
-    const orderedLocal = rows.reverse();
+    const orderedLocal = filteredLocalRows.reverse();
     const hasMore = orderedLocal.length > safeLimit;
     const localBars = orderedLocal.slice(-safeLimit);
     const candles = applyVolumeMode(localBars, chooseVolumeMode(localBars, timeframe));
