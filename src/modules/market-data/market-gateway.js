@@ -478,7 +478,12 @@ class MarketGateway {
     // closed. Keep the last quote visible/fresh, but never turn those messages
     // into market ticks or OHLC. The event timestamp is used deliberately so a
     // delayed in-session tick stays attached to its real market time.
-    const sessionOpen = isInstrumentSessionOpen(instrument, marketTimeMs);
+    let sessionOpen = false;
+    try {
+      sessionOpen = isInstrumentSessionOpen(instrument, marketTimeMs);
+    } catch (error) {
+      this.logger?.warn?.({ err: error, symbol, marketTimeMs }, 'Market-session validation failed; treating tick as quote-only');
+    }
 
     // REST latest-price recovery is also quote-only. Neither a REST snapshot
     // nor an out-of-session websocket message may reopen candle continuity.
