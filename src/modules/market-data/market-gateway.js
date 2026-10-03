@@ -4,9 +4,9 @@ const { normalizeSymbol } = require('./market.utils');
 const { MARKET_CONNECTION_STATES } = require('./market.constants');
 const { ExecutionPricingService } = require('./execution-pricing');
 const { TickSanityFilter } = require('./tick-sanity-filter');
+const { isInstrumentSessionOpen } = require('../instruments/session-calendar');
 
 const RECOVERY_COOLDOWN_MS = 2500;
-const MAX_PROVIDER_TIMESTAMP_DRIFT_MS = 5 * 60 * 1000;
 
 class MarketGateway {
   constructor({
@@ -430,10 +430,12 @@ class MarketGateway {
     if (!Number.isFinite(lastPrice) || lastPrice <= 0) return;
 
     const providerTimestampMs = Number(raw.providerTimestampMs);
-    const providerTimeUsable = Number.isFinite(providerTimestampMs)
-      && providerTimestampMs > 0
-      && Math.abs(receivedAtMs - providerTimestampMs) <= MAX_PROVIDER_TIMESTAMP_DRIFT_MS;
-    const marketTimeMs = providerTimeUsable ? Math.trunc(providerTimestampMs) : receivedAtMs;
+    // Provider/event time is authoritative for chart construction whenever it
+    // exists. Never rewrite an old provider event as "now": a stale Friday
+    // tick received on Saturday must not become a Saturday candle.
+    const marketTimeMs = Number.isFinite(providerTimestampMs) && providerTimestampMs > 0
+      ? Math.trunc(providerTimestampMs)
+      : receivedAtMs;
 
     const normalizedPrices = this.#normalizePrices({ ...raw, price: lastPrice }, instrument, receivedAtMs);
     const sequence = (this.sequences.get(symbol) || 0) + 1;
@@ -472,11 +474,16 @@ class MarketGateway {
     const quote = this.quoteStore.set(tick);
     this.#setSymbolState(symbol, 'LIVE');
 
-    // REST latest-price recovery is a point-in-time quote snapshot. It keeps
-    // execution/UI pricing fresh, but it is not a continuous market stream and
-    // therefore must never reopen candle continuity, emit a market tick, or
-    // build synthetic/live OHLC. Only websocket prices may do that.
-    if (quoteOnly) {
+    // Quotes may continue to arrive while the configured trading session is
+    // closed. Keep the last quote visible/fresh, but never turn those messages
+    // into market ticks or OHLC. The event timestamp is used deliberately so a
+    // delayed in-session tick stays attached to its real market time.
+    const sessionOpen = isInstrumentSessionOpen(instrument, marketTimeMs);
+
+    // REST latest-price recovery is also quote-only. Neither a REST snapshot
+    // nor an out-of-session websocket message may reopen candle continuity.
+    if (quoteOnly || !sessionOpen) {
+      if (!sessionOpen) this.candleEngine.setSymbolLive(symbol, false);
       this.eventBus.emit('market.quote', quote);
       return;
     }
