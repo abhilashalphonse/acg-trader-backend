@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, sessionAlignedBucketOpenTimeMs } = require('../../src/modules/instruments/session-calendar');
+const { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, sessionAlignedBucketOpenTimeMs, nextWeekendCloseTimeMs } = require('../../src/modules/instruments/session-calendar');
 
 function instrument(overrides = {}) {
   return {
@@ -89,4 +89,34 @@ test('candle overlap rejects a fully closed Saturday bar but preserves Sunday re
     candleOverlapsInstrumentSession(fxWeek, ms('2026-10-04T20:00:00.000Z'), ms('2026-10-05T00:00:00.000Z')),
     true,
   );
+});
+
+
+test('weekend cutoff resolves the final Friday session close in instrument timezone', () => {
+  const fx = instrument({
+    timezone: 'UTC',
+    tradingSessions: [
+      { days: [1, 2, 3, 4], open: '00:00', close: '23:59' },
+      { days: [5], open: '00:00', close: '22:00' },
+    ],
+  });
+  assert.equal(
+    nextWeekendCloseTimeMs(fx, ms('2026-10-02T12:00:00.000Z')),
+    ms('2026-10-02T22:00:00.000Z'),
+  );
+});
+
+test('weekend cutoff does not infer a forced close for Saturday-trading instruments', () => {
+  const always = instrument({
+    assetClass: 'CRYPTO',
+    tradingSessions: [
+      { days: [0, 1, 2, 3, 4, 5, 6], open: '00:00', close: '23:59' },
+    ],
+  });
+  assert.equal(nextWeekendCloseTimeMs(always, ms('2026-10-02T12:00:00.000Z')), null);
+});
+
+test('weekend cutoff fails safe when Friday is an explicit trading holiday', () => {
+  const value = instrument({ tradingHolidays: ['2026-10-02'] });
+  assert.equal(nextWeekendCloseTimeMs(value, ms('2026-10-02T12:00:00.000Z')), null);
 });
