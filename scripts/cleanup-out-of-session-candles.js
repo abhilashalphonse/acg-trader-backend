@@ -4,7 +4,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const { Candle } = require('../src/modules/market-data/candle.model');
 const { Instrument } = require('../src/modules/instruments/instrument.model');
-const { isInstrumentSessionOpen } = require('../src/modules/instruments/session-calendar');
+const { isInstrumentSessionOpen, candleOverlapsInstrumentSession } = require('../src/modules/instruments/session-calendar');
 const { TIMEFRAME_MS } = require('../src/modules/market-data/market.constants');
 
 const BATCH_SIZE = 1000;
@@ -27,23 +27,6 @@ function candleCloseTimeMs(row, openTimeMs) {
   const stepMs = TIMEFRAME_MS[row?.timeframe];
   if (Number.isFinite(stepMs) && stepMs > 0) return openTimeMs + stepMs;
   return null;
-}
-
-function candleOverlapsOpenSession(instrument, openTimeMs, closeTimeMs) {
-  if (!Number.isFinite(openTimeMs) || !Number.isFinite(closeTimeMs) || closeTimeMs <= openTimeMs) {
-    // Cleanup is intentionally conservative: unknown boundaries are preserved.
-    return true;
-  }
-
-  if (isInstrumentSessionOpen(instrument, openTimeMs)) return true;
-
-  const minuteMs = 60 * 1000;
-  const firstWholeMinute = Math.floor(openTimeMs / minuteMs) * minuteMs + minuteMs;
-  for (let probe = firstWholeMinute; probe < closeTimeMs; probe += minuteMs) {
-    if (isInstrumentSessionOpen(instrument, probe)) return true;
-  }
-
-  return isInstrumentSessionOpen(instrument, closeTimeMs - 1);
 }
 
 async function deleteIds(ids) {
@@ -104,7 +87,7 @@ async function main() {
         if (!Number.isFinite(openTimeMs) || isInstrumentSessionOpen(calendarInstrument, openTimeMs)) continue;
 
         const closeTimeMs = candleCloseTimeMs(row, openTimeMs);
-        if (candleOverlapsOpenSession(calendarInstrument, openTimeMs, closeTimeMs)) {
+        if (candleOverlapsInstrumentSession(calendarInstrument, openTimeMs, closeTimeMs)) {
           boundaryOverlapsPreserved += 1;
           if (samplePreservedBoundaryCandles.length < 5) {
             samplePreservedBoundaryCandles.push({
@@ -181,4 +164,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { candleCloseTimeMs, candleOverlapsOpenSession };
+module.exports = { candleCloseTimeMs, candleOverlapsOpenSession: candleOverlapsInstrumentSession };
