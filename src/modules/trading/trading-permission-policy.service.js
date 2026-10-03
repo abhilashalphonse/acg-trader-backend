@@ -352,8 +352,13 @@ function weekendStatus(instrument, permissions, nowMs = Date.now()) {
 
 function symbolAffectedByEvent(symbol, instrument, event) {
   const normalized = normalizeSymbol(symbol);
+  if (!normalized) return false;
+
+  const title = String(event?.title || '').toLowerCase();
+  if (/crude|petroleum|oil inventories|eia/.test(title) && ['USOIL', 'UKOIL'].includes(normalized)) return true;
+
   const currency = String(event?.currency || '').toUpperCase();
-  if (!normalized || !SUPPORTED_CURRENCIES.has(currency)) return false;
+  if (!SUPPORTED_CURRENCIES.has(currency)) return false;
 
   const assetClass = String(instrument?.assetClass || '').toUpperCase();
   const base = String(instrument?.baseCurrency || '').toUpperCase();
@@ -362,9 +367,6 @@ function symbolAffectedByEvent(symbol, instrument, event) {
   if (assetClass === 'FOREX') return base === currency || quote === currency || normalized.includes(currency);
   if (currency === 'USD' && normalized === 'XAUUSD') return true;
   if (currency === 'USD' && USD_INDEX_SYMBOLS.has(normalized)) return true;
-
-  const title = String(event?.title || '').toLowerCase();
-  if (/crude|petroleum|oil inventories|eia/.test(title) && ['USOIL', 'UKOIL'].includes(normalized)) return true;
   return false;
 }
 
