@@ -59,6 +59,10 @@ class MarketGateway {
   async start() {
     await this.instrumentRegistry.load();
     this.startedAtMs = Date.now();
+    for (const symbol of this.symbols) {
+      const instrument = this.instrumentRegistry.get(symbol);
+      this.sessionStates.set(symbol, this.#sessionOpenAt(instrument, this.startedAtMs));
+    }
     this.candleEngine.start();
 
     this.adapter.on('price', this.onPrice);
