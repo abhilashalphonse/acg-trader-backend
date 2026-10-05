@@ -26,7 +26,7 @@ const tradingPermissions = z.object({
   carryToMaster: z.literal(true).optional().default(true),
 }).strict();
 const metadataValue = z.union([z.string(), z.number(), z.boolean()]);
-const provisionSchema = z.object({ externalRef: z.string().trim().min(1).max(256), ownerExternalRef: z.string().trim().min(1).max(256).nullable().optional(), userId: objectId.nullable().optional(), accountCode: z.string().trim().min(1).max(64).optional(), accountType: z.enum(['DEMO', 'CHALLENGE', 'FUNDED']).optional().default('CHALLENGE'), currency: z.string().trim().min(3).max(8).optional().default('USD'), leverage: z.number().int().positive().max(10000).optional().default(100), initialBalance: decimalInput, activate: z.boolean().optional().default(true), riskPolicy, tradingPermissions: tradingPermissions.optional(), riskDayKey: z.string().trim().min(1).max(32).optional(), riskTimezone: z.string().trim().min(1).max(64).optional().default('UTC'), metadata: z.record(metadataValue).optional() }).strict().superRefine((value, ctx) => { if (!value.ownerExternalRef && !value.userId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ownerExternalRef'], message: 'Either ownerExternalRef or userId is required' }); });
+const provisionSchema = z.object({ externalRef: z.string().trim().min(1).max(256), ownerExternalRef: z.string().trim().min(1).max(256).nullable().optional(), userId: objectId.nullable().optional(), accountCode: z.string().trim().min(1).max(64).optional(), accountType: z.enum(['DEMO', 'CHALLENGE', 'FUNDED']).optional().default('CHALLENGE'), currency: z.string().trim().min(3).max(8).optional().default('USD'), leverage: z.number().int().positive().max(10000).optional().default(100), initialBalance: decimalInput, activate: z.boolean().optional().default(true), riskPolicy, tradingPermissions: tradingPermissions.optional(), tradingPermissionsVersion: z.number().int().positive().optional(), riskDayKey: z.string().trim().min(1).max(32).optional(), riskTimezone: z.string().trim().min(1).max(64).optional().default('UTC'), metadata: z.record(metadataValue).optional() }).strict().superRefine((value, ctx) => { if (!value.ownerExternalRef && !value.userId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ownerExternalRef'], message: 'Either ownerExternalRef or userId is required' }); });
 const restrictSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), cancelPending: z.boolean().optional() }).strict();
 const disableSchema = restrictSchema.extend({ liquidate: z.boolean().optional() }).strict();
 const breachSchema = z.object({ reason: z.string().trim().min(1).max(256).optional(), action: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).nullable().optional() }).strict();
@@ -49,7 +49,7 @@ const policyTransitionSchema = z.object({
 
 const challengeSyncSchema = z.object({
   riskPolicy: riskPolicyPatch,
-  tradingPermissions: tradingPermissions.optional(),
+  tradingPermissions: tradingPermissions.optional(), tradingPermissionsVersion: z.number().int().positive().optional(),
   dailyStartEquity: decimalInput.optional(),
   riskDayKey: z.string().trim().min(1).max(32).optional(),
   riskTimezone: z.string().trim().min(1).max(64).optional(),
