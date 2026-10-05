@@ -1,4 +1,5 @@
 'use strict';
+const { attachPolicyEvidence } = require('./policy-evidence');
 
 const crypto = require('crypto');
 const { AppError } = require('../../shared/errors/app-error');
@@ -17,8 +18,8 @@ const { runMongoTransaction, applyOpenAccountMutation, applyCloseAccountAndPosit
 const { serializeOrder, serializeDeal, serializePosition, serializeAccount } = require('./trading.serializer');
 
 class AtomicReverseService {
-  constructor({ quoteStore, eventBus, valuationEngine, platformEventRelay = null, quoteRecovery = null, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, dealModel = Deal, positionModel = Position, ledgerModel = AccountLedger, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), postFillRiskService = null, runTransaction = runMongoTransaction }) {
-    Object.assign(this, { quoteStore, eventBus, valuationEngine, platformEventRelay, quoteRecovery, logger, accountModel, instrumentModel, orderModel, dealModel, positionModel, ledgerModel, commandQueue, idempotencyService, postFillRiskService, runTransaction });
+  constructor({ quoteStore, eventBus, valuationEngine, platformEventRelay = null, quoteRecovery = null, logger, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, dealModel = Deal, positionModel = Position, ledgerModel = AccountLedger, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), postFillRiskService = null, tradingPermissionPolicyService = null, runTransaction = runMongoTransaction }) {
+    Object.assign(this, { quoteStore, eventBus, valuationEngine, platformEventRelay, quoteRecovery, logger, accountModel, instrumentModel, orderModel, dealModel, positionModel, ledgerModel, commandQueue, idempotencyService, postFillRiskService, tradingPermissionPolicyService, runTransaction });
   }
 
   async reversePosition(command) {
@@ -35,10 +36,11 @@ class AtomicReverseService {
           ? await previewPositionQuery.lean()
           : await previewPositionQuery;
         if (previewPosition?.symbol) quoteSnapshot = await this.#resolveExecutableQuote(previewPosition.symbol, 'atomic-reverse');
-        const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
+          const nowMs = Date.now();
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+          await this.valuationEngine?.ensureAccountRevision?.(account, { session });
           const valuationProjection = this.valuationEngine ? this.valuationEngine.overlayAccountDocument(account, { requireLive: true }) : null;
           const position = await this.positionModel.findById(normalized.positionId).session(session);
           if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
@@ -50,6 +52,7 @@ class AtomicReverseService {
           const quote = quoteSnapshot || this.quoteStore.get(symbol);
           const originalVolume = String(position.openVolume);
           const oppositeSide = String(position.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+          const policyDecision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session, action: 'POSITION_REVERSE', referenceId: normalized.clientRequestId });
           const closePlan = planMarketClose({ account, instrument, quote, position, volume: null, nowMs });
           const close = await this.#persistClose({ account, position, plan: closePlan, quote, normalized, session, nowMs, valuationComplete: valuationProjection ? valuationProjection.complete : true });
           const exposure = hasExposureLimits(account)
@@ -61,7 +64,7 @@ class AtomicReverseService {
             })
             : null;
           const openPlan = planMarketOpen({ account, instrument, quote, side: oppositeSide, volume: originalVolume, stopLoss: normalized.stopLoss, takeProfit: normalized.takeProfit, nowMs, exposure });
-          const open = await this.#persistOpen({ account, plan: openPlan, quote, normalized, session, nowMs });
+          const open = await this.#persistOpen({ account, plan: openPlan, quote, normalized, session, nowMs, policyDecision });
           const response = { operation: 'REVERSE', atomic: true, originalPositionId: normalized.positionId, close, open, position: open.position, account: open.account };
           const completed = await this.idempotencyService.complete(reservation.record._id, { resourceType: 'POSITION', resourceId: open.position.positionId || open.position.id, response }, { session });
           if (!completed) throw new AppError('Idempotency record could not be completed', { statusCode: 409, code: 'IDEMPOTENCY_STATE_CONFLICT' });
@@ -98,12 +101,14 @@ class AtomicReverseService {
     return { order: serializeOrder(order), deal: serializeDeal(deal), position: serializePosition(position), account: serializeAccount(account) };
   }
 
-  async #persistOpen({ account, plan, quote, normalized, session, nowMs }) {
+  async #persistOpen({ account, plan, quote, normalized, session, nowMs, policyDecision }) {
     const now = new Date(nowMs);
     const clientOrderId = childCommandId(normalized.clientRequestId, 'open');
     const order = new this.orderModel({ accountId: account._id, clientOrderId, symbol: plan.symbol, side: plan.side, type: 'MARKET', status: 'FILLED', requestedVolume: plan.volume, filledVolume: plan.volume, stopLoss: plan.stopLoss, takeProfit: plan.takeProfit, requestedPrice: normalized.requestedPrice, acceptedPrice: plan.fillPrice, source: normalized.source, receivedAt: now, acceptedAt: now, filledAt: now });
     const position = new this.positionModel({ accountId: account._id, sourceOrderId: order._id, symbol: plan.symbol, side: plan.side, status: 'OPEN', initialVolume: plan.volume, openVolume: plan.volume, entryPrice: plan.fillPrice, stopLoss: plan.stopLoss, takeProfit: plan.takeProfit, contractSize: plan.contractSize, volumeStep: plan.volumeStep, quoteCurrency: plan.quoteCurrency, margin: plan.requiredMargin, realizedPnl: '0', commissionPaid: plan.commission, swapPaid: '0', openedAt: now });
     const deal = new this.dealModel({ accountId: account._id, orderId: order._id, positionId: position._id, symbol: plan.symbol, side: plan.side, type: 'OPEN', volume: plan.volume, price: plan.fillPrice, requestedPrice: normalized.requestedPrice, slippage: calculateAdverseSlippage({ side: plan.side, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice }), commission: plan.commission, swap: '0', realizedPnl: '0', quoteSequence: plan.quoteSequence, quoteReceivedAt: plan.quoteReceivedAtMs ? new Date(plan.quoteReceivedAtMs) : null, quoteSource: quote?.source || null, executedAt: now });
+    attachPolicyEvidence(order, policyDecision);
+    attachPolicyEvidence(deal, policyDecision);
     applyOpenAccountMutation(account, plan);
     const postFillRisk = this.postFillRiskService
       ? await this.postFillRiskService.evaluateAndApply({ account, order, deal, session, now })

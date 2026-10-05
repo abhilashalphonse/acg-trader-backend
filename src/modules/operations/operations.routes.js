@@ -16,6 +16,11 @@ const reconcileSchema = z.object({
 const listSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
 }).strict();
+const policyControlSchema = z.object({
+  expectedRevision: z.number().int().min(0), newsDisabled: z.boolean().optional(), weekendDisabled: z.boolean().optional(),
+  reason: z.string().trim().min(1).max(500),
+}).strict().refine(value => value.newsDisabled !== undefined || value.weekendDisabled !== undefined, 'At least one control is required');
+const policyMetricsSchema = z.object({ hours: z.coerce.number().int().min(1).max(168).default(24) }).strict();
 const tradeListSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
   cursor: objectId.optional(),
@@ -31,6 +36,21 @@ function createOperationsRouter(runtime, authService) {
   const router = express.Router();
   router.use(requireEnabled(runtime));
   router.use(requireServicePrincipal(authService, 'accounts:write'));
+
+  router.get('/enforcement-control', async (req, res) => {
+    res.json(await runtime.policyControlService.read(req.servicePrincipal.tenantId));
+  });
+  router.patch('/enforcement-control', async (req, res) => {
+    const body = parse(policyControlSchema, req.body || {});
+    res.json(await runtime.policyControlService.update({ ...body, tenantId: req.servicePrincipal.tenantId, actor: req.servicePrincipal.clientId }));
+  });
+  router.get('/weekend-actions/summary', async (req, res) => {
+    res.json(await runtime.weekendActionService.summary(req.servicePrincipal.tenantId));
+  });
+  router.get('/policy-metrics', async (req, res) => {
+    const query = parse(policyMetricsSchema, req.query || {});
+    res.json(await runtime.policyMetricsService.summary(req.servicePrincipal.tenantId, query));
+  });
 
   router.get('/health', (_req, res) => {
     res.json({

@@ -72,6 +72,12 @@ const instrumentSchema = new Schema({
 
   tradingSessions: { type: [sessionSchema], default: [] },
   tradingHolidays: { type: [String], default: [] },
+  scheduleVersion: { type: Number, default: 1, min: 1 },
+  sessionOverrides: { type: [new Schema({
+    date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+    closed: { type: Boolean, default: false },
+    sessions: { type: [sessionSchema], default: [] },
+  }, { _id: false })], default: [] },
   timezone: { type: String, default: 'UTC' },
 
   providerMappings: { type: Map, of: String, default: {} },

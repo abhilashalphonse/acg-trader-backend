@@ -55,6 +55,11 @@ class ProtectionTriggerEngine {
     this.started = false;
   }
 
+  replaceAccountState(accountId, snapshot) {
+    for (const item of [...this.positions.values()]) if (String(item.accountId) === String(accountId)) this.#remove(item);
+    for (const item of snapshot.positions) this.#upsert(item);
+  }
+
   health() {
     return {
       started: this.started,
@@ -132,7 +137,7 @@ class ProtectionTriggerEngine {
       });
       return result;
     } catch (error) {
-      if (['POSITION_NOT_OPEN', 'POSITION_NOT_FOUND'].includes(error?.code)) {
+      if (['POSITION_NOT_OPEN', 'POSITION_NOT_FOUND', 'PROTECTION_TRIGGER_NO_LONGER_ACTIVE'].includes(error?.code)) {
         this.eventBus.emit('protection.skipped', { ...payload, code: error.code });
         return null;
       }

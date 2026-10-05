@@ -65,7 +65,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
     res.json({ service: 'acg-trader-backend', apiVersion: 'v1', status: 'multi_tenant_execution_platform', market: marketRuntime.health(), trading: tradingRuntime.health() });
   });
 
-  app.use('/v1/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
+  app.use(['/v1/auth/login', '/v1/auth/federated/exchange'], rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
   app.use('/v1/auth', createAuthRouter(authService));
   app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));

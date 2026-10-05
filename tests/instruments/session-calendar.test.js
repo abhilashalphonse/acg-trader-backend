@@ -116,7 +116,31 @@ test('weekend cutoff does not infer a forced close for Saturday-trading instrume
   assert.equal(nextWeekendCloseTimeMs(always, ms('2026-10-02T12:00:00.000Z')), null);
 });
 
-test('weekend cutoff fails safe when Friday is an explicit trading holiday', () => {
+test('weekend cutoff uses Thursday final session when Friday is an explicit trading holiday', () => {
   const value = instrument({ tradingHolidays: ['2026-10-02'] });
-  assert.equal(nextWeekendCloseTimeMs(value, ms('2026-10-02T12:00:00.000Z')), null);
+  assert.equal(nextWeekendCloseTimeMs(value, ms('2026-10-01T12:00:00.000Z')), ms('2026-10-02T00:00:00.000Z'));
+});
+
+test('split Friday sessions select this weeks final close after the first session ends', () => {
+  const value = instrument({ tradingSessions: [{ days: [5], open: '09:00', close: '12:00' }, { days: [5], open: '13:00', close: '22:00' }] });
+  assert.equal(nextWeekendCloseTimeMs(value, ms('2026-10-02T21:56:00Z')), ms('2026-10-02T22:00:00Z'));
+});
+
+test('date-specific early close governs the deadline and actual execution session', () => {
+  const value = instrument({ sessionOverrides: [{ date: '2026-10-02', sessions: [{ open: '08:00', close: '13:00' }] }] });
+  assert.equal(nextWeekendCloseTimeMs(value, ms('2026-10-02T12:56:00Z')), ms('2026-10-02T13:00:00Z'));
+  assert.equal(isInstrumentSessionOpen(value, ms('2026-10-02T13:01:00Z')), false);
+});
+
+test('an explicit open override takes precedence over a holiday', () => {
+  const value = instrument({ tradingHolidays: ['2026-10-02'], sessionOverrides: [{ date: '2026-10-02', sessions: [{ open: '08:00', close: '13:00' }] }] });
+  assert.equal(isInstrumentSessionOpen(value, ms('2026-10-02T10:00:00Z')), true);
+  assert.equal(nextWeekendCloseTimeMs(value, ms('2026-10-02T10:00:00Z')), ms('2026-10-02T13:00:00Z'));
+});
+
+test('weekend deadline follows New York daylight-saving changes', () => {
+  const value = instrument({ timezone: 'America/New_York', tradingSessions: [{ days: [1, 2, 3, 4, 5], open: '09:00', close: '17:00' }] });
+  for (const [day, hour] of [['2026-03-06', '22'], ['2026-03-13', '21'], ['2026-10-30', '21'], ['2026-11-06', '22']]) {
+    assert.equal(nextWeekendCloseTimeMs(value, ms(`${day}T12:00:00Z`)), ms(`${day}T${hour}:00:00Z`));
+  }
 });

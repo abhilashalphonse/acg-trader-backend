@@ -1,4 +1,5 @@
 'use strict';
+const { policyMetadata } = require('./policy-evidence');
 
 const mongoose = require('mongoose');
 const {
@@ -19,6 +20,7 @@ const {
 } = require('../../shared/decimal/decimal');
 const { normalizeSymbol } = require('../market-data/market.utils');
 const { assertInstrumentSessionOpen } = require('../instruments/session-calendar');
+const { detectProtectionTrigger } = require('./protection-trigger');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { Instrument } = require('../instruments/instrument.model');
 const { Order } = require('./order.model');
@@ -51,6 +53,7 @@ class MarketOrderService {
     commandQueue = new AccountCommandQueue(),
     idempotencyService = new IdempotencyService(),
     postFillRiskService = null,
+    tradingPermissionPolicyService = null,
     runTransaction = runMongoTransaction,
   }) {
     Object.assign(this, {
@@ -69,6 +72,7 @@ class MarketOrderService {
       commandQueue,
       idempotencyService,
       postFillRiskService,
+      tradingPermissionPolicyService,
       runTransaction,
     });
   }
@@ -106,14 +110,17 @@ class MarketOrderService {
             : null,
         });
 
-        const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
+          const nowMs = Date.now();
           const account = await timeAsync(
             timing,
             'account_read',
             () => this.accountModel.findById(normalized.accountId).session(session),
           );
-          if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+          if (account && this.valuationEngine) {
+            await this.valuationEngine.ensureAccountRevision?.(account, { session });
+            this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+          }
 
           const instrument = await timeAsync(
             timing,
@@ -146,10 +153,14 @@ class MarketOrderService {
             nowMs,
           });
 
+          const policyDecision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session,
+            action: 'MARKET_OPEN', referenceId: normalized.clientOrderId });
+
           return timeAsync(
             timing,
             'persist_total',
             () => this.#persistOpen({
+              policyDecision,
               normalized,
               reservation,
               account,
@@ -172,7 +183,7 @@ class MarketOrderService {
     }
   }
 
-  async closeMarketPosition(command, { timing = null, requestId = null, tenantId = null } = {}) {
+  async closeMarketPosition(command, { timing = null, requestId = null, tenantId = null, weekendClaim = null } = {}) {
     const normalized = normalizeCloseCommand(command);
     const scope = normalized.reason ? 'PROTECTIVE_CLOSE' : 'MARKET_CLOSE';
     setExecutionContext(timing, {
@@ -228,7 +239,9 @@ class MarketOrderService {
             () => this.accountModel.findById(normalized.accountId).session(session),
           );
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+          if (weekendClaim) await this.weekendActionService.fenceExecution(weekendClaim, account, session);
 
+          await this.valuationEngine?.ensureAccountRevision?.(account, { session });
           const valuationProjection = this.valuationEngine
             ? this.valuationEngine.overlayAccountDocument(account, { requireLive: false })
             : null;
@@ -254,6 +267,12 @@ class MarketOrderService {
           });
 
           if (!quoteSnapshot) quoteSnapshot = this.quoteStore.get(position.symbol);
+          if (position.status === 'OPEN' && ['STOP_LOSS', 'TAKE_PROFIT'].includes(normalized.reason)
+            && detectProtectionTrigger({ position, tick: quoteSnapshot })?.reason !== normalized.reason) {
+            throw new AppError('Position protection changed before execution; the trigger no longer applies', {
+              statusCode: 409, code: 'PROTECTION_TRIGGER_NO_LONGER_ACTIVE',
+            });
+          }
 
           const plan = planMarketClose({
             account,
@@ -301,10 +320,11 @@ class MarketOrderService {
     return this.quoteStore.get(symbol);
   }
 
-  async #persistOpen({ normalized, reservation, account, plan, quoteSnapshot, session, nowMs, timing = null }) {
+  async #persistOpen({ normalized, reservation, account, plan, quoteSnapshot, session, nowMs, timing = null, policyDecision }) {
     const now = new Date(nowMs);
     const slippage = calculateAdverseSlippage({ side: plan.side, fillPrice: plan.fillPrice, requestedPrice: normalized.requestedPrice });
     const order = new this.orderModel({
+      metadata: policyMetadata(policyDecision),
       tenantId: account.tenantId,
       accountId: account._id,
       clientOrderId: normalized.clientOrderId,
@@ -345,6 +365,7 @@ class MarketOrderService {
       openedAt: now,
     });
     const deal = new this.dealModel({
+      metadata: policyMetadata(policyDecision),
       tenantId: account.tenantId,
       accountId: account._id,
       orderId: order._id,
@@ -438,7 +459,9 @@ class MarketOrderService {
       positionId: position._id,
       symbol: plan.symbol,
       side: plan.closeSide,
-      type: normalized.reason || plan.dealType,
+      type: normalized.reason === 'WEEKEND_HOLDING_POLICY' ? plan.dealType
+        : normalized.reason === 'MARGIN_STOP_OUT' ? 'LIQUIDATION' : normalized.reason || plan.dealType,
+      metadata: normalized.reason ? { closeReason: normalized.reason } : {},
       volume: plan.volume,
       price: plan.fillPrice,
       requestedPrice: normalized.requestedPrice,

@@ -60,6 +60,19 @@ test('recovers open positions and builds account valuation from current QuoteSto
   await engine.stop();
 });
 
+test('valuing a reconnect snapshot cannot rewind the live execution cache', async () => {
+  const { engine, account, position } = fixture();
+  await engine.start();
+  const live = engine.getAccountSnapshot('a1');
+  const snapshot = engine.valueAccountState({ ...account, state: { ...account.state, balance: '9000' } }, []);
+  assert.equal(snapshot.valuation.balance, '9000');
+  assert.equal(snapshot.valuation.positionCount, 0);
+  assert.deepEqual(snapshot.positionValuations, []);
+  assert.deepEqual(engine.getAccountSnapshot('a1'), live);
+  assert.equal(engine.getPositionSnapshot(position._id).status, 'OPEN');
+  await engine.stop();
+});
+
 test('canonical market ticks revalue positions and accounts without Mongo writes', async () => {
   const { engine, eventBus } = fixture();
   await engine.start();

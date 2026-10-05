@@ -55,6 +55,7 @@ function serializeAccount(doc) {
     },
     challenge: { phase: metadata.phase || metadata.challengePhase || null, status: metadata.challengeStatus || null, externalChallengeId: metadata.challengeId || null, fundedAccountId: metadata.fundedAccountId || null, payoutStatus: metadata.payoutStatus || null, riskPolicyVersion: metadata.riskPolicyVersion || null },
     tradingPermissions: serializeTradingPermissions(account.tradingPermissions),
+    tradingPermissionsVersion: Number(account.tradingPermissionsVersion || 0),
     capabilities: accountCapabilities({ account, policy, metadata }),
   };
 }

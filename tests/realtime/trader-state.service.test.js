@@ -11,6 +11,7 @@ function chain(value) {
   return {
     sort() { return this; },
     limit() { return this; },
+    session() { return this; },
     async lean() { return value; },
   };
 }
@@ -18,7 +19,7 @@ function chain(value) {
 function fixtures({ account = accountFixture() } = {}) {
   const calls = {};
   const accountModel = {
-    findOne(query) { calls.accountQuery = query; return { async lean() { return account; } }; },
+    findOne(query) { calls.accountQuery = query; return chain(account); },
   };
   const orderModel = {
     find(query) { calls.orderQuery = query; return chain([orderFixture()]); },
@@ -30,16 +31,16 @@ function fixtures({ account = accountFixture() } = {}) {
     find(query) { calls.dealQuery = query; return chain([dealFixture()]); },
   };
   const valuationEngine = {
-    async getOrLoadAccountSnapshot(accountId) {
-      calls.valuationAccountId = accountId;
-      return { accountId, balance: '100000', equity: '100125', usedMargin: '250', freeMargin: '99875', floatingPnl: '125', marginLevel: '40050', positionCount: 1, valuationStatus: 'LIVE', complete: true, staleSymbols: [] };
-    },
-    getPositionSnapshot(positionId) {
-      calls.positionValuationId = String(positionId);
-      return { id: String(positionId), accountId: ACCOUNT_ID, symbol: 'EURUSD', closePrice: '1.10125', floatingPnl: '125', valuationStatus: 'LIVE' };
+    valueAccountState(account, positions) {
+      calls.valuationAccountId = account._id;
+      calls.positionValuationId = String(positions[0]._id);
+      return {
+        valuation: { accountId: account._id, balance: '100000', equity: '100125', usedMargin: '250', freeMargin: '99875', floatingPnl: '125', marginLevel: '40050', positionCount: 1, valuationStatus: 'LIVE', complete: true, staleSymbols: [] },
+        positionValuations: [{ id: calls.positionValuationId, accountId: ACCOUNT_ID, symbol: 'EURUSD', closePrice: '1.10125', floatingPnl: '125', valuationStatus: 'LIVE' }],
+      };
     },
   };
-  return { accountModel, orderModel, positionModel, dealModel, valuationEngine, calls };
+  return { accountModel, orderModel, positionModel, dealModel, valuationEngine, calls, readTransaction: work => work({ testSession: true }) };
 }
 
 test('snapshotAccount enforces tenant scope and returns reconnect-complete state', async () => {
@@ -83,6 +84,19 @@ test('snapshotAccounts de-duplicates grants before querying', async () => {
   const snapshots = await service.snapshotAccounts({ tenantId: TENANT_ID, accountIds: [ACCOUNT_ID, ACCOUNT_ID] });
   assert.equal(snapshots.length, 1);
   assert.equal(accountLookups, 1);
+});
+
+test('snapshotAccount uses one transaction for all account, position, order and deal reads', async () => {
+  const f = fixtures();
+  const session = { snapshot: true };
+  let attached = 0;
+  for (const [model, method] of [[f.accountModel, 'findOne'], [f.positionModel, 'find'], [f.orderModel, 'find'], [f.dealModel, 'find']]) {
+    const original = model[method];
+    model[method] = query => { const result = original(query); result.session = value => { assert.equal(value, session); attached++; return result; }; return result; };
+  }
+  f.readTransaction = work => work(session);
+  await new TraderStateService(f).snapshotAccount({ tenantId: TENANT_ID, accountId: ACCOUNT_ID });
+  assert.equal(attached, 4);
 });
 
 function accountFixture() {

@@ -17,14 +17,14 @@ const orderSchema = new Schema({
   side: { type: String, required: true, enum: ORDER_SIDES, immutable: true },
   type: { type: String, required: true, enum: ORDER_TYPES, immutable: true, index: true },
   status: { type: String, required: true, enum: ORDER_STATUSES, default: 'RECEIVED', index: true },
-  requestedVolume: { type: Decimal128, required: true, immutable: true },
+  requestedVolume: { type: Decimal128, required: true },
   filledVolume: { type: Decimal128, required: true, default: '0' },
-  limitPrice: { type: Decimal128, default: null, immutable: true },
-  stopPrice: { type: Decimal128, default: null, immutable: true },
+  limitPrice: { type: Decimal128, default: null },
+  stopPrice: { type: Decimal128, default: null },
   stopLoss: { type: Decimal128, default: null },
   takeProfit: { type: Decimal128, default: null },
-  timeInForce: { type: String, enum: TIME_IN_FORCE, default: 'GTC', immutable: true },
-  expiresAt: { type: Date, default: null, immutable: true },
+  timeInForce: { type: String, enum: TIME_IN_FORCE, default: 'GTC' },
+  expiresAt: { type: Date, default: null },
   requestedPrice: { type: Decimal128, default: null, immutable: true },
   acceptedPrice: { type: Decimal128, default: null },
   rejectCode: { type: String, default: null },
@@ -48,6 +48,11 @@ orderSchema.index({ status: 1, expiresAt: 1 });
 
 orderSchema.pre('validate', function validateOrderShape(next) {
   try {
+    if (!this.isNew && this.status !== 'PENDING') {
+      for (const field of ['requestedVolume', 'limitPrice', 'stopPrice', 'timeInForce', 'expiresAt']) {
+        if (this.isModified(field)) this.invalidate(field, 'Entry fields may only be amended while an order is pending');
+      }
+    }
     if (this.type === 'LIMIT' && this.limitPrice == null) this.invalidate('limitPrice', 'LIMIT orders require limitPrice');
     if (this.type === 'STOP' && this.stopPrice == null) this.invalidate('stopPrice', 'STOP orders require stopPrice');
     if (this.type === 'STOP_LIMIT') { if (this.stopPrice == null) this.invalidate('stopPrice', 'STOP_LIMIT orders require stopPrice'); if (this.limitPrice == null) this.invalidate('limitPrice', 'STOP_LIMIT orders require limitPrice'); }

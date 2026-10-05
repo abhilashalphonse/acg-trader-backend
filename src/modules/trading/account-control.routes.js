@@ -5,6 +5,7 @@ const { z } = require('zod');
 const { AppError } = require('../../shared/errors/app-error');
 const { requireServicePrincipal } = require('../auth/auth.middleware');
 const { serializeAccount } = require('./trading.serializer');
+const { applyPermissionUpdate } = require('./trading-permission-contract');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const decimalInput = z.union([z.string().min(1), z.number().finite()]).transform(value => String(value));
@@ -14,8 +15,8 @@ const limitRule = z.object({ limit: decimalInput, reference: z.string().trim().m
 const riskPolicy = z.object({ dailyLoss: limitRule.optional(), maxLoss: limitRule.optional(), profitTarget: decimalInput.optional(), breachAction: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).optional(), maxOpenPositions: z.number().int().positive().nullable().optional(), maxPositionsPerSymbol: z.number().int().positive().nullable().optional(), maxPendingOrders: z.number().int().positive().nullable().optional(), maxPendingOrdersPerSymbol: z.number().int().positive().nullable().optional(), maxPositionVolume: nullableDecimal, maxSymbolVolume: nullableDecimal, maxTotalVolume: nullableDecimal, maxRiskPerTradePercent: nullableDecimal, maxAggregateRiskPercent: nullableDecimal, maxMarginUsagePercent: nullableDecimal, maxSingleOrderMarginPercentOfFree: nullableDecimal, maxSymbolMarginPercentOfPermitted: nullableDecimal, allowedSymbols: z.array(z.string().trim().min(1).max(32)).optional() }).strict().optional();
 const riskPolicyPatch = z.object({ dailyLoss: limitRule.optional(), maxLoss: limitRule.optional(), profitTarget: decimalInput.optional(), breachAction: z.enum(['LOCK_ONLY', 'CANCEL_ORDERS_AND_LOCK', 'LIQUIDATE_AND_LOCK']).optional(), maxOpenPositions: z.number().int().positive().nullable().optional(), maxPositionsPerSymbol: z.number().int().positive().nullable().optional(), maxPendingOrders: z.number().int().positive().nullable().optional(), maxPendingOrdersPerSymbol: z.number().int().positive().nullable().optional(), maxPositionVolume: patchNullableDecimal, maxSymbolVolume: patchNullableDecimal, maxTotalVolume: patchNullableDecimal, maxRiskPerTradePercent: patchNullableDecimal, maxAggregateRiskPercent: patchNullableDecimal, maxMarginUsagePercent: patchNullableDecimal, maxSingleOrderMarginPercentOfFree: patchNullableDecimal, maxSymbolMarginPercentOfPermitted: patchNullableDecimal, allowedSymbols: z.array(z.string().trim().min(1).max(32)).optional() }).strict().optional();
 const tradingPermissions = z.object({
-  newsTrading: z.boolean().optional().default(true),
-  weekendHolding: z.boolean().optional().default(true),
+  newsTrading: z.boolean(),
+  weekendHolding: z.boolean(),
   highImpactOnly: z.literal(true).optional().default(true),
   newsRestrictionBeforeMinutes: z.literal(5).optional().default(5),
   newsRestrictionAfterMinutes: z.literal(5).optional().default(5),
@@ -49,7 +50,8 @@ const policyTransitionSchema = z.object({
 
 const challengeSyncSchema = z.object({
   riskPolicy: riskPolicyPatch,
-  tradingPermissions: tradingPermissions.optional(), tradingPermissionsVersion: z.number().int().positive().optional(),
+  tradingPermissions: tradingPermissions.optional(),
+  tradingPermissionsVersion: z.number().int().positive().optional(),
   dailyStartEquity: decimalInput.optional(),
   riskDayKey: z.string().trim().min(1).max(32).optional(),
   riskTimezone: z.string().trim().min(1).max(64).optional(),
@@ -78,7 +80,7 @@ function createAccountControlRouter(runtime, authService) {
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const { limit } = parse(observabilityQuerySchema, req.query || {});
 
-    const [account, openPositions, closedPositions, deals, orders, lifecycle, policyTransitions, tradingPolicyShadowEvents] = await Promise.all([
+    const [account, openPositions, closedPositions, deals, orders, lifecycle, policyTransitions, tradingPolicyShadowEvents, weekendActions, tradingPermissionStatus] = await Promise.all([
       runtime.accountControlService.getById(accountId),
       runtime.tradingHistoryService.positions(accountId, { limit, status: 'OPEN' }),
       runtime.tradingHistoryService.positions(accountId, { limit, status: 'CLOSED' }),
@@ -95,10 +97,14 @@ function createAccountControlRouter(runtime, authService) {
         .limit(limit)
         .lean(),
       runtime.tradingPermissionPolicyService.listShadowEvents(accountId, { limit }),
+      runtime.weekendActionService?.listActions(accountId, { limit }) || [],
+      runtime.tradingPermissionPolicyService.policyStatus?.(accountId, null) || null,
     ]);
 
     res.json({
       account,
+      weekendActions,
+      tradingPermissionStatus,
       openPositions,
       closedPositions,
       deals,
@@ -132,6 +138,10 @@ function createAccountControlRouter(runtime, authService) {
         weekendCloseAt: event.weekendCloseAt ? new Date(event.weekendCloseAt).toISOString() : null,
         weekendAutoCloseAt: event.weekendAutoCloseAt ? new Date(event.weekendAutoCloseAt).toISOString() : null,
         enforcementEnabled: event.enforcementEnabled === true,
+        permissionVersion: event.permissionVersion,
+        calendarSnapshotVersion: event.calendarSnapshotVersion,
+        scheduleVersion: event.scheduleVersion,
+        policyEngineVersion: event.policyEngineVersion,
         observedAt: event.observedAt ? new Date(event.observedAt).toISOString() : null,
       })),
       policyTransitions: policyTransitions.map(transition => ({
@@ -172,7 +182,7 @@ function createAccountControlRouter(runtime, authService) {
       if (patch.dailyStartEquity !== undefined) doc.state.dailyStartEquity = patch.dailyStartEquity;
       if (patch.riskDayKey !== undefined) doc.riskDayKey = patch.riskDayKey;
       if (patch.riskTimezone !== undefined) doc.riskTimezone = patch.riskTimezone;
-      if (patch.tradingPermissions !== undefined) doc.tradingPermissions = patch.tradingPermissions;
+      if (patch.tradingPermissions !== undefined) applyPermissionUpdate(doc, patch.tradingPermissions, patch.tradingPermissionsVersion);
       const metadata = doc.metadata || new Map();
       const metadataPatch = { challengePhase: patch.phase, challengeStatus: patch.challengeStatus, challengeId: patch.challengeId, payoutStatus: patch.payoutStatus, riskPolicyVersion: patch.riskPolicyVersion };
       for (const [key, value] of Object.entries(metadataPatch)) if (value !== undefined) { if (value === null) metadata.delete(key); else metadata.set(key, String(value)); }
