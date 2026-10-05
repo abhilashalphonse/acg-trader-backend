@@ -13,6 +13,7 @@ const { AccountControlService } = require('./account-control.service');
 const { AccountLedgerService } = require('../accounts/account-ledger.service');
 const { PlatformEventRelay } = require('../integration/platform-event-relay');
 const { ReconciliationService } = require('../operations/reconciliation.service');
+const { AccountStateSynchronizer } = require('./account-state-synchronizer');
 const { ValuationEngine } = require('./valuation-engine');
 const { CurrencyConversionEngine, setDefaultCurrencyConversionEngine } = require('./currency-conversion-engine');
 const { ProtectionTriggerEngine } = require('./protection-trigger-engine');
@@ -28,7 +29,12 @@ const { PostFillRiskService } = require('./post-fill-risk.service');
 const { BreachCleanupEngine } = require('./breach-cleanup-engine');
 const { MarginStopOutEngine } = require('./margin-stop-out-engine');
 const { TradingPermissionPolicyService } = require('./trading-permission-policy.service');
+const { NewsCalendarSnapshotService } = require('./news-calendar-snapshot.service');
+const { normalizeCalendarEvent } = require('./trading-permission-policy.service');
 const { WeekendHoldingEngine } = require('./weekend-holding.engine');
+const { WeekendActionService } = require('./weekend-action.service');
+const { PolicyControlService } = require('./policy-control.service');
+const { PolicyMetricsService } = require('./policy-metrics.service');
 
 function createTradingRuntime({ marketRuntime }) {
   const eventBus = marketRuntime.eventBus;
@@ -52,11 +58,14 @@ function createTradingRuntime({ marketRuntime }) {
     logger,
   });
   const postFillRiskService = new PostFillRiskService({ platformEventRelay });
-  const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
-  const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
+  const calendarSnapshots = new NewsCalendarSnapshotService({ config: env.tradingPermissions, normalizeEvent: normalizeCalendarEvent, logger });
+  const policyControlService = new PolicyControlService();
+  const policyMetricsService = new PolicyMetricsService({ logger });
+  const tradingPermissionPolicyService = new TradingPermissionPolicyService({ logger, calendarSnapshots, controlService: policyControlService, metricsService: policyMetricsService });
+  const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
+  const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
   const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
   const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger });
-  const tradingPermissionPolicyService = new TradingPermissionPolicyService({ logger });
   const breachCleanupEngine = new BreachCleanupEngine({ accountControlService, logger });
   const marginStopOutEngine = new MarginStopOutEngine({
     eventBus,
@@ -70,10 +79,14 @@ function createTradingRuntime({ marketRuntime }) {
   const accountLedgerService = new AccountLedgerService({ eventBus, commandQueue, logger });
   const protectionTriggerEngine = new ProtectionTriggerEngine({ eventBus, marketOrderService, logger });
   const pendingOrderService = new PendingOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, logger });
-  const pendingOrderAmendService = new PendingOrderAmendService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
+  const pendingOrderAmendService = new PendingOrderAmendService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, tradingPermissionPolicyService, logger });
   const tradingHistoryService = new TradingHistoryService();
   const pendingOrderEngine = new PendingOrderEngine({ eventBus, pendingOrderService, marketPriority, logger });
+  const weekendActionService = new WeekendActionService({ policyService: tradingPermissionPolicyService, marketOrderService, pendingOrderService, logger });
+  marketOrderService.weekendActionService = weekendActionService;
+  pendingOrderService.weekendActionService = weekendActionService;
   const weekendHoldingEngine = new WeekendHoldingEngine({
+    actionService: weekendActionService,
     policyService: tradingPermissionPolicyService,
     marketOrderService,
     pendingOrderService,
@@ -84,6 +97,7 @@ function createTradingRuntime({ marketRuntime }) {
   const positionProtectionService = new PositionProtectionService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, logger });
   const trailingStopService = new TrailingStopService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, logger });
   const trailingStopEngine = new TrailingStopEngine({ eventBus, trailingStopService, logger });
+  const stateSynchronizer = new AccountStateSynchronizer({ eventBus, valuationEngine, consumers: [pendingOrderEngine, protectionTriggerEngine, trailingStopEngine], logger });
   const riskStreamService = new RiskStreamService();
   const riskDayEngine = new RiskDayEngine({ eventBus, commandQueue, logger, externalOrdering: true });
   const challengeRiskEngine = new ChallengeRiskEngine({ eventBus, accountControlService, riskStreamService, logger });
@@ -93,6 +107,8 @@ function createTradingRuntime({ marketRuntime }) {
   async function start() {
     if (started) return;
     try {
+      policyMetricsService.start();
+      await calendarSnapshots.start();
       await valuationEngine.start();
       riskDayEngine.start();
       await challengeRiskEngine.start();
@@ -102,15 +118,20 @@ function createTradingRuntime({ marketRuntime }) {
       await protectionTriggerEngine.start();
       await pendingOrderEngine.start();
       weekendHoldingEngine.start();
+      weekendActionService.start();
       await trailingStopEngine.start();
+      await stateSynchronizer.start();
 
       started = true;
       await reconciliationService.verifyRecovery({ persist: true });
       if (env.reconciliation.enabled) reconciliationService.startPeriodic(env.reconciliation.intervalMs);
     } catch (error) {
+      await stateSynchronizer.stop();
+      await calendarSnapshots.stop();
       reconciliationService.stopPeriodic();
       await trailingStopEngine.stop().catch(() => undefined);
       weekendHoldingEngine.stop();
+      await weekendActionService.stop();
       await pendingOrderEngine.stop().catch(() => undefined);
       await protectionTriggerEngine.stop().catch(() => undefined);
       await marginStopOutEngine.stop().catch(() => undefined);
@@ -119,6 +140,7 @@ function createTradingRuntime({ marketRuntime }) {
       await riskDayEngine.stop().catch(() => undefined);
       await platformEventRelay.stop().catch(() => undefined);
       await valuationEngine.stop().catch(() => undefined);
+      await policyMetricsService.stop();
       setDefaultCurrencyConversionEngine(null);
       started = false;
       throw error;
@@ -126,11 +148,14 @@ function createTradingRuntime({ marketRuntime }) {
   }
 
   async function stop() {
+    await stateSynchronizer.stop();
+    await calendarSnapshots.stop();
     reconciliationService.stopPeriodic();
 
     // Stop event-driven producers first and wait for their current work.
     await trailingStopEngine.stop();
     weekendHoldingEngine.stop();
+    await weekendActionService.stop();
     await pendingOrderEngine.stop();
     await protectionTriggerEngine.stop();
     await marginStopOutEngine.stop();
@@ -141,6 +166,7 @@ function createTradingRuntime({ marketRuntime }) {
     // Complete all accepted account commands while the platform relay remains
     // attached, so committed deals/account events cannot be lost on SIGTERM.
     await commandQueue.drainAll();
+    await policyMetricsService.stop();
     await platformEventRelay.stop();
     await valuationEngine.stop();
     setDefaultCurrencyConversionEngine(null);
@@ -153,10 +179,11 @@ function createTradingRuntime({ marketRuntime }) {
     const integrityHealthy = !['DEGRADED', 'ISSUES'].includes(reconciliation.state);
     return {
       enabled: env.tradingApiEnabled,
-      state: !env.tradingApiEnabled ? 'API_DISABLED' : (!started ? 'STARTING' : (recoveryConsistent && integrityHealthy ? 'READY' : 'DEGRADED')),
+      state: !env.tradingApiEnabled ? 'API_DISABLED' : (!started ? 'STARTING' : (recoveryConsistent && integrityHealthy && stateSynchronizer.health().ready ? 'READY' : 'DEGRADED')),
       started,
       pendingAccounts: commandQueue.pendingAccounts,
       valuation: valuationEngine.health(),
+      stateSynchronization: stateSynchronizer.health(),
       riskDay: riskDayEngine.health(),
       riskEngine: challengeRiskEngine.health(),
       breachCleanup: breachCleanupEngine.health(),
@@ -169,6 +196,13 @@ function createTradingRuntime({ marketRuntime }) {
         newsEnforcementEnabled: env.tradingPermissions.newsEnforcementEnabled,
         weekendEnforcementEnabled: env.tradingPermissions.weekendEnforcementEnabled,
         weekendScannerRunning: Boolean(weekendHoldingEngine.timer),
+        weekendWorkerRunning: Boolean(weekendActionService.timer),
+        calendarStatus: calendarSnapshots.read().dataStatus,
+        calendarSnapshotVersion: calendarSnapshots.read().snapshotVersion,
+        calendarLastError: calendarSnapshots.lastError,
+        pendingTelemetry: tradingPermissionPolicyService.pendingTelemetry,
+        droppedTelemetry: tradingPermissionPolicyService.droppedTelemetry,
+        metrics: policyMetricsService.health(),
       },
       trailing: trailingStopEngine.health(),
       reconciliation,
@@ -246,7 +280,10 @@ function createTradingRuntime({ marketRuntime }) {
     pendingOrderService,
     pendingOrderAmendService,
     tradingPermissionPolicyService,
+    policyControlService,
+    policyMetricsService,
     weekendHoldingEngine,
+    weekendActionService,
     tradingHistoryService,
     positionProtectionService,
     trailingStopService,

@@ -1,4 +1,5 @@
 'use strict';
+const { policyMetadata, attachPolicyEvidence } = require('./policy-evidence');
 
 const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
@@ -120,11 +121,14 @@ class PendingOrderService {
 
     try {
       const result = await this.commandQueue.run(normalized.accountId, async () => {
-        const nowMs = Date.now();
         const quoteSnapshot = this.quoteStore.get(normalized.symbol);
         return this.runTransaction(async session => {
+          const nowMs = Date.now();
           const account = await this.accountModel.findById(normalized.accountId).session(session);
-          if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+          if (account && this.valuationEngine) {
+            await this.valuationEngine.ensureAccountRevision?.(account, { session });
+            this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+          }
           const exposure = await loadOpenExposure(this.positionModel, normalized.accountId, session, {
             account,
             symbol: normalized.symbol,
@@ -151,8 +155,10 @@ class PendingOrderService {
             pendingExposure,
           });
 
+          const policyDecision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session, action: 'PENDING_CREATE', referenceId: normalized.clientOrderId });
           const now = new Date(nowMs);
           const order = new this.orderModel({
+            metadata: policyMetadata(policyDecision),
             accountId: account._id,
             clientOrderId: normalized.clientOrderId,
             symbol: plan.symbol,
@@ -192,7 +198,7 @@ class PendingOrderService {
     }
   }
 
-  async cancelPendingOrder(command) {
+  async cancelPendingOrder(command, { weekendClaim = null } = {}) {
     const normalized = normalizeCancelCommand(command);
     const reservation = await this.idempotencyService.reserve({
       accountId: normalized.accountId,
@@ -214,6 +220,10 @@ class PendingOrderService {
           throw new AppError('Order is no longer cancellable', { statusCode: 409, code: 'ORDER_NOT_CANCELLABLE', details: { status: order.status } });
         }
 
+        if (weekendClaim) {
+          const account = await this.accountModel.findById(normalized.accountId).session(session);
+          await this.weekendActionService.fenceExecution(weekendClaim, account, session);
+        }
         order.status = 'CANCELLED';
         order.cancelledAt = new Date();
         await order.save({ session });
@@ -244,8 +254,8 @@ class PendingOrderService {
 
   async activateStopLimit({ accountId, orderId, tick }) {
     return this.commandQueue.run(String(accountId), async () => {
-      const decisionNowMs = Date.now();
       const result = await this.runTransaction(async session => {
+        const decisionNowMs = Date.now();
         const order = await this.orderModel.findById(orderId).session(session);
         if (!order || String(order.accountId) !== String(accountId)) return { skipped: true, order: order ? serializeOrder(order) : null };
         if (order.type !== 'STOP_LIMIT' || order.status !== 'PENDING') return { skipped: true, order: serializeOrder(order) };
@@ -254,6 +264,13 @@ class PendingOrderService {
         if (action?.action === 'EXPIRE') return this.#expireWithinTransaction(order, session, decisionNowMs);
         if (action?.action !== 'ACTIVATE') return { skipped: true, order: serializeOrder(order) };
 
+        if (this.tradingPermissionPolicyService) {
+          const account = await this.accountModel.findById(accountId).session(session);
+          const instrument = await this.instrumentModel.findOne({ symbol: order.symbol }).session(session);
+          const decision = await this.tradingPermissionPolicyService.authorizeExecution({ account, instrument, session, action: 'STOP_LIMIT_ACTIVATE', referenceId: String(order._id), reject: false });
+          if (!decision.allowed) return { skipped: true, order: serializeOrder(order), restriction: decision.status };
+          attachPolicyEvidence(order, decision);
+        }
         order.status = 'TRIGGERED';
         order.triggeredAt = new Date(decisionNowMs);
         await order.save({ session });
@@ -267,30 +284,10 @@ class PendingOrderService {
 
   async executePendingOrder({ accountId, orderId, tick }) {
     return this.commandQueue.run(String(accountId), async () => {
-      const executionNowMs = Date.now();
       const quoteSnapshot = Object.freeze({ ...tick });
 
-      // Pending entries are exposure-increasing actions. In shadow mode we log
-      // the trigger that would be blocked; once enforcement is explicitly
-      // enabled the order remains pending instead of being rejected.
-      const previewOrder = await this.orderModel.findById(orderId).lean();
-      if (previewOrder && String(previewOrder.accountId) === String(accountId) && ACTIVE_PENDING_STATUSES.includes(previewOrder.status)) {
-        const previewAction = detectPendingOrderAction({ order: previewOrder, tick: quoteSnapshot, nowMs: executionNowMs });
-        if (previewAction?.action === 'FILL' && this.tradingPermissionPolicyService) {
-          const decision = await this.tradingPermissionPolicyService.evaluateExposureIncrease({
-            accountId: String(accountId),
-            symbol: previewOrder.symbol,
-            action: 'PENDING_TRIGGER',
-            referenceId: String(previewOrder._id),
-            nowMs: executionNowMs,
-          });
-          if (!decision.allowed) {
-            return { skipped: true, order: serializeOrder(previewOrder), restriction: decision.status };
-          }
-        }
-      }
-
       const result = await this.runTransaction(async session => {
+        const executionNowMs = Date.now();
         const order = await this.orderModel.findById(orderId).session(session);
         if (!order || String(order.accountId) !== String(accountId)) return { skipped: true, order: order ? serializeOrder(order) : null };
         if (!ACTIVE_PENDING_STATUSES.includes(order.status)) return { skipped: true, order: serializeOrder(order) };
@@ -300,7 +297,10 @@ class PendingOrderService {
         if (action?.action !== 'FILL') return { skipped: true, order: serializeOrder(order) };
 
         const account = await this.accountModel.findById(accountId).session(session);
-        if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+        if (account && this.valuationEngine) {
+            await this.valuationEngine.ensureAccountRevision?.(account, { session });
+            this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+          }
         const instrument = await this.instrumentModel.findOne({ symbol: normalizeSymbol(order.symbol) }).session(session);
         const exposure = hasExposureLimits(account)
           ? await loadOpenExposure(this.positionModel, accountId, session, {
@@ -311,6 +311,12 @@ class PendingOrderService {
           })
           : null;
 
+        let policyDecision;
+        if (this.tradingPermissionPolicyService) {
+          policyDecision = await this.tradingPermissionPolicyService.authorizeExecution({ account, instrument, session, action: 'PENDING_TRIGGER', referenceId: String(order._id), reject: false });
+          if (!policyDecision.allowed) return { skipped: true, order: serializeOrder(order), restriction: policyDecision.status };
+          attachPolicyEvidence(order, policyDecision);
+        }
         let plan;
         try {
           plan = planMarketOpen({
@@ -368,6 +374,7 @@ class PendingOrderService {
 
         const requestedPrice = pendingRequestedPrice(order);
         const deal = new this.dealModel({
+          metadata: policyMetadata(policyDecision),
           accountId: account._id,
           orderId: order._id,
           positionId: position._id,

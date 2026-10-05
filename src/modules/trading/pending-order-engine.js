@@ -66,6 +66,11 @@ class PendingOrderEngine {
     this.started = false;
   }
 
+  replaceAccountState(accountId, snapshot) {
+    for (const item of [...this.orders.values()]) if (String(item.accountId) === String(accountId)) this.#remove(item);
+    for (const item of snapshot.orders) this.#upsert(item);
+  }
+
   health() {
     let triggered = 0;
     for (const order of this.orders.values()) if (order.status === 'TRIGGERED') triggered += 1;
@@ -80,6 +85,7 @@ class PendingOrderEngine {
   #attach() {
     this.eventBus.on('market.tick', this.onTick);
     this.eventBus.on('trading.order.pending', this.onPending);
+    this.eventBus.on('trading.order.updated', this.onPending);
     this.eventBus.on('trading.order.triggered', this.onTriggered);
     this.eventBus.on('trading.order.cancelled', this.onTerminal);
     this.eventBus.on('trading.order.filled', this.onTerminal);
@@ -90,6 +96,7 @@ class PendingOrderEngine {
   #detach() {
     this.eventBus.off('market.tick', this.onTick);
     this.eventBus.off('trading.order.pending', this.onPending);
+    this.eventBus.off('trading.order.updated', this.onPending);
     this.eventBus.off('trading.order.triggered', this.onTriggered);
     this.eventBus.off('trading.order.cancelled', this.onTerminal);
     this.eventBus.off('trading.order.filled', this.onTerminal);

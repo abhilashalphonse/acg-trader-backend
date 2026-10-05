@@ -1,4 +1,5 @@
 'use strict';
+const { assertPermissionContract } = require('./trading-permission-contract');
 
 const crypto = require('crypto');
 const mongoose = require('mongoose');
@@ -70,6 +71,7 @@ class AccountControlService {
       const scope = { tenantId: input.tenantId, externalRef: input.externalRef };
       const existing = await this.accountModel.findOne(scope);
       if (existing) return provisionResult(assertProvisionReplay(existing, input), true);
+      if (input.accountType !== 'DEMO') assertPermissionContract(command.tradingPermissions, command.tradingPermissionsVersion);
 
       try {
         const account = await this.runTransaction(async session => {
@@ -93,6 +95,7 @@ class AccountControlService {
             state: buildInitialState(input.initialBalance),
             riskPolicy: input.riskPolicy,
             tradingPermissions: input.tradingPermissions,
+            tradingPermissionsVersion: input.tradingPermissionsVersion,
             riskDayKey: input.riskDayKey,
             riskTimezone: input.riskTimezone,
             metadata: input.metadata,
@@ -821,6 +824,7 @@ function normalizeProvisionCommand(command) {
     activate: command?.activate !== false,
     riskPolicy,
     tradingPermissions,
+    tradingPermissionsVersion: Number(command?.tradingPermissionsVersion || 0),
     riskDayKey: String(command?.riskDayKey || provisionDayKey).trim(),
     riskTimezone,
     metadata,
@@ -921,6 +925,11 @@ function buildInitialState(initialBalance) {
 
 function assertProvisionReplay(account, input) {
   const mismatches = [];
+  if (input.tradingPermissionsVersion > 0 && Number(account.tradingPermissionsVersion || 0) > 0) {
+    if (input.tradingPermissionsVersion !== account.tradingPermissionsVersion
+      || input.tradingPermissions.newsTrading !== account.tradingPermissions?.newsTrading
+      || input.tradingPermissions.weekendHolding !== account.tradingPermissions?.weekendHolding) mismatches.push('tradingPermissions');
+  }
   if (String(account.tenantId || '') !== String(input.tenantId || '')) mismatches.push('tenantId');
   if (String(account.ownerExternalRef || '') !== String(input.ownerExternalRef || '')) mismatches.push('ownerExternalRef');
   if (String(account.userId || '') !== String(input.userId || '')) mismatches.push('userId');

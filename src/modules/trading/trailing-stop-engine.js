@@ -44,6 +44,11 @@ class TrailingStopEngine {
     this.started = false;
   }
 
+  replaceAccountState(accountId, snapshot) {
+    for (const item of [...this.positions.values()]) if (String(item.accountId) === String(accountId)) this.#remove(item);
+    for (const item of snapshot.positions) this.#upsert(item);
+  }
+
   health() {
     return {
       started: this.started,

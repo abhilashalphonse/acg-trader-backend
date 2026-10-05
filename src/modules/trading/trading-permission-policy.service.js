@@ -1,11 +1,13 @@
 'use strict';
 
 const crypto = require('crypto');
+const { performance } = require('node:perf_hooks');
 const { AppError } = require('../../shared/errors/app-error');
 const { env } = require('../../config/env');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { Instrument } = require('../instruments/instrument.model');
-const { nextWeekendCloseTimeMs } = require('../instruments/session-calendar');
+const { scheduleHash } = require('../instruments/schedule-identity');
+const { nextWeekendCloseTimeMs, nextSessionOpenTimeMs } = require('../instruments/session-calendar');
 const { TradingPolicyShadowEvent } = require('./trading-policy-shadow-event.model');
 
 const SUPPORTED_CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD']);
@@ -23,43 +25,75 @@ class TradingPermissionPolicyService {
     accountModel = TradingAccount,
     instrumentModel = Instrument,
     shadowEventModel = TradingPolicyShadowEvent,
-    fetchImpl = globalThis.fetch,
     logger = null,
     now = () => new Date(),
     config = env.tradingPermissions,
+    calendarSnapshots = null,
+    controlService = null,
+    metricsService = null,
   } = {}) {
     this.accountModel = accountModel;
     this.instrumentModel = instrumentModel;
     this.shadowEventModel = shadowEventModel;
-    this.fetch = fetchImpl;
     this.logger = logger;
     this.now = now;
     this.config = config;
-    this.cache = new Map();
+    this.calendarSnapshots = calendarSnapshots;
+    this.controlService = controlService;
+    this.metricsService = metricsService;
+    this.pendingTelemetry = 0;
+    this.droppedTelemetry = 0;
   }
 
-  async policyStatus(accountId, symbol, { nowMs = this.now().getTime() } = {}) {
+  async policyStatus(accountId, symbol, { nowMs = this.now().getTime(), account: suppliedAccount, instrument: suppliedInstrument } = {}) {
     const normalizedSymbol = normalizeSymbol(symbol);
     const [account, instrument] = await Promise.all([
-      this.accountModel.findById(String(accountId)).lean(),
-      normalizedSymbol ? this.instrumentModel.findOne({ symbol: normalizedSymbol }).lean() : null,
+      suppliedAccount || this.accountModel.findById(String(accountId)).lean(),
+      suppliedInstrument !== undefined ? suppliedInstrument : normalizedSymbol ? this.instrumentModel.findOne({ symbol: normalizedSymbol }).lean() : null,
     ]);
     if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
 
     const permissions = normalizeTradingPermissions(account.tradingPermissions);
     const [news, weekend] = await Promise.all([
       this.#newsStatus(normalizedSymbol, instrument, permissions, nowMs),
-      Promise.resolve(weekendStatus(instrument, permissions, nowMs)),
+      Promise.resolve(weekendStatus(instrument, permissions, nowMs, this.config.weekendProcessingLeadMinutes || 5)),
     ]);
+    const bucket = crypto.createHash('sha256').update(String(account._id)).digest().readUInt32BE(0) % 100;
+    const versioned = Number(account.tradingPermissionsVersion || 0) > 0;
+    const control = this.controlService && (this.config.newsEnforcementEnabled || this.config.weekendEnforcementEnabled)
+      ? await this.controlService.read(account.tenantId) : { revision: 0, newsDisabled: false, weekendDisabled: false };
+    const newsEnabled = this.config.newsEnforcementEnabled === true && !control.newsDisabled && versioned && bucket < (this.config.newsRolloutPercent ?? 0);
+    const weekendEnabled = this.config.weekendEnforcementEnabled === true && !control.weekendDisabled && versioned && bucket < (this.config.weekendRolloutPercent ?? 0);
+    const instrumentScheduleHash = scheduleHash(instrument);
+    const activeRestriction = (account.executionRestrictions || []).find(item => item.symbol === normalizedSymbol
+      && Number(item.permissionVersion) === Number(account.tradingPermissionsVersion)
+      && Number(item.scheduleVersion) === Number(instrument?.scheduleVersion || 1)
+      && item.scheduleHash === instrumentScheduleHash
+      && nowMs >= new Date(item.startsAt).getTime() && nowMs < new Date(item.expiresAt).getTime());
+    if (!permissions.weekendHolding && activeRestriction) {
+      weekend.active = true;
+      weekend.lockedUntil = new Date(activeRestriction.expiresAt).toISOString();
+    }
+    const mode = enabled => enabled ? 'ENFORCED' : this.config.shadowEnabled ? 'SHADOW' : 'INFORMATIONAL';
 
     return {
       accountId: String(account._id),
+      tenantId: String(account.tenantId),
       symbol: normalizedSymbol || null,
       permissions,
+      permissionVersion: Number(account.tradingPermissionsVersion || 0),
+      enforcementControl: { revision: control.revision, newsDisabled: control.newsDisabled, weekendDisabled: control.weekendDisabled },
+      scheduleVersion: Number(instrument?.scheduleVersion || 0),
+      scheduleHash: instrumentScheduleHash,
+      policyEngineVersion: 'ACG_EXECUTION_POLICY_V1',
+      effectivePolicies: {
+        newsTrading: { permission: permissions.newsTrading, mode: mode(newsEnabled), calendarStatus: news.dataStatus },
+        weekendHolding: { permission: permissions.weekendHolding, mode: mode(weekendEnabled) },
+      },
       enforcement: {
         shadowEnabled: this.config.shadowEnabled === true,
-        newsEnabled: this.config.newsEnforcementEnabled === true,
-        weekendEnabled: this.config.weekendEnforcementEnabled === true,
+        newsEnabled,
+        weekendEnabled,
       },
       news,
       weekend,
@@ -71,39 +105,41 @@ class TradingPermissionPolicyService {
     };
   }
 
-  async evaluateExposureIncrease({ accountId, symbol, action = 'OPEN_EXPOSURE', referenceId = null, nowMs = this.now().getTime() } = {}) {
-    const status = await this.policyStatus(accountId, symbol, { nowMs });
-
-    if (status.news?.active === true && status.permissions.newsTrading === false) {
-      const decision = {
-        kind: 'NEWS',
-        wouldBlock: true,
-        enforced: status.enforcement.newsEnabled,
-        allowed: !status.enforcement.newsEnabled,
-        status,
-      };
-      await this.#recordShadow(decision, { accountId, symbol, action, referenceId, nowMs });
-      return decision;
+  async evaluateExposureIncrease({ accountId, symbol, account, instrument, action = 'OPEN_EXPOSURE', referenceId = null, stage = 'PREVIEW', nowMs = this.now().getTime() } = {}) {
+    const startedAt = performance.now();
+    let status;
+    try {
+      status = await this.policyStatus(accountId, symbol, { nowMs, account, instrument });
+    } catch (error) {
+      this.metricsService?.observe({ tenantId: account?.tenantId, stage, action, error: true, latencyMs: performance.now() - startedAt });
+      throw error;
     }
 
-    if (status.weekend?.active === true && status.permissions.weekendHolding === false) {
-      const decision = {
-        kind: 'WEEKEND',
-        wouldBlock: true,
-        enforced: status.enforcement.weekendEnabled,
-        allowed: !status.enforcement.weekendEnabled,
-        status,
-      };
-      await this.#recordShadow(decision, { accountId, symbol, action, referenceId, nowMs });
-      return decision;
+    const decisions = [
+      { kind: 'NEWS', applicable: status.news?.active === true && !status.permissions.newsTrading, enforced: status.enforcement.newsEnabled },
+      { kind: 'NEWS_DATA_UNAVAILABLE', applicable: !status.permissions.newsTrading && ['UNAVAILABLE', 'EXPIRED'].includes(status.news?.dataStatus), enforced: status.enforcement.newsEnabled },
+      { kind: 'WEEKEND', applicable: status.weekend?.active === true && !status.permissions.weekendHolding, enforced: status.enforcement.weekendEnabled },
+    ].filter(decision => decision.applicable).map(decision => ({ ...decision, wouldBlock: true, allowed: !decision.enforced }));
+    for (const decision of decisions) {
+      if (decision.kind === 'NEWS_DATA_UNAVAILABLE') continue;
+      this.#queueShadow({ ...decision, status }, { accountId, symbol, action, referenceId, nowMs });
     }
-
-    return { kind: null, wouldBlock: false, enforced: false, allowed: true, status };
+    const blocking = decisions.find(decision => decision.enforced);
+    const result = { kind: (blocking || decisions[0])?.kind || null, wouldBlock: decisions.length > 0,
+      enforced: Boolean(blocking), allowed: !blocking, decisions, status };
+    this.metricsService?.observe({ tenantId: status.tenantId, stage, action, decision: result, latencyMs: performance.now() - startedAt });
+    return result;
   }
 
   async assertExposureIncreaseAllowed(input = {}) {
     const decision = await this.evaluateExposureIncrease(input);
     if (decision.allowed) return decision;
+
+    if (decision.kind === 'NEWS_DATA_UNAVAILABLE') {
+      throw new AppError('New exposure is paused while the news calendar is unavailable. Existing positions may still be closed or reduced.', {
+        statusCode: 409, code: 'NEWS_CALENDAR_UNAVAILABLE', details: { closeReduceAllowed: true, dataStatus: decision.status.news.dataStatus },
+      });
+    }
 
     if (decision.kind === 'NEWS') {
       const news = decision.status.news;
@@ -135,7 +171,7 @@ class TradingPermissionPolicyService {
     });
   }
 
-  async recordWeekendCandidate({ account, symbol, action, referenceId, weekend, nowMs = this.now().getTime(), type = 'WEEKEND_WOULD_CLOSE' }) {
+  async recordWeekendCandidate({ account, symbol, action, referenceId, weekend, enforcementEnabled = false, nowMs = this.now().getTime(), type = 'WEEKEND_WOULD_CLOSE' }) {
     if (this.config.shadowEnabled !== true || !account || !weekend?.active) return;
     await this.#insertShadow({
       tenantId: account.tenantId,
@@ -146,7 +182,7 @@ class TradingPermissionPolicyService {
       referenceId,
       weekendCloseAt: weekend.marketCloseAt,
       weekendAutoCloseAt: weekend.autoCloseAt,
-      enforcementEnabled: this.config.weekendEnforcementEnabled === true,
+      enforcementEnabled,
       nowMs,
     });
   }
@@ -159,11 +195,13 @@ class TradingPermissionPolicyService {
   }
 
   async #newsStatus(symbol, instrument, permissions, nowMs) {
-    if (permissions.newsTrading !== false || !symbol) {
+    const canBeAffected = [...SUPPORTED_CURRENCIES].some(currency => symbolAffectedByEvent(symbol, instrument, { currency }))
+      || symbolAffectedByEvent(symbol, instrument, { title: 'Oil inventories' });
+    if (permissions.newsTrading !== false || !symbol || !canBeAffected) {
       return { dataStatus: 'NOT_APPLICABLE', active: false, next: null, event: null, blockedFrom: null, blockedUntil: null };
     }
 
-    const calendar = await this.#highImpactEvents(nowMs);
+    const calendar = this.calendarSnapshots?.read(nowMs) || { events: [], dataStatus: 'UNAVAILABLE', fetchedAt: null };
     const relevant = calendar.events
       .filter(event => event.timestamp && !event.allDay && symbolAffectedByEvent(symbol, instrument, event))
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -176,7 +214,7 @@ class TradingPermissionPolicyService {
     for (const event of relevant) {
       const eventMs = new Date(event.timestamp).getTime();
       if (!Number.isFinite(eventMs)) continue;
-      if (calendar.dataStatus === 'LIVE' && nowMs >= eventMs - beforeMs && nowMs <= eventMs + afterMs) {
+      if (['FRESH', 'VALID_GRACE'].includes(calendar.dataStatus) && nowMs >= eventMs - beforeMs && nowMs <= eventMs + afterMs) {
         activeEvent = event;
         break;
       }
@@ -198,70 +236,47 @@ class TradingPermissionPolicyService {
     return {
       dataStatus: calendar.dataStatus,
       active: Boolean(current),
-      authoritative: calendar.dataStatus === 'LIVE',
+      authoritative: ['FRESH', 'VALID_GRACE'].includes(calendar.dataStatus),
       event: current,
       next,
       blockedFrom: current?.blockedFrom || null,
       blockedUntil: current?.blockedUntil || null,
       fetchedAt: calendar.fetchedAt,
+      snapshotVersion: calendar.snapshotVersion || null,
     };
   }
 
-  async #highImpactEvents(nowMs) {
-    const from = dateKey(nowMs - 24 * 60 * 60 * 1000);
-    const to = dateKey(nowMs + 24 * 60 * 60 * 1000);
-    const key = `${from}:${to}`;
-    const cached = this.cache.get(key);
-    if (cached && nowMs - cached.fetchedAtMs <= this.config.newsCalendarCacheTtlMs) {
-      return { ...cached, dataStatus: 'LIVE' };
+  async authorizeExecution({ account, instrument, session, action, referenceId, reject = true }) {
+    const input = { accountId: account?._id, account, instrument, symbol: instrument?.symbol, action, referenceId,
+      nowMs: this.now().getTime(), stage: 'EXECUTION' };
+    const decision = reject ? await this.assertExposureIncreaseAllowed(input) : await this.evaluateExposureIncrease(input);
+    // A real write on the shared account fences concurrent permission changes even for pending creation.
+    if (decision.allowed && account && (this.config.newsEnforcementEnabled || this.config.weekendEnforcementEnabled)) {
+      account.policyExecutionRevision = Number(account.policyExecutionRevision || 0) + 1;
+      await account.save({ session });
     }
+    return decision;
+  }
 
-    try {
-      if (typeof this.fetch !== 'function') throw new Error('Fetch implementation unavailable');
-      const url = new URL(`${this.config.financeCalendarBaseUrl}/calendar`);
-      url.searchParams.set('from', from);
-      url.searchParams.set('to', to);
-      url.searchParams.set('impact', 'high');
-      url.searchParams.set('limit', '500');
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.config.newsCalendarHttpTimeoutMs);
-      let response;
-      try {
-        response = await this.fetch(url, {
-          headers: { Accept: 'application/json', 'User-Agent': 'ACG-Trader/1.0' },
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-      if (!response.ok) throw new Error(`FinanceCalendar request failed (${response.status})`);
-      const payload = await response.json();
-      const raw = Array.isArray(payload) ? payload : Array.isArray(payload?.events) ? payload.events : [];
-      const value = {
-        events: raw.map(normalizeCalendarEvent).filter(Boolean),
-        fetchedAtMs: nowMs,
-        fetchedAt: new Date(nowMs).toISOString(),
-      };
-      this.cache.set(key, value);
-      return { ...value, dataStatus: 'LIVE' };
-    } catch (error) {
-      if (cached && nowMs - cached.fetchedAtMs <= this.config.newsCalendarStaleMaxMs) {
-        this.logger?.warn?.({ err: error?.message }, 'Trading news calendar stale; enforcement fails open');
-        return { ...cached, dataStatus: 'STALE' };
-      }
-      this.logger?.warn?.({ err: error?.message }, 'Trading news calendar unavailable; enforcement fails open');
-      return { events: [], fetchedAtMs: null, fetchedAt: null, dataStatus: 'UNAVAILABLE' };
-    }
+  #queueShadow(decision, context) {
+    if (!this.config.shadowEnabled) return;
+    if (this.pendingTelemetry >= 1000) { this.droppedTelemetry++; return; }
+    this.pendingTelemetry++;
+    void this.#recordShadow(decision, context).catch(error => {
+      this.logger?.warn?.({ err: error.message }, 'Policy shadow telemetry failed');
+    }).finally(() => { this.pendingTelemetry--; });
   }
 
   async #recordShadow(decision, { accountId, symbol, action, referenceId, nowMs }) {
     if (this.config.shadowEnabled !== true) return;
     const account = await this.accountModel.findById(String(accountId)).select('_id tenantId').lean();
     if (!account) return;
+    const versions = { permissionVersion: decision.status.permissionVersion, calendarSnapshotVersion: decision.status.news?.snapshotVersion,
+      scheduleVersion: decision.status.scheduleVersion, policyEngineVersion: decision.status.policyEngineVersion };
     if (decision.kind === 'NEWS') {
       const news = decision.status.news;
       await this.#insertShadow({
+        ...versions,
         tenantId: account.tenantId,
         accountId: account._id,
         type: 'NEWS_WOULD_BLOCK',
@@ -282,6 +297,7 @@ class TradingPermissionPolicyService {
 
     const weekend = decision.status.weekend;
     await this.#insertShadow({
+      ...versions,
       tenantId: account.tenantId,
       accountId: account._id,
       type: 'WEEKEND_WOULD_BLOCK',
@@ -331,7 +347,7 @@ function normalizeTradingPermissions(value = {}) {
   };
 }
 
-function weekendStatus(instrument, permissions, nowMs = Date.now()) {
+function weekendStatus(instrument, permissions, nowMs = Date.now(), processingLeadMinutes = 5) {
   if (permissions.weekendHolding !== false || !instrument) {
     return { active: false, warning: false, marketCloseAt: null, autoCloseAt: null, minutesUntilAutoClose: null };
   }
@@ -339,13 +355,17 @@ function weekendStatus(instrument, permissions, nowMs = Date.now()) {
   if (!Number.isFinite(closeMs)) {
     return { active: false, warning: false, marketCloseAt: null, autoCloseAt: null, minutesUntilAutoClose: null };
   }
-  const autoCloseMs = closeMs - permissions.weekendCloseBufferMinutes * 60_000;
+  const requiredFlatMs = closeMs - permissions.weekendCloseBufferMinutes * 60_000;
+  const autoCloseMs = closeMs - Math.max(permissions.weekendCloseBufferMinutes, processingLeadMinutes) * 60_000;
+  const reopenMs = nextSessionOpenTimeMs(instrument, closeMs);
   const delta = autoCloseMs - nowMs;
   return {
     active: nowMs >= autoCloseMs && nowMs < closeMs,
     warning: delta > 0 && delta <= 2 * 60 * 60 * 1000,
     marketCloseAt: new Date(closeMs).toISOString(),
     autoCloseAt: new Date(autoCloseMs).toISOString(),
+    requiredFlatAt: new Date(requiredFlatMs).toISOString(),
+    reopenAt: Number.isFinite(reopenMs) ? new Date(reopenMs).toISOString() : null,
     minutesUntilAutoClose: Math.max(0, Math.ceil(delta / 60_000)),
   };
 }
@@ -355,7 +375,7 @@ function symbolAffectedByEvent(symbol, instrument, event) {
   if (!normalized) return false;
 
   const title = String(event?.title || '').toLowerCase();
-  if (/crude|petroleum|oil inventories|eia/.test(title) && ['USOIL', 'UKOIL'].includes(normalized)) return true;
+  if (/crude|petroleum|oil inventories|eia/.test(title)) return ['USOIL', 'UKOIL'].includes(normalized);
 
   const currency = String(event?.currency || '').toUpperCase();
   if (!SUPPORTED_CURRENCIES.has(currency)) return false;
@@ -378,7 +398,7 @@ function normalizeCalendarEvent(raw = {}) {
   if (!timestamp && !date) return null;
 
   const impact = String(raw.impact || raw.importance || '').trim().toUpperCase();
-  if (impact && impact !== 'HIGH') return null;
+  if (impact !== 'HIGH') return null;
 
   const title = String(raw.title || raw.name || raw.event || 'Economic event').trim();
   const country = String(raw.country || raw.region || raw.area || '').trim() || null;
@@ -437,6 +457,10 @@ function shadowDedupeKey(data) {
     String(data.eventId || ''),
     String(data.windowFrom || ''),
     String(data.weekendAutoCloseAt || ''),
+    String(data.permissionVersion || ''),
+    String(data.calendarSnapshotVersion || ''),
+    String(data.scheduleVersion || ''),
+    String(data.enforcementEnabled === true),
   ].join('|')).digest('hex');
 }
 

@@ -24,12 +24,17 @@ const tradingPolicyShadowEventSchema = new Schema({
   weekendCloseAt: { type: Date, default: null },
   weekendAutoCloseAt: { type: Date, default: null },
   enforcementEnabled: { type: Boolean, default: false },
+  permissionVersion: Number,
+  calendarSnapshotVersion: String,
+  scheduleVersion: Number,
+  policyEngineVersion: String,
   dedupeKey: { type: String, required: true, unique: true, index: true },
   observedAt: { type: Date, required: true, default: Date.now, index: true },
 }, { timestamps: true, versionKey: false });
 
 tradingPolicyShadowEventSchema.index({ accountId: 1, observedAt: -1 });
 tradingPolicyShadowEventSchema.index({ type: 1, observedAt: -1 });
+tradingPolicyShadowEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 30 * 86400 });
 
 const TradingPolicyShadowEvent = mongoose.models.TradingPolicyShadowEvent
   || mongoose.model('TradingPolicyShadowEvent', tradingPolicyShadowEventSchema);

@@ -158,7 +158,7 @@ test('normalizeProvisionCommand builds a tenant-scoped challenge account safely'
 test('provision atomically creates opening ledger and lifecycle audit records', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const result = await service.provision({
+  const result = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-opening',
     ownerExternalRef: 'user-opening',
@@ -178,7 +178,7 @@ test('provision atomically creates opening ledger and lifecycle audit records', 
 test('provision is idempotent within a tenant without duplicating opening records', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const payload = { tenantId: TENANT_ID, externalRef: 'challenge-123', ownerExternalRef: 'user-9', initialBalance: '100000', leverage: 100 };
+  const payload = { tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1, tenantId: TENANT_ID, externalRef: 'challenge-123', ownerExternalRef: 'user-9', initialBalance: '100000', leverage: 100 };
   const first = await service.provision(payload);
   const second = await service.provision(payload);
   assert.equal(first.idempotentReplay, false);
@@ -193,17 +193,17 @@ test('provision is idempotent within a tenant without duplicating opening record
 test('same externalRef can exist in different tenants', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const first = await service.provision({ tenantId: TENANT_ID, externalRef: 'challenge-shared', ownerExternalRef: 'user-a', initialBalance: '10000' });
-  const second = await service.provision({ tenantId: '64b000000000000000000002', externalRef: 'challenge-shared', ownerExternalRef: 'user-b', initialBalance: '10000' });
+  const first = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1, tenantId: TENANT_ID, externalRef: 'challenge-shared', ownerExternalRef: 'user-a', initialBalance: '10000' });
+  const second = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1, tenantId: '64b000000000000000000002', externalRef: 'challenge-shared', ownerExternalRef: 'user-b', initialBalance: '10000' });
   assert.notEqual(first.account.id, second.account.id);
 });
 
 test('reusing an externalRef with different account parameters in the same tenant is rejected', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  await service.provision({ tenantId: TENANT_ID, externalRef: 'challenge-123', ownerExternalRef: 'user-9', initialBalance: '100000', leverage: 100 });
+  await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1, tenantId: TENANT_ID, externalRef: 'challenge-123', ownerExternalRef: 'user-9', initialBalance: '100000', leverage: 100 });
   await assert.rejects(
-    () => service.provision({ tenantId: TENANT_ID, externalRef: 'challenge-123', ownerExternalRef: 'user-9', initialBalance: '200000', leverage: 100 }),
+    () => service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1, tenantId: TENANT_ID, externalRef: 'challenge-123', ownerExternalRef: 'user-9', initialBalance: '200000', leverage: 100 }),
     error => error.code === 'ACCOUNT_PROVISIONING_CONFLICT',
   );
 });
@@ -211,7 +211,7 @@ test('reusing an externalRef with different account parameters in the same tenan
 test('disable locks trading, cancels pending orders, and records lifecycle transition', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const created = await service.provision({ tenantId: TENANT_ID, externalRef: 'challenge-456', ownerExternalRef: 'user-10', initialBalance: '50000' });
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1, tenantId: TENANT_ID, externalRef: 'challenge-456', ownerExternalRef: 'user-10', initialBalance: '50000' });
   const result = await service.disable(created.account.id, { reason: 'ADMIN_LOCK' });
   assert.equal(result.account.status, 'DISABLED');
   assert.equal(result.account.tradingEnabled, false);
@@ -224,7 +224,7 @@ test('disable locks trading, cancels pending orders, and records lifecycle trans
 test('replaying the same lifecycle state is idempotent and does not duplicate lifecycle audit', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const created = await service.provision({ tenantId: TENANT_ID, externalRef: 'challenge-idempotent-disable', ownerExternalRef: 'user-10', initialBalance: '50000' });
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1, tenantId: TENANT_ID, externalRef: 'challenge-idempotent-disable', ownerExternalRef: 'user-10', initialBalance: '50000' });
   await service.disable(created.account.id, { reason: 'ADMIN_LOCK' });
   const afterFirst = models.lifecycleRecords.length;
   const second = await service.disable(created.account.id, { reason: 'ADMIN_LOCK' });
@@ -235,7 +235,7 @@ test('replaying the same lifecycle state is idempotent and does not duplicate li
 test('breached and disabled accounts cannot be resumed', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const created = await service.provision({ tenantId: TENANT_ID, externalRef: 'challenge-789', ownerExternalRef: 'user-11', initialBalance: '25000' });
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1, tenantId: TENANT_ID, externalRef: 'challenge-789', ownerExternalRef: 'user-11', initialBalance: '25000' });
   await service.disable(created.account.id, { reason: 'ADMIN_LOCK' });
   await assert.rejects(() => service.resume(created.account.id), error => error.code === 'ACCOUNT_RESUME_FORBIDDEN');
 });
@@ -320,7 +320,7 @@ test('flatten pauses the account, cancels pending orders, and remains reversible
   const service = createService(models, {
     marketOrderService: { async closeMarketPosition() { throw new Error('No positions expected'); } },
   });
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-final-check',
     ownerExternalRef: 'user-final-check',
@@ -343,7 +343,7 @@ test('flatten pauses the account, cancels pending orders, and remains reversible
 test('staged provisioning is non-tradable and hidden from federation until activation', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-staged',
     ownerExternalRef: 'user-staged',
@@ -371,7 +371,7 @@ test('breached account remains breached when pause, stage, disable, or flatten i
   const service = createService(models, {
     marketOrderService: { async closeMarketPosition() { throw new Error('No positions expected'); } },
   });
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-terminal-breach',
     ownerExternalRef: 'user-terminal',
@@ -593,7 +593,7 @@ test('breach liquidation retries use stable position idempotency keys and only r
     },
   });
 
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-liquidation-retry',
     ownerExternalRef: 'user-liquidation-retry',
@@ -630,7 +630,7 @@ test('authorized V1 to V2 transition clears only the five restrictions and prese
   const service = createService(models, {
     now: () => new Date('2026-09-26T20:00:00.000Z'),
   });
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-policy-v2',
     ownerExternalRef: 'user-policy-v2',
@@ -725,7 +725,7 @@ test('authorized V1 to V2 transition clears only the five restrictions and prese
 test('V2 transition does not reactivate a breached account or clear unresolved stop-out state', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-policy-v2-breached',
     ownerExternalRef: 'user-policy-v2-breached',
@@ -773,7 +773,7 @@ test('V2 transition does not reactivate a breached account or clear unresolved s
 test('policy transition is idempotent by migration id and does not allocate a second risk sequence', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-policy-v2-replay',
     ownerExternalRef: 'user-policy-v2-replay',
@@ -813,7 +813,7 @@ test('policy transition is idempotent by migration id and does not allocate a se
 test('policy transition rejects scope drift and non-V1 source versions', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-policy-v2-strict',
     ownerExternalRef: 'user-policy-v2-strict',
@@ -935,7 +935,7 @@ test('migrated V1 provisioning replay accepts V2 only when an authorized transit
 test('provision persists explicit account trading permissions without changing product invariants', async () => {
   const models = createFakeModels();
   const service = createService(models);
-  const created = await service.provision({
+  const created = await service.provision({ tradingPermissions: { newsTrading: true, weekendHolding: true }, tradingPermissionsVersion: 1,
     tenantId: TENANT_ID,
     externalRef: 'challenge-permissions',
     ownerExternalRef: 'user-permissions',

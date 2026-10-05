@@ -1,4 +1,5 @@
 'use strict';
+const { attachPolicyEvidence } = require('./policy-evidence');
 
 const { AppError } = require('../../shared/errors/app-error');
 const { normalizeSymbol } = require('../market-data/market.utils');
@@ -12,10 +13,11 @@ const { planPendingOrder } = require('./pending-order-planner');
 const { runMongoTransaction, loadOpenExposure } = require('./market-order.service');
 const { loadPendingExposure } = require('./pending-order.service');
 const { serializeOrder } = require('./trading.serializer');
+const { amendmentIncreasesRisk } = require('./pending-amendment-policy');
 
 class PendingOrderAmendService {
-  constructor({ quoteStore, eventBus, logger, valuationEngine = null, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, positionModel = Position, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), runTransaction = runMongoTransaction }) {
-    Object.assign(this, { quoteStore, eventBus, logger, valuationEngine, accountModel, instrumentModel, orderModel, positionModel, commandQueue, idempotencyService, runTransaction });
+  constructor({ quoteStore, eventBus, logger, valuationEngine = null, tradingPermissionPolicyService = null, accountModel = TradingAccount, instrumentModel = Instrument, orderModel = Order, positionModel = Position, commandQueue = new AccountCommandQueue(), idempotencyService = new IdempotencyService(), runTransaction = runMongoTransaction }) {
+    Object.assign(this, { quoteStore, eventBus, logger, valuationEngine, tradingPermissionPolicyService, accountModel, instrumentModel, orderModel, positionModel, commandQueue, idempotencyService, runTransaction });
   }
 
   async amend(command) {
@@ -34,7 +36,10 @@ class PendingOrderAmendService {
         }
 
         const account = await this.accountModel.findById(normalized.accountId).session(session);
-        if (account && this.valuationEngine) this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+        if (account && this.valuationEngine) {
+            await this.valuationEngine.ensureAccountRevision?.(account, { session });
+            this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+          }
         const symbol = normalizeSymbol(order.symbol);
         const exposure = await loadOpenExposure(this.positionModel, normalized.accountId, session, {
           account,
@@ -57,6 +62,12 @@ class PendingOrderAmendService {
           expiresAt: normalized.expiresAt !== undefined ? normalized.expiresAt : order.expiresAt,
         };
         const plan = planPendingOrder({ account, instrument, quote, type: merged.type, side: merged.side, volume: merged.volume, limitPrice: merged.limitPrice, stopPrice: merged.stopPrice, stopLoss: merged.stopLoss, takeProfit: merged.takeProfit, timeInForce: merged.timeInForce, expiresAt: merged.expiresAt, nowMs: Date.now(), exposure, pendingExposure });
+
+        if (amendmentIncreasesRisk(order, merged)) {
+          const decision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session,
+            action: 'PENDING_AMEND_INCREASE', referenceId: normalized.clientRequestId });
+          attachPolicyEvidence(order, decision);
+        }
 
         order.requestedVolume = plan.volume;
         order.limitPrice = plan.limitPrice;

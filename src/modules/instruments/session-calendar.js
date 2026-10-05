@@ -12,8 +12,15 @@ function isInstrumentSessionOpen(instrument, nowMs = Date.now()) {
   const local = zonedParts(nowMs, timezone);
   const dateKey = `${local.year}-${pad(local.month)}-${pad(local.day)}`;
   const holidays = (instrument.tradingHolidays || []).map(String);
-  if (holidays.includes(dateKey)) return false;
+  if (holidays.includes(dateKey) && !instrument.sessionOverrides?.some(item => item.date === dateKey)) return false;
 
+  if (instrument.sessionOverrides?.length) {
+    const windows = [...sessionWindowsOnDate(instrument, local), ...sessionWindowsOnDate(instrument, addLocalCalendarDays(local, -1))];
+    const override = instrument.sessionOverrides.find(item => item.date === dateKey);
+    if (override?.closed) return false;
+    if (!override && !instrument.tradingSessions?.length) return true;
+    return windows.some(window => nowMs >= window.openMs && nowMs < window.closeMs);
+  }
   const sessions = Array.isArray(instrument.tradingSessions) ? instrument.tradingSessions : [];
   if (!sessions.length) return true;
 
@@ -91,6 +98,11 @@ function zonedDateTimeToUtcMs({ year, month, day, hour, minute }, timezone) {
 
 function activeSessionOpenTimeMs(instrument, nowMs) {
   if (!instrument) return null;
+  if (instrument.sessionOverrides?.length) {
+    if (!isInstrumentSessionOpen(instrument, nowMs)) return null;
+    const local = zonedParts(nowMs, String(instrument.timezone || 'UTC'));
+    return [...sessionWindowsOnDate(instrument, local), ...sessionWindowsOnDate(instrument, addLocalCalendarDays(local, -1))].find(window => nowMs >= window.openMs && nowMs < window.closeMs)?.openMs ?? null;
+  }
 
   const timezone = String(instrument.timezone || 'UTC');
   const sessions = Array.isArray(instrument.tradingSessions) ? instrument.tradingSessions : [];
@@ -154,65 +166,52 @@ function sessionAlignedBucketOpenTimeMs(instrument, timeMs, stepMs) {
   return sessionOpenMs + Math.floor((numericTime - sessionOpenMs) / numericStep) * numericStep;
 }
 
-function nextWeekendCloseTimeMs(instrument, nowMs = Date.now()) {
-  if (!instrument) return null;
-  const sessions = Array.isArray(instrument.tradingSessions) ? instrument.tradingSessions : [];
-  if (!sessions.length) return null;
+function sessionsOnDate(instrument, date) {
+  const key = `${date.year}-${pad(date.month)}-${pad(date.day)}`;
+  const override = (instrument.sessionOverrides || []).find(item => item.date === key);
+  if (override) return override.closed ? [] : (override.sessions || []);
+  if ((instrument.tradingHolidays || []).map(String).includes(key)) return [];
+  const weekday = new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay();
+  return (instrument.tradingSessions || []).filter(session => (session.days || []).map(Number).includes(weekday));
+}
 
-  // A Saturday trading session means there is no normal Friday weekend shutdown
-  // that ACG can safely infer (for example 24/7 crypto). Do not guess.
-  if (sessions.some(session => (session.days || []).map(Number).includes(WEEKDAY.SAT))) return null;
-
+function sessionWindowsOnDate(instrument, date) {
   const timezone = String(instrument.timezone || 'UTC');
-  const local = zonedParts(nowMs, timezone);
-  let daysUntilFriday = (WEEKDAY.FRI - local.weekday + 7) % 7;
-  const baseDate = addLocalCalendarDays(local, daysUntilFriday);
-  const holidays = new Set((instrument.tradingHolidays || []).map(String));
-  const fridayKey = `${baseDate.year}-${pad(baseDate.month)}-${pad(baseDate.day)}`;
-  if (holidays.has(fridayKey)) return null;
-
-  const candidates = [];
-  for (const session of sessions) {
-    const days = Array.isArray(session.days) ? session.days.map(Number) : [];
-    if (!days.includes(WEEKDAY.FRI)) continue;
+  return sessionsOnDate(instrument, date).flatMap(session => {
     const open = parseClock(session.open);
     const close = parseClock(session.close);
-    if (open == null || close == null) continue;
+    if (open == null || close == null) return [];
+    const endsAtMidnight = close === 23 * 60 + 59;
+    const endDate = open > close || endsAtMidnight ? addLocalCalendarDays(date, 1) : date;
+    const openMs = zonedDateTimeToUtcMs({ ...date, hour: Math.floor(open / 60), minute: open % 60 }, timezone);
+    const closeMs = zonedDateTimeToUtcMs({ ...endDate, hour: endsAtMidnight ? 0 : Math.floor(close / 60), minute: endsAtMidnight ? 0 : close % 60 }, timezone);
+    return closeMs > openMs ? [{ openMs, closeMs }] : [];
+  });
+}
 
-    let closeDate = baseDate;
-    let closeHour = Math.floor(close / 60);
-    let closeMinute = close % 60;
-    if (open > close) closeDate = addLocalCalendarDays(baseDate, 1);
-    if (close === 23 * 60 + 59) {
-      closeDate = addLocalCalendarDays(baseDate, 1);
-      closeHour = 0;
-      closeMinute = 0;
-    }
-
-    let candidate = zonedDateTimeToUtcMs({
-      year: closeDate.year,
-      month: closeDate.month,
-      day: closeDate.day,
-      hour: closeHour,
-      minute: closeMinute,
-    }, timezone);
-
-    if (candidate <= nowMs && daysUntilFriday === 0) {
-      const nextFriday = addLocalCalendarDays(baseDate, 7);
-      let nextCloseDate = nextFriday;
-      if (open > close || close === 23 * 60 + 59) nextCloseDate = addLocalCalendarDays(nextFriday, 1);
-      candidate = zonedDateTimeToUtcMs({
-        year: nextCloseDate.year,
-        month: nextCloseDate.month,
-        day: nextCloseDate.day,
-        hour: close === 23 * 60 + 59 ? 0 : Math.floor(close / 60),
-        minute: close === 23 * 60 + 59 ? 0 : close % 60,
-      }, timezone);
-    }
-    candidates.push(candidate);
+function nextWeekendCloseTimeMs(instrument, nowMs = Date.now()) {
+  if (!instrument?.tradingSessions?.length) return null;
+  // Continuous/weekend trading needs an explicit product schedule; do not invent a crypto cutoff.
+  if (instrument.tradingSessions.some(session => (session.days || []).map(Number).includes(WEEKDAY.SAT))) return null;
+  const local = zonedParts(nowMs, String(instrument.timezone || 'UTC'));
+  const monday = addLocalCalendarDays(local, -((local.weekday + 6) % 7));
+  for (let week = 0; week < 8; week++) {
+    const windows = [];
+    for (let day = 0; day < 5; day++) windows.push(...sessionWindowsOnDate(instrument, addLocalCalendarDays(monday, week * 7 + day)));
+    const finalClose = windows.length ? Math.max(...windows.map(window => window.closeMs)) : null;
+    if (finalClose != null && finalClose > nowMs) return finalClose;
   }
+  return null;
+}
 
-  return candidates.length ? Math.max(...candidates.filter(Number.isFinite)) : null;
+function nextSessionOpenTimeMs(instrument, afterMs) {
+  const local = zonedParts(afterMs, String(instrument.timezone || 'UTC'));
+  for (let day = 0; day < 15; day++) {
+    const candidates = sessionWindowsOnDate(instrument, addLocalCalendarDays(local, day))
+      .map(window => window.openMs).filter(open => open >= afterMs);
+    if (candidates.length) return Math.min(...candidates);
+  }
+  return null;
 }
 
 function addLocalCalendarDays(parts, days) {
@@ -257,4 +256,4 @@ function parseClock(value) {
 
 function pad(value) { return String(value).padStart(2, '0'); }
 
-module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs, nextWeekendCloseTimeMs };
+module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs, nextWeekendCloseTimeMs, nextSessionOpenTimeMs };

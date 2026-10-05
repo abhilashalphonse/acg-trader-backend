@@ -8,9 +8,9 @@ const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024;
 const MAX_SYNC_BUFFER_EVENTS = 1000;
 const AUTH_REVALIDATE_MS = 60_000;
 
-function createMarketWebSocketServer({ server, runtime, tradingRuntime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, quoteCoalesceMs = 250, valuationCoalesceMs = 250, logger }) {
+function createMarketWebSocketServer({ server, runtime, tradingRuntime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, quoteCoalesceMs = 250, valuationCoalesceMs = 250, logger, traderStateService: suppliedStateService = null }) {
   if (!tradingRuntime?.valuationEngine) throw new Error('tradingRuntime with valuationEngine is required');
-  const traderStateService = new TraderStateService({ valuationEngine: tradingRuntime.valuationEngine });
+  const traderStateService = suppliedStateService || new TraderStateService({ valuationEngine: tradingRuntime.valuationEngine });
   const wss = new WebSocketServer({
     noServer: true,
     perMessageDeflate: false,
@@ -20,6 +20,9 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
   const subscriptions = new WeakMap();
   let outboundSequence = 0;
   let closed = false;
+  const pendingResyncSockets = new Set();
+  const resyncWork = new Set();
+  let resyncTimer = null;
   const egress = {
     messages: 0,
     bytes: 0,
@@ -89,6 +92,8 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       quoteTimers: new Map(),
       valuationPending: new Map(),
       valuationTimers: new Map(),
+      resyncAccounts: new Set(),
+      resyncInFlight: false,
     });
     socket.on('pong', () => { socket.isAlive = true; });
     send(socket, 'connection.ready', {
@@ -239,7 +244,8 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
         tenantId: socket.traderPrincipal.tenantId,
         accountIds: ids,
       });
-      send(socket, 'trading.state.snapshot', { reason, accounts: snapshots });
+      // Grants can change while the database snapshot is being read.
+      send(socket, 'trading.state.snapshot', { reason, accounts: snapshots.filter(snapshot => state.accounts.has(String(snapshot.account.id))) });
     } finally {
       for (const id of ids) state.syncingAccounts.delete(id);
       flushPendingAccountEvents(socket, new Set(ids));
@@ -315,7 +321,53 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     state.valuationTimers.clear();
     state.quotePending.clear();
     state.valuationPending.clear();
+    state.resyncAccounts.clear();
   }
+
+  function scheduleResyncPump(delay = 250) {
+    if (closed || resyncTimer || !pendingResyncSockets.size) return;
+    resyncTimer = setTimeout(() => { resyncTimer = null; pumpResyncs(); }, delay);
+    resyncTimer.unref?.();
+  }
+
+  function pumpResyncs() {
+    if (closed) return;
+    // Bound the additional database work when many accounts change on another replica.
+    for (const socket of pendingResyncSockets) {
+      if (resyncWork.size >= 4) break;
+      const state = subscriptions.get(socket);
+      if (!state || socket.readyState !== WebSocket.OPEN) { pendingResyncSockets.delete(socket); continue; }
+      if (state.resyncInFlight || state.syncingAccounts.size) continue;
+      pendingResyncSockets.delete(socket);
+      const ids = [...state.resyncAccounts].filter(id => state.accounts.has(id));
+      state.resyncAccounts.clear();
+      if (!ids.length) continue;
+      state.resyncInFlight = true;
+      const work = syncAccounts(socket, ids, 'remote-reconciliation').catch(error => {
+        logger?.error?.({ err: error }, 'Remote trader state synchronization failed');
+        socket.close(1011, 'State synchronization failed');
+      }).finally(() => {
+        state.resyncInFlight = false;
+        resyncWork.delete(work);
+        clearTimeout(resyncTimer); resyncTimer = null;
+        scheduleResyncPump(1);
+      });
+      resyncWork.add(work);
+    }
+    scheduleResyncPump();
+  }
+
+  const onAccountReconciled = ({ accountId, tenantId }) => {
+    if (closed) return;
+    for (const socket of wss.clients) {
+      const state = subscriptions.get(socket);
+      if (!state?.accounts.has(String(accountId)) || String(socket.traderPrincipal.tenantId) !== String(tenantId)) continue;
+      state.resyncAccounts.add(String(accountId));
+      pendingResyncSockets.add(socket);
+    }
+    scheduleResyncPump();
+  };
+  runtime.eventBus.on('trading.account.reconciled', onAccountReconciled);
 
   function cancelScheduled(pendingMap, timerMap, key) {
     const timer = timerMap.get(key);
@@ -479,6 +531,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
         quoteSubscriptions,
         tickSubscriptions,
         candleSubscriptions,
+        reconciliation: { queuedSockets: pendingResyncSockets.size, inFlight: resyncWork.size },
         path,
         coalescing: {
           quoteMs: quoteCoalesceMs,
@@ -506,6 +559,8 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     async close() {
       if (closed) return;
       closed = true;
+      clearTimeout(resyncTimer);
+      pendingResyncSockets.clear();
       clearInterval(heartbeatTimer);
       server.off('upgrade', upgradeHandler);
       runtime.eventBus.off('market.quote', broadcastQuote);
@@ -514,9 +569,11 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       runtime.eventBus.off('market.candle.closed', broadcastCandleClosed);
       runtime.eventBus.off('market.candle.corrected', broadcastCandleCorrected);
       runtime.eventBus.off('market.status', broadcastStatus);
+      runtime.eventBus.off('trading.account.reconciled', onAccountReconciled);
       for (const [sourceEvent, listener] of tradingListeners) runtime.eventBus.off(sourceEvent, listener);
       for (const socket of wss.clients) socket.terminate();
       await new Promise(resolve => wss.close(() => resolve()));
+      await Promise.allSettled([...resyncWork]);
     },
   };
 }

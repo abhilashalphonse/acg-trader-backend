@@ -121,13 +121,67 @@ class ValuationEngine {
 
   async getOrLoadAccountSnapshot(accountId) {
     const key = String(accountId || '');
-    const existing = this.getAccountSnapshot(key);
-    if (existing) return existing;
     const account = await this.accountModel.findById(key).lean();
     if (!account) return null;
-    this.#storeAccountBase(account);
-    this.#recalculateAccount(key, false);
+    await this.ensureAccountRevision(account);
     return this.getAccountSnapshot(key);
+  }
+
+  valueAccountState(account, positions) {
+    // Value a consistent database read without replacing live execution caches.
+    // In particular, a delayed reconnect snapshot must not restore an older SL/order state.
+    const valuedAtMs = Date.now();
+    const positionValuations = positions.map(position => ({
+      ...calculatePositionValuation({ position, quote: this.quoteStore.get(position.symbol) }),
+      sequence: ++this.sequence, valuedAtMs,
+    }));
+    return {
+      positionValuations,
+      valuation: {
+        ...aggregateAccountValuation({ account: normalizeAccount(account), positionValuations, currencyConverter: this.currencyConverter, nowMs: valuedAtMs }),
+        financialRevision: Number(account.financialRevision || 0), sequence: ++this.sequence, valuedAtMs,
+      },
+    };
+  }
+
+  async ensureAccountRevision(account, { session = null } = {}) {
+    const key = String(account?._id || account?.id || '');
+    if (!key) return;
+    const base = this.accountBases.get(key);
+    if (base && Number(base.financialRevision || 0) === Number(account.financialRevision || 0)) return;
+    let query = this.positionModel.find({ accountId: key, status: 'OPEN' });
+    if (session) query = query.session(session);
+    const positions = await query.lean();
+    if (!session) {
+      // Outside an execution transaction, bracket the position read with the account revision.
+      const current = await this.accountModel.findById(key).lean();
+      if (!current || Number(current.financialRevision || 0) !== Number(account.financialRevision || 0)) {
+        throw new AppError('Account changed while reloading valuation', { statusCode: 409, code: 'STALE_VALUATION_REVISION' });
+      }
+    }
+    this.replaceAccountState(account, positions);
+  }
+
+  replaceAccountState(account, positions) {
+    const key = String(account?._id || account?.id || '');
+    const base = this.accountBases.get(key);
+    // A late snapshot must never rewind a locally committed financial revision.
+    if (base && Number(base.financialRevision || 0) > Number(account.financialRevision || 0)) return false;
+    for (const id of [...(this.positionsByAccount.get(key) || [])]) {
+      const position = this.positions.get(id);
+      if (position) this.#unindexPosition(position);
+      this.positions.delete(id);
+      this.positionValuations.delete(id);
+    }
+    this.#storeAccountBase(account);
+    for (const position of positions) {
+      const id = this.#storePosition(position);
+      if (id) this.#revaluePosition(id, this.quoteStore.get(position.symbol), false);
+    }
+    this.#refreshConversionIndex(key);
+    this.pendingAccountRevalues.delete(key);
+    this.#recalculateAccount(key, false);
+    return true;
   }
 
   projectAccountDocument(account) {

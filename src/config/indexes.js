@@ -21,6 +21,11 @@ const { MarginStopOutJob } = require('../modules/trading/margin-stop-out-job.mod
 const { PlatformEventOutbox } = require('../modules/integration/platform-event-outbox.model');
 const { ReconciliationReport } = require('../modules/operations/reconciliation-report.model');
 const { TraderProfile } = require('../modules/profile/trader-profile.model');
+const { NewsCalendarSnapshot, NewsCalendarState } = require('../modules/trading/news-calendar-snapshot.model');
+const { TradingPolicyShadowEvent } = require('../modules/trading/trading-policy-shadow-event.model');
+const { WeekendDeadline, WeekendAccountAction } = require('../modules/trading/weekend-action.model');
+const { PolicyControl, PolicyControlAudit } = require('../modules/trading/policy-control.service');
+const { PolicyMetricBucket } = require('../modules/trading/policy-metrics.service');
 
 const CRITICAL_MODELS = Object.freeze([
   TradingAccount,
@@ -44,6 +49,14 @@ const CRITICAL_MODELS = Object.freeze([
   PlatformEventOutbox,
   ReconciliationReport,
   TraderProfile,
+  NewsCalendarSnapshot,
+  NewsCalendarState,
+  TradingPolicyShadowEvent,
+  WeekendDeadline,
+  WeekendAccountAction,
+  PolicyControl,
+  PolicyControlAudit,
+  PolicyMetricBucket,
 ]);
 
 async function ensureCriticalIndexes({ logger = null } = {}) {

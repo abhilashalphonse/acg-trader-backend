@@ -1,5 +1,6 @@
 'use strict';
 
+const mongoose = require('mongoose');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { Instrument } = require('../instruments/instrument.model');
 const { Position } = require('./position.model');
@@ -10,6 +11,7 @@ class WeekendHoldingEngine {
     policyService,
     marketOrderService,
     pendingOrderService,
+    actionService,
     accountModel = TradingAccount,
     instrumentModel = Instrument,
     positionModel = Position,
@@ -22,6 +24,7 @@ class WeekendHoldingEngine {
     this.policyService = policyService;
     this.marketOrderService = marketOrderService;
     this.pendingOrderService = pendingOrderService;
+    this.actionService = actionService;
     this.accountModel = accountModel;
     this.instrumentModel = instrumentModel;
     this.positionModel = positionModel;
@@ -51,13 +54,22 @@ class WeekendHoldingEngine {
     if (this.running) return;
     this.running = true;
     try {
+      let cursor = null;
+      while (true) {
       const accounts = await this.accountModel.find({
         status: 'ACTIVE',
         tradingEnabled: true,
         'tradingPermissions.weekendHolding': false,
-      }).select('_id tenantId tradingPermissions').lean().limit(500);
+        ...(cursor ? { _id: mongoose.trusted({ $gt: cursor }) } : {}),
+      }).select('_id tenantId tradingPermissions tradingPermissionsVersion executionRestrictions').sort({ _id: 1 }).limit(500).lean();
 
-      for (const account of accounts) await this.#scanAccount(account);
+      for (const account of accounts) {
+        try { await this.#scanAccount(account); }
+        catch (error) { this.logger?.error?.({ err: error?.message, accountId: String(account._id) }, 'Weekend account scan failed'); }
+      }
+      if (accounts.length < 500) break;
+      cursor = accounts[accounts.length - 1]._id;
+      }
     } finally {
       this.running = false;
     }
@@ -67,18 +79,29 @@ class WeekendHoldingEngine {
     const nowMs = this.now().getTime();
     const [positions, pending] = await Promise.all([
       this.positionModel.find({ accountId: account._id, status: 'OPEN' }).select('_id symbol openVolume').lean(),
-      this.orderModel.find({ accountId: account._id, status: { $in: ['PENDING', 'TRIGGERED'] } }).select('_id symbol').lean(),
+      this.orderModel.find({ accountId: account._id, status: mongoose.trusted({ $in: ['PENDING', 'TRIGGERED'] }) }).select('_id symbol').lean(),
     ]);
 
     const symbols = [...new Set([...positions, ...pending].map(item => String(item.symbol || '').toUpperCase()).filter(Boolean))];
     if (!symbols.length) return;
-    const instruments = await this.instrumentModel.find({ symbol: { $in: symbols } }).lean();
+    const instruments = await this.instrumentModel.find({ symbol: mongoose.trusted({ $in: symbols }) }).lean();
     const bySymbol = new Map(instruments.map(item => [String(item.symbol).toUpperCase(), item]));
+    const policies = new Map();
+    for (const symbol of symbols) {
+      const instrument = bySymbol.get(symbol);
+      if (!instrument) continue;
+      const policy = await this.policyService.policyStatus(account._id, symbol, { nowMs, account, instrument });
+      policies.set(symbol, policy);
+      if (policy.weekend?.warning || policy.weekend?.active) {
+        await this.actionService?.plan({ account, instrument, weekend: policy.weekend,
+          enforced: this.enforcementEnabled && policy.enforcement?.weekendEnabled === true });
+      }
+    }
 
     for (const position of positions) {
       const symbol = String(position.symbol || '').toUpperCase();
-      const policy = await this.policyService.policyStatus(account._id, symbol, { nowMs });
-      if (!policy.weekend?.active) continue;
+      const policy = policies.get(symbol);
+      if (!policy?.weekend?.active) continue;
 
       await this.policyService.recordWeekendCandidate({
         account,
@@ -88,24 +111,14 @@ class WeekendHoldingEngine {
         weekend: policy.weekend,
         nowMs,
         type: 'WEEKEND_WOULD_CLOSE',
+        enforcementEnabled: policy.enforcement?.weekendEnabled === true,
       });
-
-      if (!this.enforcementEnabled || !bySymbol.get(symbol)) continue;
-      await this.marketOrderService.closeMarketPosition({
-        accountId: String(account._id),
-        positionId: String(position._id),
-        clientOrderId: weekendCommandId('close', position._id, policy.weekend.autoCloseAt),
-        volume: null,
-        requestedPrice: null,
-        source: 'SYSTEM',
-        reason: 'WEEKEND_HOLDING_POLICY',
-      }).catch(error => this.logger?.error?.({ err: error?.message, accountId: String(account._id), positionId: String(position._id) }, 'Weekend auto-close failed'));
     }
 
     for (const order of pending) {
       const symbol = String(order.symbol || '').toUpperCase();
-      const policy = await this.policyService.policyStatus(account._id, symbol, { nowMs });
-      if (!policy.weekend?.active) continue;
+      const policy = policies.get(symbol);
+      if (!policy?.weekend?.active) continue;
 
       await this.policyService.recordWeekendCandidate({
         account,
@@ -115,14 +128,8 @@ class WeekendHoldingEngine {
         weekend: policy.weekend,
         nowMs,
         type: 'WEEKEND_WOULD_CANCEL_PENDING',
+        enforcementEnabled: policy.enforcement?.weekendEnabled === true,
       });
-
-      if (!this.enforcementEnabled) continue;
-      await this.pendingOrderService.cancelPendingOrder({
-        accountId: String(account._id),
-        orderId: String(order._id),
-        clientRequestId: weekendCommandId('cancel', order._id, policy.weekend.autoCloseAt),
-      }).catch(error => this.logger?.error?.({ err: error?.message, accountId: String(account._id), orderId: String(order._id) }, 'Weekend pending-order cancellation failed'));
     }
   }
 }
