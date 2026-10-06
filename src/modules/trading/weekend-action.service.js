@@ -115,6 +115,13 @@ class WeekendActionService {
       }
       await this.#progress(claim, 'CLOSING');
       const positions = await this.positionModel.find({ accountId: job.accountId, symbol: job.symbol, status: 'OPEN' }).select('_id').lean();
+      if (positions.length) {
+        // Quote outages are retriable policy failures, not trading commands. Check
+        // executable pricing before creating per-close idempotency reservations so
+        // a provider outage cannot create one failed trading record on every retry.
+        await this.#renew(claim);
+        await this.marketOrderService.ensureExecutableQuote(job.symbol, { reason: 'weekend-policy-preflight' });
+      }
       for (const position of positions) {
         await this.#renew(claim);
         await this.marketOrderService.closeMarketPosition({ accountId: String(job.accountId), positionId: String(position._id),
