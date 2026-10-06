@@ -36,13 +36,15 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
 
     const marketReadiness = evaluateMarketReadiness(market);
     const marketOperational = marketReadiness.operational;
+    const permissionReadiness = evaluateTradingPermissionReadiness(trading);
 
     const tradingReady = trading.enabled === true
       && trading.started === true
       && reconciliationOperational
       && recoveryConsistent
       && platformEventsOperational
-      && marketOperational;
+      && marketOperational
+      && permissionReadiness.operational;
     const ready = Boolean(database.connected && marketOperational && tradingReady);
 
     res.status(ready ? 200 : 503).json({
@@ -60,6 +62,9 @@ function createHealthRouter({ marketRuntime, tradingRuntime } = {}) {
         reconciliationOperational,
         recoveryConsistent: trading.reconciliation?.recovery?.consistent ?? null,
         platformEventsOperational,
+        tradingPermissionsOperational: permissionReadiness.operational,
+        weekendWorkerOperational: permissionReadiness.weekendWorkerOperational,
+        newsCalendarOperational: permissionReadiness.newsCalendarOperational,
       },
       timestamp: new Date().toISOString(),
     });
@@ -99,4 +104,28 @@ function evaluateMarketReadiness(market) {
   };
 }
 
-module.exports = { createHealthRouter, evaluateMarketReadiness };
+
+function evaluateTradingPermissionReadiness(trading) {
+  const permissions = trading?.tradingPermissions || {};
+  const weekendRequired = permissions.weekendEnforcementEnabled === true;
+  const weekendWorkerOperational = !weekendRequired || (
+    permissions.weekendScannerRunning === true
+    && permissions.weekendWorkerRunning === true
+    && permissions.weekendWorker?.running === true
+  );
+
+  const newsRequired = permissions.newsEnforcementEnabled === true;
+  const calendarStatus = String(permissions.calendarStatus || '').toUpperCase();
+  const newsCalendarOperational = !newsRequired || ['FRESH', 'GRACE'].includes(calendarStatus);
+
+  return {
+    operational: weekendWorkerOperational && newsCalendarOperational,
+    weekendWorkerOperational,
+    newsCalendarOperational,
+    weekendRequired,
+    newsRequired,
+    calendarStatus: calendarStatus || null,
+  };
+}
+
+module.exports = { createHealthRouter, evaluateMarketReadiness, evaluateTradingPermissionReadiness };
