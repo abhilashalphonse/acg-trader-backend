@@ -32,7 +32,6 @@ const schema = z.object({
   NEWS_TRADING_ROLLOUT_PERCENT: z.coerce.number().int().min(0).max(100).default(0),
   WEEKEND_HOLDING_ROLLOUT_PERCENT: z.coerce.number().int().min(0).max(100).default(0),
   WEEKEND_PROCESSING_LEAD_MINUTES: z.coerce.number().int().min(5).max(120).default(10),
-  TRADING_QUOTE_PREFLIGHT_FAULT_SYMBOLS: z.string().default(''),
   FINANCE_CALENDAR_BASE_URL: z.string().url().default('https://www.financecalendar.com/wp-json/fc/v1'),
   NEWS_CALENDAR_HTTP_TIMEOUT_MS: positiveInt(8000),
   NEWS_CALENDAR_CACHE_TTL_MS: positiveInt(60000),
@@ -152,7 +151,6 @@ if (
 if (/</.test(raw.MONGODB_URI)) throw new Error('MONGODB_URI still contains an example placeholder');
 
 if (raw.NODE_ENV === 'production') {
-  if (csv(raw.TRADING_QUOTE_PREFLIGHT_FAULT_SYMBOLS).length) throw new Error('TRADING_QUOTE_PREFLIGHT_FAULT_SYMBOLS is forbidden in production');
   if (raw.TRADING_API_ENABLED !== true) throw new Error('TRADING_API_ENABLED must be true in production');
   if (raw.MARKET_GATEWAY_ENABLED !== true) throw new Error('MARKET_GATEWAY_ENABLED must be true in production');
   if (resolvedPlatformEventsEnabled !== true) throw new Error('PLATFORM_EVENTS_ENABLED must resolve true in production');
@@ -184,10 +182,6 @@ const env = Object.freeze({
     weekendScanIntervalMs: raw.WEEKEND_HOLDING_SCAN_INTERVAL_MS,
   }),
   reconciliation: Object.freeze({ enabled: raw.RECONCILIATION_ENABLED, intervalMs: raw.RECONCILIATION_INTERVAL_MS }),
-  testFaults: Object.freeze({
-    quotePreflightUnavailableSymbols: Object.freeze([...new Set(csv(raw.TRADING_QUOTE_PREFLIGHT_FAULT_SYMBOLS)
-      .map(value => value.replace('/', '').toUpperCase()))]),
-  }),
   auth: Object.freeze({
     sessionTtlSeconds: raw.AUTH_SESSION_TTL_SECONDS,
     accessTokenTtlSeconds: raw.AUTH_ACCESS_TOKEN_TTL_SECONDS,
