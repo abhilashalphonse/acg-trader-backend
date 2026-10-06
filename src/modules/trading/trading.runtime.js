@@ -118,7 +118,7 @@ function createTradingRuntime({ marketRuntime }) {
       await protectionTriggerEngine.start();
       await pendingOrderEngine.start();
       weekendHoldingEngine.start();
-      weekendActionService.start();
+      if (env.tradingPermissions.weekendWorkerEnabled) weekendActionService.start();
       await trailingStopEngine.start();
       await stateSynchronizer.start();
 
@@ -195,6 +195,7 @@ function createTradingRuntime({ marketRuntime }) {
         shadowEnabled: env.tradingPermissions.shadowEnabled,
         newsEnforcementEnabled: env.tradingPermissions.newsEnforcementEnabled,
         weekendEnforcementEnabled: env.tradingPermissions.weekendEnforcementEnabled,
+        weekendWorkerEnabled: env.tradingPermissions.weekendWorkerEnabled,
         weekendScannerRunning: Boolean(weekendHoldingEngine.timer),
         weekendWorkerRunning: Boolean(weekendActionService.timer),
         weekendWorker: weekendActionService.health(),
