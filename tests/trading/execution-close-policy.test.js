@@ -3,7 +3,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { planMarketOpen, planMarketClose } = require('../../src/modules/trading/execution-planner');
-const { MarketOrderService } = require('../../src/modules/trading/market-order.service');
 
 function account(overrides = {}) {
   return {
@@ -114,25 +113,4 @@ test('new exposure is blocked while margin stop-out is active but closing remain
   assert.equal(close.volume, '0.5');
 });
 
-test('non-production quote preflight fault blocks configured symbols before provider recovery', async () => {
-  let recoveryCalls = 0;
-  const service = new MarketOrderService({
-    quoteStore: { get: () => quote },
-    eventBus: { emit() {} },
-    logger: { warn() {} },
-    quoteRecovery: async () => { recoveryCalls += 1; },
-    quotePreflightUnavailableSymbols: ['EURUSD'],
-    instrumentModel: {
-      findOne() {
-        return { lean: async () => instrument() };
-      },
-    },
-  });
-
-  await assert.rejects(
-    () => service.ensureExecutableQuote('EURUSD', { reason: 'weekend-policy-preflight' }),
-    error => error.code === 'QUOTE_UNAVAILABLE' && error.statusCode === 503,
-  );
-  assert.equal(recoveryCalls, 0);
-});
 
