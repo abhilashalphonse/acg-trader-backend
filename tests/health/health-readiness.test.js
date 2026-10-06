@@ -90,6 +90,19 @@ test('weekend enforcement requires the scanner and worker to be running', () => 
   });
   assert.equal(unhealthy.operational, false);
   assert.equal(unhealthy.weekendWorkerOperational, false);
+
+  const scannerDown = evaluateTradingPermissionReadiness({
+    tradingPermissions: {
+      weekendEnforcementEnabled: true,
+      weekendScannerRunning: false,
+      weekendWorkerRunning: true,
+      weekendWorker: { running: true },
+      newsEnforcementEnabled: false,
+      calendarStatus: 'FRESH',
+    },
+  });
+  assert.equal(scannerDown.operational, false);
+  assert.equal(scannerDown.weekendWorkerOperational, false);
 });
 
 test('news enforcement permits fresh or grace calendar data and fails closed after expiry', () => {
