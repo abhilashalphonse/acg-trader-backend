@@ -54,6 +54,7 @@ class MarketOrderService {
     idempotencyService = new IdempotencyService(),
     postFillRiskService = null,
     tradingPermissionPolicyService = null,
+    quotePreflightUnavailableSymbols = [],
     runTransaction = runMongoTransaction,
   }) {
     Object.assign(this, {
@@ -75,6 +76,9 @@ class MarketOrderService {
       tradingPermissionPolicyService,
       runTransaction,
     });
+    this.quotePreflightUnavailableSymbols = new Set(
+      (quotePreflightUnavailableSymbols || []).map(normalizeSymbol).filter(Boolean),
+    );
   }
 
   async openMarketOrder(command, { timing = null, requestId = null, tenantId = null } = {}) {
@@ -313,6 +317,12 @@ class MarketOrderService {
 
   async ensureExecutableQuote(symbol, { reason = 'execution-preflight' } = {}) {
     const normalizedSymbol = normalizeSymbol(symbol);
+    if (this.quotePreflightUnavailableSymbols.has(normalizedSymbol)) {
+      throw new AppError('Injected quote outage for non-production resilience testing', {
+        statusCode: 503,
+        code: 'QUOTE_UNAVAILABLE',
+      });
+    }
     const [quoteSnapshot, instrument] = await Promise.all([
       this.#resolveExecutableQuote(normalizedSymbol, reason),
       this.instrumentModel.findOne({ symbol: normalizedSymbol }).lean(),
