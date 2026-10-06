@@ -114,6 +114,17 @@ class WeekendActionService {
           clientRequestId: `weekend-cancel:${job._id.slice(0, 32)}:${order._id}:${job.generation}` }, { weekendClaim: claim });
       }
       await this.#progress(claim, 'CLOSING');
+      if (process.env.NODE_ENV !== 'production'
+        && String(job.accountId) === '6ac454bffcacdce0f3b0f2cc'
+        && Number(job.generation) === 1) {
+        this.logger?.warn?.({
+          actionId: job._id,
+          accountId: String(job.accountId),
+          generation: job.generation,
+          leaseUntil: new Date(this.now() + this.leaseMs).toISOString(),
+        }, 'STAGING_SIGKILL_CANARY_PAUSED_AFTER_CANCEL');
+        await new Promise(resolve => setTimeout(resolve, 180000));
+      }
       const positions = await this.positionModel.find({ accountId: job.accountId, symbol: job.symbol, status: 'OPEN' }).select('_id').lean();
       if (positions.length) {
         // Quote outages are retriable policy failures, not trading commands. Check
