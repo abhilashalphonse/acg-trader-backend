@@ -29,7 +29,7 @@ const { Position } = require('./position.model');
 const { AccountLedger } = require('./account-ledger.model');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
-const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('./execution-planner');
+const { planMarketOpen, planMarketClose, calculateAdverseSlippage, validateQuote } = require('./execution-planner');
 const {
   calculatePositionStopRiskAmount,
   hasActiveExposurePolicy,
@@ -309,6 +309,19 @@ class MarketOrderService {
       await timeAsync(timing, 'failure_record', () => this.#recordFailure(reservation.record._id, error));
       throw translateTransactionError(error);
     }
+  }
+
+  async ensureExecutableQuote(symbol, { reason = 'execution-preflight' } = {}) {
+    const normalizedSymbol = normalizeSymbol(symbol);
+    const [quoteSnapshot, instrument] = await Promise.all([
+      this.#resolveExecutableQuote(normalizedSymbol, reason),
+      this.instrumentModel.findOne({ symbol: normalizedSymbol }).lean(),
+    ]);
+    if (!instrument) {
+      throw new AppError('Instrument was not found', { statusCode: 404, code: 'INSTRUMENT_NOT_FOUND' });
+    }
+    validateQuote(quoteSnapshot, instrument, Date.now());
+    return quoteSnapshot;
   }
 
   async #resolveExecutableQuote(symbol, reason) {

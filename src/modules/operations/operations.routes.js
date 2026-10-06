@@ -21,6 +21,10 @@ const policyControlSchema = z.object({
   reason: z.string().trim().min(1).max(500),
 }).strict().refine(value => value.newsDisabled !== undefined || value.weekendDisabled !== undefined, 'At least one control is required');
 const policyMetricsSchema = z.object({ hours: z.coerce.number().int().min(1).max(168).default(24) }).strict();
+const weekendSummarySchema = z.object({
+  hours: z.coerce.number().int().min(1).max(720).default(168),
+  retryAttentionAttempt: z.coerce.number().int().min(2).max(1000).default(5),
+}).strict();
 const tradeListSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
   cursor: objectId.optional(),
@@ -45,7 +49,11 @@ function createOperationsRouter(runtime, authService) {
     res.json(await runtime.policyControlService.update({ ...body, tenantId: req.servicePrincipal.tenantId, actor: req.servicePrincipal.clientId }));
   });
   router.get('/weekend-actions/summary', async (req, res) => {
-    res.json(await runtime.weekendActionService.summary(req.servicePrincipal.tenantId));
+    const query = parse(weekendSummarySchema, req.query || {});
+    res.json(await runtime.weekendActionService.summary(req.servicePrincipal.tenantId, {
+      lookbackHours: query.hours,
+      retryAttentionAttempt: query.retryAttentionAttempt,
+    }));
   });
   router.get('/policy-metrics', async (req, res) => {
     const query = parse(policyMetricsSchema, req.query || {});
