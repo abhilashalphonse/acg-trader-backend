@@ -126,11 +126,15 @@ test('weekend worker preflights executable quote before issuing protective close
       return { matchedCount: 1 };
     },
   };
-  const chain = value => ({
-    session() { return this; },
-    select() { return this; },
-    lean: async () => value,
-  });
+  const chain = value => {
+    const query = {
+      session() { return query; },
+      select() { return query; },
+      lean: async () => value,
+      then(resolve, reject) { return Promise.resolve(value).then(resolve, reject); },
+    };
+    return query;
+  };
 
   const worker = new WeekendActionService({
     policyService: {
