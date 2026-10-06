@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { WeekendActionService } = require('../../src/modules/trading/weekend-action.service');
+const { WeekendActionService, confirmationIsLate } = require('../../src/modules/trading/weekend-action.service');
 
 test('weekend shutdown finishes existing claims without draining additional jobs', async () => {
   let claims = 0;
@@ -41,4 +41,32 @@ test('weekend shutdown finishes existing claims without draining additional jobs
   assert.equal(claims, 2, 'shutdown must not drain the rest of the batch');
   await worker.runDue();
   assert.equal(claims, 2, 'a late poll cannot claim work after shutdown');
+});
+
+test('weekend confirmation is late only after the actual market-close deadline', () => {
+  const marketCloseAt = new Date('2026-10-09T22:00:00.000Z');
+  assert.equal(confirmationIsLate(new Date('2026-10-09T21:55:02.000Z'), marketCloseAt), false);
+  assert.equal(confirmationIsLate(new Date('2026-10-09T21:59:59.999Z'), marketCloseAt), false);
+  assert.equal(confirmationIsLate(new Date('2026-10-09T22:00:00.001Z'), marketCloseAt), true);
+});
+
+test('weekend summary treats only past market close as overdue flat', async () => {
+  let pipeline;
+  const worker = new WeekendActionService({
+    policyService: { config: { weekendEnforcementEnabled: true } },
+    now: () => Date.parse('2026-10-09T21:55:30.000Z'),
+    actionModel: {
+      async aggregate(value) {
+        pipeline = value;
+        return [{ states: [], overdueFlat: [], lateConfirmed: [] }];
+      },
+    },
+  });
+
+  const result = await worker.summary('000000000000000000000001');
+  assert.equal(result.overdueFlat, 0);
+
+  const serialized = JSON.stringify(pipeline);
+  assert.match(serialized, /marketCloseAt/);
+  assert.doesNotMatch(serialized, /"requiredFlatAt":\{"\$lte"/);
 });
