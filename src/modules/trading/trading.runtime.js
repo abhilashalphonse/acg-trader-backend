@@ -197,6 +197,7 @@ function createTradingRuntime({ marketRuntime }) {
         weekendEnforcementEnabled: env.tradingPermissions.weekendEnforcementEnabled,
         weekendScannerRunning: Boolean(weekendHoldingEngine.timer),
         weekendWorkerRunning: Boolean(weekendActionService.timer),
+        weekendWorker: weekendActionService.health(),
         calendarStatus: calendarSnapshots.read().dataStatus,
         calendarSnapshotVersion: calendarSnapshots.read().snapshotVersion,
         calendarLastError: calendarSnapshots.lastError,
