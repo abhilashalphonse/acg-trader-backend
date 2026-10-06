@@ -44,7 +44,7 @@ class WeekendActionService {
       { $match: { tenantId: new mongoose.Types.ObjectId(String(tenantId)), mode: 'ENFORCED', marketCloseAt: { $gte: new Date(this.now() - 7 * 86400000) } } },
       { $facet: {
         states: [{ $group: { _id: '$state', count: { $sum: 1 } } }],
-        overdueFlat: [{ $match: { state: { $in: ACTIVE_STATES }, requiredFlatAt: { $lte: now } } }, { $count: 'count' }],
+        overdueFlat: [{ $match: { state: { $in: ACTIVE_STATES }, marketCloseAt: { $lte: now } } }, { $count: 'count' }],
         lateConfirmed: [{ $match: { state: 'CONFIRMED', late: true } }, { $count: 'count' }],
       } },
     ]);
@@ -132,7 +132,7 @@ class WeekendActionService {
         if (positions || orders) throw actionError('WEEKEND_NOT_FLAT');
         const confirmedAt = new Date(this.now());
         await this.actionModel.updateOne(claim, { $set: { state: 'CONFIRMED', confirmedAt,
-          late: confirmedAt > new Date(job.requiredFlatAt), leaseUntil: new Date(0), lastError: null } }, { session });
+          late: confirmationIsLate(confirmedAt, job.marketCloseAt), leaseUntil: new Date(0), lastError: null } }, { session });
       });
     } catch (error) {
       const state = error.code === 'WEEKEND_DEADLINE_MISSED' ? 'MISSED' : error.code === 'WEEKEND_POLICY_CHANGED' ? 'OBSOLETE' : 'RETRYING';
@@ -166,5 +166,8 @@ class WeekendActionService {
     await this.actionModel.updateOne(claim, { $set: { state } });
   }
 }
+function confirmationIsLate(confirmedAt, marketCloseAt) {
+  return new Date(confirmedAt).getTime() > new Date(marketCloseAt).getTime();
+}
 function actionError(code) { return new AppError(code, { statusCode: 409, code }); }
-module.exports = { WeekendActionService };
+module.exports = { WeekendActionService, confirmationIsLate };
