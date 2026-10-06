@@ -9,6 +9,7 @@ const { Position } = require('./position.model');
 const { Order } = require('./order.model');
 const { WeekendDeadline, WeekendAccountAction } = require('./weekend-action.model');
 const { runMongoTransaction } = require('./market-order.service');
+const { connectDatabase, disconnectDatabase } = require('../../config/database');
 const ACTIVE_STATES = ['PLANNED', 'LOCKED', 'CANCELLING', 'CLOSING', 'VERIFYING', 'RETRYING'];
 
 class WeekendActionService {
@@ -114,6 +115,27 @@ class WeekendActionService {
           clientRequestId: `weekend-cancel:${job._id.slice(0, 32)}:${order._id}:${job.generation}` }, { weekendClaim: claim });
       }
       await this.#progress(claim, 'CLOSING');
+      if (process.env.NODE_ENV !== 'production'
+        && String(job.accountId) === '6ac454bffcacdce0f3b0f2cc'
+        && Number(job.generation) === 1) {
+        this.logger?.warn?.({
+          actionId: job._id,
+          accountId: String(job.accountId),
+          generation: job.generation,
+        }, 'STAGING_MONGO_CANARY_DISCONNECTING');
+        await disconnectDatabase();
+        this.logger?.warn?.({
+          actionId: job._id,
+          generation: job.generation,
+        }, 'STAGING_MONGO_CANARY_DISCONNECTED');
+        await new Promise(resolve => setTimeout(resolve, 8000));
+        await connectDatabase();
+        this.logger?.warn?.({
+          actionId: job._id,
+          generation: job.generation,
+        }, 'STAGING_MONGO_CANARY_RECONNECTED');
+        throw actionError('STAGING_MONGO_NETWORK_INTERRUPTION');
+      }
       const positions = await this.positionModel.find({ accountId: job.accountId, symbol: job.symbol, status: 'OPEN' }).select('_id').lean();
       if (positions.length) {
         // Quote outages are retriable policy failures, not trading commands. Check
