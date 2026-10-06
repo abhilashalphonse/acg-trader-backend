@@ -62,7 +62,7 @@ function createTradingRuntime({ marketRuntime }) {
   const policyControlService = new PolicyControlService();
   const policyMetricsService = new PolicyMetricsService({ logger });
   const tradingPermissionPolicyService = new TradingPermissionPolicyService({ logger, calendarSnapshots, controlService: policyControlService, metricsService: policyMetricsService });
-  const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
+  const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, quoteRecovery: marketRuntime.ensureFreshQuote, quotePreflightUnavailableSymbols: env.testFaults.quotePreflightUnavailableSymbols, logger });
   const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
   const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
   const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger });
@@ -202,6 +202,9 @@ function createTradingRuntime({ marketRuntime }) {
         calendarLastError: calendarSnapshots.lastError,
         pendingTelemetry: tradingPermissionPolicyService.pendingTelemetry,
         droppedTelemetry: tradingPermissionPolicyService.droppedTelemetry,
+        faultInjection: {
+          quotePreflightUnavailableSymbols: env.testFaults.quotePreflightUnavailableSymbols,
+        },
         metrics: policyMetricsService.health(),
       },
       trailing: trailingStopEngine.health(),
