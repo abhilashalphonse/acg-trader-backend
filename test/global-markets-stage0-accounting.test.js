@@ -209,3 +209,27 @@ test('GM-002 cross-currency zero still requires a usable FX dependency', () => {
     error => error?.code === 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
   );
 });
+
+
+test('GM-002 financial conversion context keeps one FX snapshot across an attempt', () => {
+  const { CurrencyConversionEngine } = require('../src/modules/trading/currency-conversion-engine');
+  let quote = { bid: 90, ask: 91, receivedAtMs: 1000, sequence: 1, source: 'TEST' };
+  const engine = new CurrencyConversionEngine({
+    symbols: ['USDINR'],
+    quoteStore: { get() { return quote; } },
+  });
+  const context = engine.createContext({ nowMs: 1000 });
+
+  const first = context.convertWithEvidence('900', 'INR', 'USD', { purpose: 'LOSS_LIABILITY' });
+  quote = { bid: 80, ask: 81, receivedAtMs: 1000, sequence: 2, source: 'TEST' };
+  const second = context.convertWithEvidence('900', 'INR', 'USD', { purpose: 'LOSS_LIABILITY' });
+  const freshAttempt = engine.createContext({ nowMs: 1000 })
+    .convertWithEvidence('900', 'INR', 'USD', { purpose: 'LOSS_LIABILITY' });
+
+  assert.equal(first.amount, '10');
+  assert.equal(second.amount, '10');
+  assert.equal(first.evidence.path[0].quoteSequence, 1);
+  assert.equal(second.evidence.path[0].quoteSequence, 1);
+  assert.equal(freshAttempt.amount, '11.25');
+  assert.equal(freshAttempt.evidence.path[0].quoteSequence, 2);
+});
