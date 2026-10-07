@@ -40,8 +40,17 @@ class AtomicReverseService {
           const nowMs = Date.now();
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
+          const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs })
+            || this.valuationEngine?.currencyConverter
+            || null;
           await this.valuationEngine?.ensureAccountRevision?.(account, { session });
-          const valuationProjection = this.valuationEngine ? this.valuationEngine.overlayAccountDocument(account, { requireLive: true }) : null;
+          const valuationProjection = this.valuationEngine
+            ? this.valuationEngine.overlayAccountDocument(account, {
+              requireLive: true,
+              currencyConverter: financialConverter,
+              nowMs,
+            })
+            : null;
           const position = await this.positionModel.findById(normalized.positionId).session(session);
           if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
           if (String(position.accountId) !== normalized.accountId) throw new AppError('Position does not belong to this trading account', { statusCode: 403, code: 'POSITION_ACCOUNT_MISMATCH' });
@@ -53,17 +62,37 @@ class AtomicReverseService {
           const originalVolume = String(position.openVolume);
           const oppositeSide = String(position.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
           const policyDecision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session, action: 'POSITION_REVERSE', referenceId: normalized.clientRequestId });
-          const closePlan = planMarketClose({ account, instrument, quote, position, volume: null, nowMs });
+          const closePlan = planMarketClose({
+            account,
+            instrument,
+            quote,
+            position,
+            volume: null,
+            nowMs,
+            currencyConverter: financialConverter,
+          });
           const close = await this.#persistClose({ account, position, plan: closePlan, quote, normalized, session, nowMs, valuationComplete: valuationProjection ? valuationProjection.complete : true });
           const exposure = hasExposureLimits(account)
             ? await loadOpenExposure(this.positionModel, normalized.accountId, session, {
               account,
               symbol,
               nowMs,
+              currencyConverter: financialConverter,
               instrumentModel: this.instrumentModel,
             })
             : null;
-          const openPlan = planMarketOpen({ account, instrument, quote, side: oppositeSide, volume: originalVolume, stopLoss: normalized.stopLoss, takeProfit: normalized.takeProfit, nowMs, exposure });
+          const openPlan = planMarketOpen({
+            account,
+            instrument,
+            quote,
+            side: oppositeSide,
+            volume: originalVolume,
+            stopLoss: normalized.stopLoss,
+            takeProfit: normalized.takeProfit,
+            nowMs,
+            exposure,
+            currencyConverter: financialConverter,
+          });
           const open = await this.#persistOpen({ account, plan: openPlan, quote, normalized, session, nowMs, policyDecision });
           const response = { operation: 'REVERSE', atomic: true, originalPositionId: normalized.positionId, close, open, position: open.position, account: open.account };
           const completed = await this.idempotencyService.complete(reservation.record._id, { resourceType: 'POSITION', resourceId: open.position.positionId || open.position.id, response }, { session });
