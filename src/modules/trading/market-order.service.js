@@ -662,14 +662,28 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
   }
 
   account.state.balance = runningBalance;
-  if (valuationComplete) {
-    account.state.floatingPnl = subtractDecimal(account.state.floatingPnl, plan.realizedPnl);
-  }
-  account.state.equity = subtractDecimal(account.state.equity, plan.commission);
   account.state.realizedPnlToday = addDecimal(account.state.realizedPnlToday, plan.realizedPnl);
+
   let usedMargin = subtractDecimal(account.state.usedMargin, plan.releasedMargin);
   if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
   account.state.usedMargin = usedMargin;
+
+  if (valuationComplete) {
+    const markedClosedPnl = normalizeDecimal(plan.markedClosedPnl ?? plan.realizedPnl);
+    let floatingPnl = subtractDecimal(account.state.floatingPnl, markedClosedPnl);
+
+    // A flat account cannot retain floating P&L. This also prevents a close
+    // execution adjustment from leaving balance and equity inconsistent.
+    if (compareDecimal(usedMargin, '0') === 0 && plan.fullClose) floatingPnl = '0';
+
+    account.state.floatingPnl = floatingPnl;
+    account.state.equity = addDecimal(runningBalance, floatingPnl);
+  } else {
+    // Preserve the previous incomplete projection semantics. The account will
+    // be revalued once all required market/FX dependencies are available.
+    account.state.equity = subtractDecimal(account.state.equity, plan.commission);
+  }
+
   account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
   account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
 
