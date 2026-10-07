@@ -3,7 +3,7 @@
 const { AppError } = require('../../shared/errors/app-error');
 const {
   ROUNDING, normalizeDecimal, compareDecimal, multiplyDecimal, divideDecimal,
-  quantizeToStep, subtractDecimal,
+  subtractDecimal,
 } = require('../../shared/decimal/decimal');
 
 // Every probe delegates to the authoritative execution planner. This retains
@@ -55,9 +55,9 @@ function sizeMarketOrder({
       // Margin or risk-policy rejection can only reduce the permissible volume.
       // Other errors (e.g., missing FX, session closure, invalid SL) must
       // fail the preview instead of silently turning into a smaller order.
-      if (!['INSUFFICIENT_MARGIN', 'MAX_RISK_PER_TRADE_EXCEEDED', 'MAX_AGGREGATE_RISK_EXCEEDED',
-        'MAX_MARGIN_USAGE_EXCEEDED', 'SINGLE_ORDER_MARGIN_LIMIT_EXCEEDED',
-        'SYMBOL_MARGIN_LIMIT_EXCEEDED'].includes(error?.code)) throw error;
+      if (!['INSUFFICIENT_MARGIN', 'MAX_TRADE_RISK', 'MAX_AGGREGATE_RISK',
+        'MAX_MARGIN_USAGE', 'MAX_SINGLE_ORDER_EXPOSURE', 'MAX_SYMBOL_EXPOSURE',
+        'MAX_POSITION_VOLUME_REACHED', 'MAX_TOTAL_VOLUME_REACHED', 'MAX_SYMBOL_VOLUME_REACHED'].includes(error?.code)) throw error;
       high = units - 1n;
       continue;
     }
