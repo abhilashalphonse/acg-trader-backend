@@ -179,6 +179,22 @@ class MarketOrderService {
             }
           }
 
+          if (normalized.maxExposureAmount != null) {
+            const maximum = normalizeDecimal(normalized.maxExposureAmount);
+            if (compareDecimal(maximum, '0') <= 0 || plan.exposureAccountCurrency == null
+                || compareDecimal(plan.exposureAccountCurrency, maximum) > 0) {
+              throw new AppError('Current exposure exceeds the confirmed amount budget', {
+                statusCode: 409,
+                code: 'EXECUTION_AMOUNT_BUDGET_EXCEEDED',
+                details: {
+                  maximumExposureAmount: maximum,
+                  actualExposureAmount: plan.exposureAccountCurrency ?? null,
+                  accountCurrency: account?.currency || null,
+                },
+              });
+            }
+          }
+
           const policyDecision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session,
             action: 'MARKET_OPEN', referenceId: normalized.clientOrderId });
 
@@ -1037,6 +1053,7 @@ function normalizeOpenCommand(command) {
     side: String(command?.side || '').toUpperCase(),
     volume: String(command?.volume ?? '').trim(),
     maxRiskAmount: command?.maxRiskAmount == null ? null : String(command.maxRiskAmount),
+    maxExposureAmount: command?.maxExposureAmount == null ? null : String(command.maxExposureAmount),
     stopLoss: nullableString(command?.stopLoss),
     takeProfit: nullableString(command?.takeProfit),
     requestedPrice: nullableString(command?.requestedPrice),
