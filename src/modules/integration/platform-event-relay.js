@@ -267,6 +267,7 @@ class PlatformEventRelay {
       policyVersions: {
         tradingPermissions: numberOrNull(account.tradingPermissionsVersion),
         riskPolicy: metadataValue(account.metadata, 'riskPolicyVersion') || null,
+        conversion: 'ACG_FX_PURPOSE_V1',
       },
       initialBalance: decimal(account?.state?.initialBalance),
       balance: decimal(payload?.balance ?? state.balance),
