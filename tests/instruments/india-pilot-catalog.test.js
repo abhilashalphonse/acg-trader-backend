@@ -58,5 +58,6 @@ test('India pilot equities inherit the versioned stock leverage policy while exe
     assert.equal(item.leveragePolicyVersion, 2, item.symbol);
     assert.equal(item.executionEnabled, false, item.symbol);
     assert.equal(item.executionProvisionVersion, 0, item.symbol);
+    assert.equal(item.corporateActionPolicy, 'UNSUPPORTED', item.symbol);
   }
 });
