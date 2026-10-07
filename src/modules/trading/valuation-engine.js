@@ -314,7 +314,8 @@ class ValuationEngine {
     // account-currency conversion path depends on this quote. This keeps
     // challenge equity/current free margin live without an O(all accounts)
     // fan-out on every market tick.
-    for (const accountId of touchedAccounts) this.#recalculateAccount(accountId, true);
+    const quoteOverrides = new Map([[symbol, quote]]);
+    for (const accountId of touchedAccounts) this.#recalculateAccount(accountId, true, { quoteOverrides });
   }
   #handleMarketStatus(status) {
     if (String(status?.scope || '').toLowerCase() !== 'symbol' || !status?.symbol) return;
@@ -480,7 +481,7 @@ class ValuationEngine {
     if (emit) this.eventBus.emit('valuation.position.updated', clone(valuation));
     return valuation;
   }
-  #recalculateAccount(accountId, emit) {
+  #recalculateAccount(accountId, emit, { quoteOverrides = null } = {}) {
     const base = this.accountBases.get(String(accountId));
     if (!base) return null;
     const valuedAtMs = Date.now();
@@ -497,7 +498,7 @@ class ValuationEngine {
       const refreshed = {
         ...calculatePositionValuation({
           position,
-          quote: this.quoteStore.get(position.symbol),
+          quote: quoteOverrides?.get?.(position.symbol) || this.quoteStore.get(position.symbol),
           instrument: this.instrumentResolver?.(position.symbol) || null,
           nowMs: valuedAtMs,
         }),
