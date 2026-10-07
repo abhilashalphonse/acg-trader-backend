@@ -121,9 +121,9 @@ class PendingOrderService {
 
     try {
       const result = await this.commandQueue.run(normalized.accountId, async () => {
-        const quoteSnapshot = this.quoteStore.get(normalized.symbol);
         return this.runTransaction(async session => {
           const nowMs = Date.now();
+          const quoteSnapshot = this.quoteStore.get(normalized.symbol);
           const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs })
             || this.valuationEngine?.currencyConverter
             || null;
