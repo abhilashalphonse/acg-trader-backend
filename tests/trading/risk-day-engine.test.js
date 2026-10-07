@@ -39,7 +39,7 @@ function document() {
   };
 }
 
-test('first live valuation of a new UTC day resets daily risk baseline', async () => {
+test('first recovered valuation of a new UTC day does not redefine the prior risk baseline', async () => {
   const eventBus = new EventEmitter();
   const doc = document();
   const engine = new RiskDayEngine({
@@ -56,7 +56,7 @@ test('first live valuation of a new UTC day resets daily risk baseline', async (
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(doc.riskDayKey, '2026-09-18');
-  assert.equal(String(doc.state.dailyStartEquity), '98750');
+  assert.equal(String(doc.state.dailyStartEquity), '100000');
   assert.equal(String(doc.state.realizedPnlToday), '0');
   assert.equal(doc.saved, true);
   engine.stop();
