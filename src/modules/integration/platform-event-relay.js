@@ -258,8 +258,16 @@ class PlatformEventRelay {
     const state = payload?.state || account.state || {};
     const snapshotPayload = {
       provider: 'acg-trader',
+      financialContractVersion: 'ACG_FINANCIAL_V1',
       platformAccountId: accountId,
       accountCode: account.accountCode || payload?.accountCode || null,
+      accountCurrency: String(account.currency || '').toUpperCase() || null,
+      financialRevision: numberOrNull(payload?.financialRevision ?? account.financialRevision),
+      valuationEpoch: payload?.valuationEpoch || null,
+      policyVersions: {
+        risk: metadataValue(account.metadata, 'riskPolicyVersion') || null,
+        conversion: 'ACG_FX_PURPOSE_V1',
+      },
       balance: decimal(payload?.balance ?? state.balance),
       equity: decimal(payload?.equity ?? state.equity),
       margin: decimal(payload?.usedMargin ?? state.usedMargin),
