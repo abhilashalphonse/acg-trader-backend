@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const { addDecimal, subtractDecimal } = require('../../shared/decimal/decimal');
@@ -38,6 +39,7 @@ class ValuationEngine {
     this.accountsByConversionSymbol = new Map();
     this.conversionSymbolsByAccount = new Map();
     this.sequence = 0;
+    this.valuationEpoch = crypto.randomUUID();
     this.started = false;
     this.pendingAccountRevalues = new Set();
     this.accountRevalueScheduled = false;
@@ -106,7 +108,7 @@ class ValuationEngine {
   health() {
     const statuses = { LIVE: 0, STALE: 0, WAITING: 0 };
     for (const valuation of this.accountValuations.values()) statuses[valuation.valuationStatus] = (statuses[valuation.valuationStatus] || 0) + 1;
-    return { started: this.started, openPositions: this.positions.size, accounts: this.accountValuations.size, statuses };
+    return { started: this.started, valuationEpoch: this.valuationEpoch, openPositions: this.positions.size, accounts: this.accountValuations.size, statuses };
   }
 
   getPositionSnapshot(positionId) {
@@ -139,7 +141,7 @@ class ValuationEngine {
       positionValuations,
       valuation: {
         ...aggregateAccountValuation({ account: normalizeAccount(account), positionValuations, currencyConverter: this.currencyConverter, nowMs: valuedAtMs }),
-        financialRevision: Number(account.financialRevision || 0), sequence: ++this.sequence, valuedAtMs,
+        financialRevision: Number(account.financialRevision || 0), valuationEpoch: this.valuationEpoch, sequence: ++this.sequence, valuedAtMs,
       },
     };
   }
@@ -351,7 +353,7 @@ class ValuationEngine {
   #revaluePosition(id, quote, emit) {
     const position = this.positions.get(id);
     if (!position) return null;
-    const valuation = { ...calculatePositionValuation({ position, quote }), sequence: ++this.sequence, valuedAtMs: Date.now() };
+    const valuation = { ...calculatePositionValuation({ position, quote }), valuationEpoch: this.valuationEpoch, sequence: ++this.sequence, valuedAtMs: Date.now() };
     this.positionValuations.set(id, valuation);
     if (emit) this.eventBus.emit('valuation.position.updated', clone(valuation));
     return valuation;
@@ -367,6 +369,7 @@ class ValuationEngine {
         nowMs: Date.now(),
       }),
       financialRevision: Number(base.financialRevision || 0),
+      valuationEpoch: this.valuationEpoch,
       sequence: ++this.sequence,
       valuedAtMs: Date.now(),
     };
