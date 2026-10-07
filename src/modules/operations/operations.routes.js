@@ -11,6 +11,7 @@ const { serializeDeal } = require('../trading/trading.serializer');
 const { Instrument } = require('../instruments/instrument.model');
 const { env } = require('../../config/env');
 const { buildGlobalMarketsReadiness } = require('./global-markets-readiness');
+const { buildGlobalMarketsOperationalGate } = require('./global-markets-operational-gate');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const reconcileSchema = z.object({
@@ -93,6 +94,34 @@ function createOperationsRouter(runtime, authService) {
       nowMs,
     });
     res.json(report);
+  });
+
+  router.get('/global-markets/operational-gate', async (req, res) => {
+    const query = parse(globalMarketsReadinessSchema, req.query || {});
+    const symbol = String(query.symbol || 'RELIANCE').toUpperCase();
+    const instrument = await Instrument.findOne({ symbol }).lean();
+    const nowMs = Date.now();
+    const readiness = buildGlobalMarketsReadiness({
+      symbol,
+      instrument,
+      quoteStore: runtime.currencyConversionEngine?.quoteStore || null,
+      currencyConverter: runtime.currencyConversionEngine,
+      platformEventsHealth: runtime.platformEventRelay?.health?.() || null,
+      config: {
+        marketProvider: env.market.provider,
+        indiaMarketEnabled: env.market.indiaEnabled,
+        accelpixConfigured: Boolean(env.accelpix.apiKey),
+      },
+      nowMs,
+    });
+    const gate = buildGlobalMarketsOperationalGate({
+      readiness,
+      runtimeHealth: runtime.health(),
+      reconciliationHealth: runtime.reconciliationService.health(),
+      thresholds: env.globalMarkets,
+      nowMs,
+    });
+    res.status(gate.operationalReady ? 200 : 409).json(gate);
   });
 
   router.get('/recovery', (_req, res) => {
