@@ -30,8 +30,17 @@ function assertEnableGuard(env = process.env) {
   if (String(env.INDIA_EXECUTION_PILOT_CONFIRM || '') !== 'RELIANCE-STAGING-ONLY') {
     throw new Error('INDIA_EXECUTION_PILOT_CONFIRM=RELIANCE-STAGING-ONLY is required');
   }
-  if (String(env.NODE_ENV || '').toLowerCase() === 'production') {
-    throw new Error('Stage 2 RELIANCE pilot activation is blocked in production');
+  if (String(env.INDIA_EXECUTION_PILOT_ENVIRONMENT || '').toLowerCase() !== 'staging') {
+    throw new Error('INDIA_EXECUTION_PILOT_ENVIRONMENT=staging is required');
+  }
+
+  const railwayEnvironment = String(
+    env.RAILWAY_ENVIRONMENT_NAME
+    || env.RAILWAY_ENVIRONMENT
+    || '',
+  ).trim().toLowerCase();
+  if (railwayEnvironment === 'production') {
+    throw new Error('Stage 2 RELIANCE pilot activation is blocked in the Railway production environment');
   }
 }
 
