@@ -26,6 +26,7 @@ const { calculatePositionValuation } = require('./valuation-calculator');
 const {
   validatePreTradeRiskPolicy,
   validateActiveExposurePolicy,
+  calculateProjectedStopRiskAmount,
 } = require('./firm-risk-policy');
 
 function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now(), currencyConverter = null, exposure = null }) {
@@ -66,6 +67,18 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     marginPolicy,
   });
   const requiredMargin = marginProjection.amount;
+  const nativeExposureAmount = multiplyDecimal(
+    multiplyDecimal(fillPrice, instrument.contractSize),
+    normalizedVolume,
+  );
+  const exposureProjection = convertTradingCurrencyWithEvidence(
+    nativeExposureAmount,
+    String(instrument.marginCurrency || instrument.quoteCurrency || '').toUpperCase(),
+    account.currency,
+    currencyConverter,
+    nowMs,
+    { purpose: 'EXPOSURE' },
+  );
   const firmRisk = validatePreTradeRiskPolicy({
     account,
     instrument,
@@ -127,13 +140,28 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     fillPrice,
     stopLoss: normalizedStopLoss,
     takeProfit: normalizedTakeProfit,
-    riskAmount: firmRisk.tradeRiskAmount,
+    riskAmount: firmRisk.tradeRiskAmount ?? (normalizedStopLoss == null ? null : calculateProjectedStopRiskAmount({
+      account,
+      instrument,
+      side: normalizedSide,
+      entryPrice: fillPrice,
+      volume: normalizedVolume,
+      stopLoss: normalizedStopLoss,
+      openingCommission: commission,
+      closingCommission: estimatedCloseCommission,
+      currencyConverter,
+      nowMs,
+    })),
     riskPercent: firmRisk.tradeRiskPercent,
     rawStopRiskAmount: firmRisk.rawStopRiskAmount ?? null,
     openingCommission: firmRisk.openingCommission ?? commission,
     estimatedCloseCommission: firmRisk.closingCommission ?? estimatedCloseCommission,
     commission,
     requiredMargin,
+    nativeExposureAmount,
+    nativeExposureCurrency: String(instrument.marginCurrency || instrument.quoteCurrency || '').toUpperCase(),
+    exposureAccountCurrency: exposureProjection.amount,
+    exposureConversionEvidence: exposureProjection.evidence,
     effectiveLeverage: marginPolicy.effectiveLeverage,
     accountLeverage: marginPolicy.accountLeverage,
     instrumentLeverage: marginPolicy.instrumentLeverage,
@@ -186,7 +214,23 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   const entryPrice = normalizeDecimal(position.entryPrice);
   const priceDifference = position.side === 'BUY' ? subtractDecimal(fillPrice, entryPrice) : subtractDecimal(entryPrice, fillPrice);
   const realizedPnlQuote = multiplyDecimal(multiplyDecimal(priceDifference, contractSize), requestedVolume);
-  const realizedPnl = convertCurrency(realizedPnlQuote, pnlCurrency, account.currency, currencyConverter, nowMs);
+  const pnlSettlement = currencyConverter?.convertWithEvidence
+    ? currencyConverter.convertWithEvidence(realizedPnlQuote, pnlCurrency, account.currency, {
+      nowMs,
+      purpose: 'GENERIC',
+    })
+    : {
+      amount: convertCurrency(realizedPnlQuote, pnlCurrency, account.currency, currencyConverter, nowMs),
+      evidence: pnlCurrency === String(account.currency || '').toUpperCase() ? {
+        fromCurrency: pnlCurrency,
+        toCurrency: pnlCurrency,
+        inputAmount: realizedPnlQuote,
+        purpose: 'GENERIC',
+        path: [],
+        convertedAtMs: nowMs,
+      } : null,
+    };
+  const realizedPnl = pnlSettlement.amount;
   const commission = calculateCommission(instrument, requestedVolume, {
     account,
     fillPrice,
@@ -236,7 +280,8 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   return Object.freeze({
     symbol: normalizeSymbol(position.symbol), closeSide, volume: requestedVolume, remainingVolume, fullClose,
     fillPrice, entryPrice, contractSize, volumeStep, quoteCurrency: pnlCurrency, pnlCurrency,
-    realizedPnlQuote, realizedPnl, commission, netBalanceChange, releasedMargin,
+    realizedPnlQuote, realizedPnl, pnlConversionEvidence: pnlSettlement.evidence,
+    commission, netBalanceChange, releasedMargin,
     markedPnlRemoved,
     projectedAccountState: Object.freeze(projectedAccountState),
     quoteSequence: quote.sequence ?? null, quoteReceivedAtMs: quote.receivedAtMs,
