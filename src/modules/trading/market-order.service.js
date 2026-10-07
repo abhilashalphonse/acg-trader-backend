@@ -30,6 +30,7 @@ const { AccountLedger } = require('./account-ledger.model');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { IdempotencyService } = require('./idempotency.service');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage, validateQuote } = require('./execution-planner');
+const { sizeMarketOrder } = require('./order-sizing');
 const {
   calculatePositionStopRiskAmount,
   hasActiveExposurePolicy,
@@ -244,18 +245,33 @@ class MarketOrderService {
           })
           : null;
 
-        const plan = planMarketOpen({
+        const evaluate = volume => planMarketOpen({
           account,
           instrument,
           quote: quoteSnapshot,
           exposure,
           side: normalized.side,
-          volume: normalized.volume,
+          volume,
           stopLoss: normalized.stopLoss,
           takeProfit: normalized.takeProfit,
           nowMs,
           currencyConverter: financialConverter,
         });
+        if (normalized.sizingMode === 'RISK' && normalized.stopLoss == null) {
+          throw new AppError('Risk sizing requires a stop loss', {
+            statusCode: 400,
+            code: 'RISK_SIZING_REQUIRES_STOP_LOSS',
+          });
+        }
+        const sizing = normalized.sizingMode === 'QUANTITY'
+          ? null
+          : sizeMarketOrder({
+            mode: normalized.sizingMode,
+            amount: normalized.sizingAmount,
+            instrument,
+            evaluate,
+          });
+        const plan = sizing?.plan || evaluate(normalized.volume);
 
         const policyDecision = this.tradingPermissionPolicyService
           ? await this.tradingPermissionPolicyService.evaluateExposureIncrease({
@@ -278,6 +294,7 @@ class MarketOrderService {
           quoteSnapshot,
           policyDecision,
           nowMs,
+          sizing,
         });
       }, timing);
     });
@@ -869,7 +886,7 @@ function serializeOpenExecution(plan, account, postFillRisk = null) {
   };
 }
 
-function serializeMarketPreview({ account, instrument, plan, quoteSnapshot, policyDecision, nowMs }) {
+function serializeMarketPreview({ account, instrument, plan, quoteSnapshot, policyDecision, nowMs, sizing = null }) {
   return {
     previewVersion: 'ACG_ORDER_PREVIEW_V1',
     generatedAt: new Date(nowMs).toISOString(),
@@ -879,6 +896,18 @@ function serializeMarketPreview({ account, instrument, plan, quoteSnapshot, poli
     assetClass: instrument?.assetClass || null,
     side: plan.side,
     volume: plan.volume,
+    sizing: sizing ? {
+      mode: sizing.mode,
+      requestedAmount: sizing.requestedAmount,
+      actualAmount: sizing.actualAmount,
+      unusedBudget: sizing.unusedBudget,
+      currency: String(account?.currency || '').toUpperCase(),
+    } : { mode: 'QUANTITY', volume: plan.volume },
+    exposure: {
+      accountCurrency: String(account?.currency || '').toUpperCase(),
+      amount: plan.exposureAccountCurrency,
+      conversion: plan.exposureConversionEvidence || null,
+    },
     fillPrice: plan.fillPrice,
     quote: {
       bid: quoteSnapshot?.bid == null ? null : String(quoteSnapshot.bid),
@@ -1003,7 +1032,9 @@ function normalizePreviewCommand(command) {
     accountId: String(command?.accountId || '').trim(),
     symbol: normalizeSymbol(command?.symbol),
     side: String(command?.side || '').toUpperCase(),
-    volume: String(command?.volume ?? '').trim(),
+    sizingMode: String(command?.sizingMode || 'QUANTITY').toUpperCase(),
+    sizingAmount: command?.sizingAmount == null ? null : String(command.sizingAmount),
+    volume: command?.volume == null ? null : String(command.volume).trim(),
     stopLoss: nullableString(command?.stopLoss),
     takeProfit: nullableString(command?.takeProfit),
     requestedPrice: nullableString(command?.requestedPrice),
