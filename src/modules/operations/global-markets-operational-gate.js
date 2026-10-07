@@ -99,13 +99,13 @@ function buildGlobalMarketsOperationalGate({
       reconciliation?.recovery?.consistent !== false
       && !['DEGRADED', 'ISSUES'].includes(String(reconciliation?.state || '').toUpperCase())
       && normalizedThresholds.maxReconciliationIssues != null
-      && Number(reconciliation?.latest?.issueCount ?? reconciliation?.issueCount ?? 0)
+      && Number(reconciliation?.lastReport?.issueCount ?? reconciliation?.issueCount ?? 0)
         <= normalizedThresholds.maxReconciliationIssues,
       'Reconciliation is degraded or above the approved issue threshold',
       {
         state: reconciliation?.state || null,
         recoveryConsistent: reconciliation?.recovery?.consistent !== false,
-        issueCount: finiteOrNull(reconciliation?.latest?.issueCount ?? reconciliation?.issueCount ?? 0),
+        issueCount: finiteOrNull(reconciliation?.lastReport?.issueCount ?? reconciliation?.issueCount ?? 0),
         threshold: normalizedThresholds.maxReconciliationIssues,
       },
     ),
