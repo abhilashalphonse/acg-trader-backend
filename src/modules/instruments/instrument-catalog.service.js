@@ -230,6 +230,7 @@ function serializeInstrument(document) {
     chartEnabled: doc.chartEnabled,
     executionEnabled: doc.executionEnabled,
     executionProvisionVersion: Number(doc.executionProvisionVersion || 0),
+    corporateActionPolicy: doc.corporateActionPolicy || 'NOT_APPLICABLE',
     status: doc.status,
   };
 }
