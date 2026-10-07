@@ -690,6 +690,11 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
     account.state.freeMargin = projected.freeMargin;
     account.state.marginLevel = projected.marginLevel;
   } else {
+    // Compatibility for callers/tests that construct a close plan without the
+    // new projection contract. Production execution plans always carry it.
+    if (valuationComplete && !projected) {
+      account.state.floatingPnl = subtractDecimal(account.state.floatingPnl, plan.realizedPnl);
+    }
     // Preserve close/reduce availability when another position cannot be
     // valued. The valuation engine will repair the aggregate projection once
     // completeness returns; do not pretend an incomplete projection is live.
