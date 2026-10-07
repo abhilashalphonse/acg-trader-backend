@@ -22,6 +22,10 @@ const { planMarketClose } = require('./execution-planner');
 const { calculatePositionValuation, convertPnl } = require('./valuation-calculator');
 const { evaluateRiskContext } = require('./challenge-risk-engine');
 const { dayKeyInTimezone } = require('./risk-day-engine');
+const {
+  isRiskValuationAcceptable,
+  isPositionExecutable,
+} = require('./valuation-quality');
 
 const STOP_OUT_LEVEL_PERCENT = '50';
 const MAX_VOLUME_STEPS = 100000;
@@ -416,7 +420,7 @@ class MarginStopOutEngine {
 }
 
 function shouldTriggerStopOut(valuation, stopOutLevelPercent = STOP_OUT_LEVEL_PERCENT) {
-  if (!valuation || valuation.complete !== true || String(valuation.valuationStatus || '').toUpperCase() !== 'LIVE') return false;
+  if (!isRiskValuationAcceptable(valuation)) return false;
   if (valuation.usedMargin == null || compareDecimal(valuation.usedMargin, '0') <= 0) return false;
   if (valuation.marginLevel == null) return false;
   return compareDecimal(valuation.marginLevel, stopOutLevelPercent) <= 0;
@@ -458,13 +462,45 @@ function evaluateChallengePrecedence(account, valuation) {
   });
 }
 
-function rankStopOutPositions({ positions, account, quoteStore, currencyConverter = null, nowMs = Date.now() }) {
-  return positions.map(position => {
+function classifyStopOutPositions({
+  positions,
+  account,
+  quoteStore,
+  currencyConverter = null,
+  instrumentBySymbol = null,
+  nowMs = Date.now(),
+}) {
+  const ranked = [];
+  const deferred = [];
+
+  for (const position of positions) {
     const quote = quoteStore?.get?.(position.symbol);
-    const valuation = calculatePositionValuation({ position, quote });
-    if (valuation.valuationStatus !== 'LIVE' || valuation.floatingPnl == null) {
+    const instrument = instrumentBySymbol?.get?.(String(position.symbol || '').toUpperCase()) || null;
+    const valuation = calculatePositionValuation({ position, quote, instrument, nowMs });
+
+    if (instrument && !isPositionExecutable(valuation)) {
+      deferred.push({
+        position,
+        reason: valuation.executionAvailability || 'NOT_EXECUTABLE',
+        instrumentValuationQuality: valuation.instrumentValuationQuality || null,
+      });
+      continue;
+    }
+
+    // Preserve historical behavior for callers that do not provide instrument
+    // metadata; production stop-out always supplies it.
+    if (!instrument && (valuation.valuationStatus !== 'LIVE' || valuation.floatingPnl == null)) {
       throw retryable(`Position ${String(position.positionId || position._id)} does not have a live executable valuation`, 'STOP_OUT_POSITION_VALUATION_UNAVAILABLE');
     }
+    if (valuation.floatingPnl == null) {
+      deferred.push({
+        position,
+        reason: 'VALUATION_UNAVAILABLE',
+        instrumentValuationQuality: valuation.instrumentValuationQuality || null,
+      });
+      continue;
+    }
+
     const floatingPnl = convertPnl(
       valuation.floatingPnl,
       valuation.quoteCurrency,
@@ -472,8 +508,15 @@ function rankStopOutPositions({ positions, account, quoteStore, currencyConverte
       currencyConverter,
       nowMs,
     );
-    return { ...position, __stopOutFloatingPnl: floatingPnl };
-  }).sort(compareStopOutPositions);
+    ranked.push({ ...position, __stopOutFloatingPnl: floatingPnl });
+  }
+
+  ranked.sort(compareStopOutPositions);
+  return { ranked, deferred };
+}
+
+function rankStopOutPositions(options) {
+  return classifyStopOutPositions(options).ranked;
 }
 
 function compareStopOutPositions(left, right) {
@@ -625,6 +668,7 @@ module.exports = {
   isRecovered,
   evaluateChallengePrecedence,
   rankStopOutPositions,
+  classifyStopOutPositions,
   compareStopOutPositions,
   findMinimumStopOutClose,
   projectStopOutClose,
