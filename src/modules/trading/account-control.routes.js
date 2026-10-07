@@ -68,6 +68,12 @@ function createAccountControlRouter(runtime, authService) {
   router.use(requireServicePrincipal(authService, 'accounts:write'));
 
   router.post('/provision', async (req, res) => { const result = await runtime.accountControlService.provision({ ...parse(provisionSchema, req.body), tenantId: req.servicePrincipal.tenantId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.get('/:accountId/payout-settlement-checkpoint', async (req, res) => {
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    const checkpoint = await runtime.accountControlService.getPayoutSettlementCheckpoint(accountId);
+    res.status(checkpoint.settled ? 200 : 409).json({ checkpoint });
+  });
   router.get('/:accountId', async (req, res) => { const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); res.json({ account: await runtime.accountControlService.getById(accountId) }); });
   router.get('/:accountId/lifecycle', async (req, res) => {
     const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); const { limit } = parse(lifecycleQuerySchema, req.query || {});

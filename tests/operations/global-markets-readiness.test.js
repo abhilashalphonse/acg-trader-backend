@@ -88,6 +88,8 @@ test('GLOBAL-MARKETS readiness reaches READY_TO_ENABLE_PILOT before execution is
   assert.equal(report.status, 'READY_TO_ENABLE_PILOT');
   assert.equal(report.activationReady, true);
   assert.equal(report.executionReady, false);
+  assert.equal(report.customerReleaseReady, false);
+  assert.ok(report.customerReleaseBlockers.some(item => item.check === 'corporateActionOpenPositionSafety'));
   assert.equal(report.instrument.sessionOpen, true);
   assert.equal(report.marketData.underlying.status, 'LIVE');
   assert.equal(report.marketData.fx.status, 'LIVE');

@@ -176,16 +176,20 @@ function positiveOrNull(value) {
 }
 
 function nonNegativeOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 function maxFinite(values) {
-  const numbers = values.map(Number).filter(Number.isFinite);
+  const numbers = values
+    .filter(value => value !== null && value !== undefined && value !== '')
+    .map(Number).filter(Number.isFinite);
   return numbers.length ? Math.max(...numbers) : null;
 }
 
 function finiteOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

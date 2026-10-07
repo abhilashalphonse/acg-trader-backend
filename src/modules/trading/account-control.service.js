@@ -11,6 +11,7 @@ const { Order } = require('./order.model');
 const { Position } = require('./position.model');
 const { AccountLedger } = require('./account-ledger.model');
 const { serializeAccount } = require('./trading.serializer');
+const { buildPayoutSettlementCheckpoint } = require('./payout-settlement-checkpoint');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { runMongoTransaction } = require('./market-order.service');
 const { dayKeyInTimezone } = require('./risk-day-engine');
@@ -146,6 +147,35 @@ class AccountControlService {
     const account = await this.accountModel.findById(String(accountId));
     if (!account) throw accountNotFound();
     return serializeControlledAccount(account);
+  }
+
+  async getPayoutSettlementCheckpoint(accountId) {
+    const key = String(accountId);
+    // Prevent a concurrent account command in this process while reading the
+    // financial state. Database transaction establishes a consistent snapshot.
+    // Before multi-writer execution, account ownership fencing remains mandatory.
+    return this.commandQueue.run(key, () => this.runTransaction(async session => {
+      const account = await this.accountModel.findById(key).session(session);
+      if (!account) throw accountNotFound();
+      const scope = { tenantId: account.tenantId, accountId: account._id };
+      // MongoDB sessions do not support parallel transaction operations.
+      // Read the three evidence components sequentially in one snapshot.
+      const openPositionCount = await this.positionModel
+        .countDocuments({ ...scope, status: 'OPEN' }).session(session);
+      const activeOrderCount = await this.orderModel.countDocuments({
+        ...scope,
+        status: { $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] },
+      }).session(session);
+      const lastLedger = await this.ledgerModel.findOne(scope)
+        .sort({ createdAt: -1, _id: -1 }).session(session).lean();
+      return buildPayoutSettlementCheckpoint({
+        account,
+        openPositionCount,
+        activeOrderCount,
+        lastLedger,
+        checkedAt: this.now(),
+      });
+    }));
   }
 
   async transitionRiskPolicy(accountId, command = {}) {

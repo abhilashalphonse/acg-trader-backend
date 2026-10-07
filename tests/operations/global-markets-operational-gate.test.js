@@ -183,3 +183,25 @@ test('reconciliation lastReport issue count is release-blocking', () => {
   assert.equal(gate.checks.reconciliation.observed.issueCount, 2);
   assert.equal(gate.operationalReady, false);
 });
+
+
+test('unset non-negative thresholds are not silently treated as zero', () => {
+  const gate = buildGlobalMarketsOperationalGate({
+    readiness: readiness(),
+    runtimeHealth: runtime(),
+    reconciliationHealth: runtime().reconciliation,
+    thresholds: {
+      maxUnderlyingAgeMs: 2000,
+      maxFxAgeMs: 2000,
+      maxPlatformEventFailures: null,
+      maxRiskInFlight: undefined,
+      maxReconciliationIssues: '',
+    },
+    nowMs: NOW,
+  });
+  assert.equal(gate.operationalReady, false);
+  assert.equal(gate.checks.thresholdsConfigured.pass, false);
+  assert.equal(gate.thresholds.maxPlatformEventFailures, null);
+  assert.equal(gate.thresholds.maxRiskInFlight, null);
+  assert.equal(gate.thresholds.maxReconciliationIssues, null);
+});
