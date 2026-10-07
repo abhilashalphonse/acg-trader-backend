@@ -158,6 +158,8 @@ test('successful realtime snapshots are delivered directly without Mongo outbox 
     accountCode: 'ACG-1',
     externalRef: 'challenge-1',
     riskDayKey: '2026-09-18',
+    currency: 'USD',
+    financialRevision: 12,
     state: { dailyStartEquity: '100000' },
     metadata: { fundedAccountId: 'FUNDED-1' },
   };
@@ -200,6 +202,8 @@ test('successful realtime snapshots are delivered directly without Mongo outbox 
     positionCount: 1,
     valuationStatus: 'LIVE',
     complete: true,
+    financialRevision: 12,
+    valuationEpoch: 'epoch-test-1',
     sequence: 10,
     valuedAtMs: Date.parse('2026-09-18T12:00:00.000Z'),
   });
@@ -209,6 +213,11 @@ test('successful realtime snapshots are delivered directly without Mongo outbox 
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].eventType, 'ACG_TRADER_ACCOUNT_SNAPSHOT');
   assert.equal(deliveries[0].payload.equity, '100100');
+  assert.equal(deliveries[0].payload.financialContractVersion, 'ACG_FINANCIAL_V1');
+  assert.equal(deliveries[0].payload.accountCurrency, 'USD');
+  assert.equal(deliveries[0].payload.financialRevision, 12);
+  assert.equal(deliveries[0].payload.valuationEpoch, 'epoch-test-1');
+  assert.equal(deliveries[0].payload.policyVersions.conversion, 'ACG_FX_PURPOSE_V1');
   assert.equal(outboxCreates.length, 0);
 });
 
