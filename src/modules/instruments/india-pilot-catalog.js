@@ -1,5 +1,7 @@
 'use strict';
 
+const { LEVERAGE_POLICY_VERSION, leverageForAssetClass } = require('./leverage-policy');
+
 // Initial Accelpix/NSE validation universe.
 //
 // Keep these instruments outside the primary ACG execution catalog. The normal
@@ -73,7 +75,8 @@ function nseEquity({ symbol, name, providerSymbol = symbol }) {
     maxVolume: '10000',
     volumeStep: '1',
 
-    defaultLeverage: 100,
+    defaultLeverage: leverageForAssetClass('EQUITY'),
+    leveragePolicyVersion: LEVERAGE_POLICY_VERSION,
     marginRate: null,
     commissionPerLot: '0',
     commissionPerLotPerSide: '0',
