@@ -47,6 +47,12 @@ test('realized USD profit is converted to EUR using executable inverse rate', ()
   const plan = planMarketClose({ account: account(), instrument: gold(), quote: quote('XAUUSD', 2001.2, 2001.5), position, nowMs: NOW, currencyConverter: converter() });
   assert.equal(plan.realizedPnlQuote, '120');
   assert.equal(plan.realizedPnl, '100');
+  assert.equal(plan.pnlConversionEvidence.fromCurrency, 'USD');
+  assert.equal(plan.pnlConversionEvidence.toCurrency, 'EUR');
+  assert.equal(plan.pnlConversionEvidence.inputAmount, '120');
+  assert.equal(plan.pnlConversionEvidence.path[0].symbol, 'EURUSD');
+  assert.equal(plan.pnlConversionEvidence.path[0].selectedSide, 'ASK');
+  assert.equal(plan.pnlConversionEvidence.path[0].quoteRate, '1.2');
 });
 
 test('market execution rejects orders outside the instrument session', () => {
