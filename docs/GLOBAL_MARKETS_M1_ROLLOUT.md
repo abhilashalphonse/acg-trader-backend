@@ -47,7 +47,7 @@ Verify normal service health and Funded event relay before continuing.
 Use the authenticated operations endpoint:
 
 ```http
-GET /v1/operations/global-markets/readiness?symbol=RELIANCE
+GET /v1/internal/operations/global-markets/readiness?symbol=RELIANCE
 ```
 
 The report is `GLOBAL_MARKETS_READINESS_V1`.
@@ -200,7 +200,7 @@ No threshold is invented by the application. Missing values are intentionally re
 Use:
 
 ```http
-GET /v1/operations/global-markets/operational-gate?symbol=RELIANCE
+GET /v1/internal/operations/global-markets/operational-gate?symbol=RELIANCE
 ```
 
 A passing staging result must report:
