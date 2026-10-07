@@ -158,14 +158,16 @@ class AccountControlService {
       const account = await this.accountModel.findById(key).session(session);
       if (!account) throw accountNotFound();
       const scope = { tenantId: account.tenantId, accountId: account._id };
-      const [openPositionCount, activeOrderCount, lastLedger] = await Promise.all([
-        this.positionModel.countDocuments({ ...scope, status: 'OPEN' }).session(session),
-        this.orderModel.countDocuments({
-          ...scope,
-          status: { $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] },
-        }).session(session),
-        this.ledgerModel.findOne(scope).sort({ createdAt: -1, _id: -1 }).session(session).lean(),
-      ]);
+      // MongoDB sessions do not support parallel transaction operations.
+      // Read the three evidence components sequentially in one snapshot.
+      const openPositionCount = await this.positionModel
+        .countDocuments({ ...scope, status: 'OPEN' }).session(session);
+      const activeOrderCount = await this.orderModel.countDocuments({
+        ...scope,
+        status: { $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] },
+      }).session(session);
+      const lastLedger = await this.ledgerModel.findOne(scope)
+        .sort({ createdAt: -1, _id: -1 }).session(session).lean();
       return buildPayoutSettlementCheckpoint({
         account,
         openPositionCount,
