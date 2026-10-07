@@ -939,6 +939,8 @@ function serializeMarketPreview({ account, instrument, plan, quoteSnapshot, poli
       currency: String(account?.currency || '').toUpperCase(),
     } : { mode: 'QUANTITY', volume: plan.volume },
     exposure: {
+      nativeCurrency: plan.nativeExposureCurrency,
+      nativeAmount: plan.nativeExposureAmount,
       accountCurrency: String(account?.currency || '').toUpperCase(),
       amount: plan.exposureAccountCurrency,
       conversion: plan.exposureConversionEvidence || null,
