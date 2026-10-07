@@ -43,8 +43,10 @@ function buildGlobalMarketsReadiness({
     usdConversionLive: check(fx.status === 'LIVE', 'USD conversion path is unavailable or stale'),
     platformEventsHealthy: check(
       platformEventsHealth?.enabled === true
-      && !['DEGRADED', 'FAILED', 'DISABLED'].includes(String(platformEventsHealth?.state || '').toUpperCase()),
-      'Platform event relay is not healthy/enabled',
+      && platformEventsHealth?.started === true
+      && platformEventsHealth?.webhookConfigured === true
+      && Number(platformEventsHealth?.deadEvents || 0) === 0,
+      'Platform event relay must be enabled, started, webhook-configured and free of dead events',
     ),
   };
 
@@ -171,9 +173,12 @@ function sanitizePlatformEventsHealth(health) {
   if (!health || typeof health !== 'object') return null;
   return {
     enabled: health.enabled === true,
-    state: health.state || null,
-    pending: Number.isFinite(Number(health.pending)) ? Number(health.pending) : null,
+    started: health.started === true,
+    webhookConfigured: health.webhookConfigured === true,
+    pendingSnapshots: Number.isFinite(Number(health.pendingSnapshots)) ? Number(health.pendingSnapshots) : null,
+    snapshotRetryPending: Number.isFinite(Number(health.snapshotRetryPending)) ? Number(health.snapshotRetryPending) : null,
     deliveryFailures: Number.isFinite(Number(health.deliveryFailures)) ? Number(health.deliveryFailures) : null,
+    deadEvents: Number.isFinite(Number(health.deadEvents)) ? Number(health.deadEvents) : null,
     lastSuccessfulDeliveryAt: health.lastSuccessfulDeliveryAt || null,
     lastDeliveryFailureAt: health.lastDeliveryFailureAt || null,
   };
