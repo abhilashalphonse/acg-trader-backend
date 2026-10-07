@@ -898,6 +898,10 @@ function serializeMarketPreview({ account, instrument, plan, quoteSnapshot, poli
       estimatedCloseCommission: plan.estimatedCloseCommission,
       immediateOpeningPnl: plan.immediateOpeningPnl,
     },
+    conversion: {
+      margin: plan.marginConversionEvidence || null,
+      openingPnl: plan.openingPnlConversionEvidence || null,
+    },
     risk: {
       amount: plan.riskAmount,
       percent: plan.riskPercent,
