@@ -189,12 +189,26 @@ class CurrencyConversionEngine {
 
   #quote(symbol, nowMs, quoteResolver = null) {
     const quote = quoteResolver ? quoteResolver(symbol) : this.quoteStore?.get?.(symbol);
-    if (!quote || quote.isStale) return null;
+    if (!quote) return null;
     const bid = Number(quote.bid);
     const ask = Number(quote.ask);
     if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || ask < bid) return null;
+
+    const quality = fxQualityOfQuote(quote);
+    if (quality === 'APPROVED_FALLBACK') {
+      const approvedUntilMs = Number(quote.approvedUntilMs);
+      if (!Number.isFinite(approvedUntilMs) || Number(nowMs) > approvedUntilMs) return null;
+      return quote;
+    }
+
+    if (quote.isStale) return null;
     const receivedAtMs = Number(quote.receivedAtMs);
     if (!Number.isFinite(receivedAtMs) || Math.max(0, nowMs - receivedAtMs) > this.maxQuoteAgeMs) return null;
+
+    // Receipt freshness alone is insufficient: a delayed provider event with
+    // a recent local receipt must not be promoted into an authoritative FX rate.
+    const sourceAtMs = sourceTimestampMs(quote);
+    if (Number.isFinite(sourceAtMs) && Math.max(0, nowMs - sourceAtMs) > this.maxQuoteAgeMs) return null;
     return quote;
   }
 }
@@ -211,11 +225,25 @@ function conversionLeg({ symbol, from, to, operation, selectedSide, quoteRate, q
     quoteSource: quote?.source ?? null,
     quoteReceivedAtMs: Number.isFinite(Number(quote?.receivedAtMs)) ? Number(quote.receivedAtMs) : null,
     quoteSourceAtMs: sourceTimestampMs(quote),
+    fxValuationQuality: fxQualityOfQuote(quote),
+    approvedUntilMs: Number.isFinite(Number(quote?.approvedUntilMs)) ? Number(quote.approvedUntilMs) : null,
   });
 }
 
+function fxQualityOfQuote(quote) {
+  return String(quote?.fxValuationQuality || '').trim().toUpperCase() === 'APPROVED_FALLBACK'
+    ? 'APPROVED_FALLBACK'
+    : 'LIVE';
+}
+
 function sourceTimestampMs(quote) {
-  const candidates = [quote?.sourceAtMs, quote?.sourceTimestampMs, quote?.timestampMs];
+  const candidates = [
+    quote?.providerTimestampMs,
+    quote?.sourceAtMs,
+    quote?.sourceTimestampMs,
+    quote?.timestampMs,
+    quote?.timeMs,
+  ];
   for (const candidate of candidates) {
     const value = Number(candidate);
     if (Number.isFinite(value)) return value;
@@ -292,4 +320,6 @@ module.exports = {
   setDefaultCurrencyConversionEngine,
   getDefaultCurrencyConversionEngine,
   normalizeCurrency,
+  sourceTimestampMs,
+  fxQualityOfQuote,
 };
