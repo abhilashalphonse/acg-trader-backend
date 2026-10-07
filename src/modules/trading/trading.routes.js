@@ -20,6 +20,7 @@ const optionalDecimal = z.union([z.string().min(1), z.number().finite(), z.null(
 const patchDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value === undefined ? undefined : value === null ? null : String(value));
 const source = z.enum(['WEB', 'MOBILE', 'API']).optional().default('API');
 
+const previewSchema = z.object({ accountId: objectId, symbol: z.string().trim().min(1).max(32), side: z.enum(['BUY', 'SELL']), volume: decimalInput, stopLoss: optionalDecimal, takeProfit: optionalDecimal, requestedPrice: optionalDecimal, source }).strict();
 const openSchema = z.object({ accountId: objectId, clientOrderId: z.string().trim().min(1).max(128), symbol: z.string().trim().min(1).max(32), side: z.enum(['BUY', 'SELL']), volume: decimalInput, stopLoss: optionalDecimal, takeProfit: optionalDecimal, requestedPrice: optionalDecimal, source }).strict();
 const pendingSchema = z.object({ accountId: objectId, clientOrderId: z.string().trim().min(1).max(128), symbol: z.string().trim().min(1).max(32), side: z.enum(['BUY', 'SELL']), type: z.enum(['LIMIT', 'STOP', 'STOP_LIMIT']), volume: decimalInput, limitPrice: optionalDecimal, stopPrice: optionalDecimal, stopLoss: optionalDecimal, takeProfit: optionalDecimal, timeInForce: z.enum(['GTC', 'TODAY', 'SPECIFIED']).optional().default('GTC'), expiresAt: z.union([z.string().datetime({ offset: true }), z.null()]).optional().default(null), source }).strict();
 const amendPendingSchema = z.object({ accountId: objectId, clientRequestId: z.string().trim().min(1).max(128), volume: patchDecimal, limitPrice: patchDecimal, stopPrice: patchDecimal, stopLoss: patchDecimal, takeProfit: patchDecimal, timeInForce: z.enum(['GTC', 'TODAY', 'SPECIFIED']).optional(), expiresAt: z.union([z.string().datetime({ offset: true }), z.null()]).optional() }).strict().superRefine((value, ctx) => { if (!['volume','limitPrice','stopPrice','stopLoss','takeProfit','timeInForce','expiresAt'].some(key => value[key] !== undefined)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['volume'], message: 'At least one pending-order field must be supplied' }); });
@@ -61,6 +62,19 @@ function createTradingRouter(runtime, authService) {
   router.get('/accounts/:accountId/history/orders', historyHandler(runtime, 'orders'));
   router.get('/accounts/:accountId/history/deals', historyHandler(runtime, 'deals'));
   router.get('/accounts/:accountId/history/positions', historyHandler(runtime, 'positions'));
+
+  router.post('/orders/market/preview', async (req, res) => {
+    const command = parse(previewSchema, req.body);
+    requireAccountGrant(req.traderPrincipal, command.accountId);
+    setExecutionContext(req.executionTiming, {
+      accountId: command.accountId,
+      symbol: command.symbol,
+    });
+    res.json(await runtime.marketOrderService.previewMarketOrder(command, {
+      timing: req.executionTiming,
+      requestId: req.id,
+    }));
+  });
 
   router.post('/orders/market', async (req, res) => {
     const command = parse(openSchema, req.body);
@@ -153,4 +167,4 @@ function parseObjectId(value) { const result = objectId.safeParse(value); if (!r
 function parse(schema, value) { const result = schema.safeParse(value); if (!result.success) throw validationError(result.error); return result.data; }
 function validationError(error) { return new AppError('Invalid trading command', { statusCode: 400, code: 'INVALID_TRADING_COMMAND', details: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) }); }
 
-module.exports = { createTradingRouter, openSchema, pendingSchema, amendPendingSchema, closeSchema, cancelPendingSchema, protectionSchema, breakEvenSchema, trailingSchema, reverseSchema, closeAllSchema, historyQuerySchema };
+module.exports = { createTradingRouter, previewSchema, openSchema, pendingSchema, amendPendingSchema, closeSchema, cancelPendingSchema, protectionSchema, breakEvenSchema, trailingSchema, reverseSchema, closeAllSchema, historyQuerySchema };

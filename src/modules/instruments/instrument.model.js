@@ -50,6 +50,7 @@ const instrumentSchema = new Schema({
   volumeStep: { type: Decimal128, required: true },
 
   defaultLeverage: { type: Number, required: true, min: 1 },
+  leveragePolicyVersion: { type: Number, default: 1, min: 1 },
   marginRate: { type: Decimal128, default: null },
   commissionPerLot: { type: Decimal128, default: null },
   commissionPerLotPerSide: { type: Decimal128, default: null },
@@ -88,6 +89,11 @@ const instrumentSchema = new Schema({
   chartEnabled: { type: Boolean, default: true, index: true },
   executionEnabled: { type: Boolean, default: false, index: true },
   executionProvisionVersion: { type: Number, default: 0, min: 0 },
+  corporateActionPolicy: {
+    type: String,
+    enum: ['NOT_APPLICABLE', 'UNSUPPORTED'],
+    default: 'NOT_APPLICABLE',
+  },
   status: { type: String, enum: ['ACTIVE', 'HALTED', 'MAINTENANCE', 'DISABLED'], default: 'ACTIVE', index: true },
 }, {
   timestamps: true,

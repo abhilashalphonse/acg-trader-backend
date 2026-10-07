@@ -8,6 +8,9 @@ const { AppError } = require('../../shared/errors/app-error');
 const { Deal } = require('../trading/deal.model');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { serializeDeal } = require('../trading/trading.serializer');
+const { Instrument } = require('../instruments/instrument.model');
+const { env } = require('../../config/env');
+const { buildGlobalMarketsReadiness } = require('./global-markets-readiness');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const reconcileSchema = z.object({
@@ -24,6 +27,9 @@ const policyMetricsSchema = z.object({ hours: z.coerce.number().int().min(1).max
 const weekendSummarySchema = z.object({
   hours: z.coerce.number().int().min(1).max(720).default(168),
   retryAttentionAttempt: z.coerce.number().int().min(2).max(1000).default(5),
+}).strict();
+const globalMarketsReadinessSchema = z.object({
+  symbol: z.string().trim().min(1).max(32).optional().default('RELIANCE'),
 }).strict();
 const tradeListSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
@@ -66,6 +72,27 @@ function createOperationsRouter(runtime, authService) {
       reconciliation: runtime.reconciliationService.health(),
       timestamp: new Date().toISOString(),
     });
+  });
+
+  router.get('/global-markets/readiness', async (req, res) => {
+    const query = parse(globalMarketsReadinessSchema, req.query || {});
+    const symbol = String(query.symbol || 'RELIANCE').toUpperCase();
+    const instrument = await Instrument.findOne({ symbol }).lean();
+    const nowMs = Date.now();
+    const report = buildGlobalMarketsReadiness({
+      symbol,
+      instrument,
+      quoteStore: runtime.currencyConversionEngine?.quoteStore || null,
+      currencyConverter: runtime.currencyConversionEngine,
+      platformEventsHealth: runtime.platformEventRelay?.health?.() || null,
+      config: {
+        marketProvider: env.market.provider,
+        indiaMarketEnabled: env.market.indiaEnabled,
+        accelpixConfigured: Boolean(env.accelpix.apiKey),
+      },
+      nowMs,
+    });
+    res.json(report);
   });
 
   router.get('/recovery', (_req, res) => {

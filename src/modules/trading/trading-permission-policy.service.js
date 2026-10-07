@@ -105,7 +105,17 @@ class TradingPermissionPolicyService {
     };
   }
 
-  async evaluateExposureIncrease({ accountId, symbol, account, instrument, action = 'OPEN_EXPOSURE', referenceId = null, stage = 'PREVIEW', nowMs = this.now().getTime() } = {}) {
+  async evaluateExposureIncrease({
+    accountId,
+    symbol,
+    account,
+    instrument,
+    action = 'OPEN_EXPOSURE',
+    referenceId = null,
+    stage = 'PREVIEW',
+    nowMs = this.now().getTime(),
+    recordTelemetry = true,
+  } = {}) {
     const startedAt = performance.now();
     let status;
     try {
@@ -120,9 +130,11 @@ class TradingPermissionPolicyService {
       { kind: 'NEWS_DATA_UNAVAILABLE', applicable: !status.permissions.newsTrading && ['UNAVAILABLE', 'EXPIRED'].includes(status.news?.dataStatus), enforced: status.enforcement.newsEnabled },
       { kind: 'WEEKEND', applicable: status.weekend?.active === true && !status.permissions.weekendHolding, enforced: status.enforcement.weekendEnabled },
     ].filter(decision => decision.applicable).map(decision => ({ ...decision, wouldBlock: true, allowed: !decision.enforced }));
-    for (const decision of decisions) {
-      if (decision.kind === 'NEWS_DATA_UNAVAILABLE') continue;
-      this.#queueShadow({ ...decision, status }, { accountId, symbol, action, referenceId, nowMs });
+    if (recordTelemetry) {
+      for (const decision of decisions) {
+        if (decision.kind === 'NEWS_DATA_UNAVAILABLE') continue;
+        this.#queueShadow({ ...decision, status }, { accountId, symbol, action, referenceId, nowMs });
+      }
     }
     const blocking = decisions.find(decision => decision.enforced);
     const result = { kind: (blocking || decisions[0])?.kind || null, wouldBlock: decisions.length > 0,

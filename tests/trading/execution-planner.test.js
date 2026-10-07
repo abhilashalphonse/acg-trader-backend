@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('../../src/modules/trading/execution-planner');
 const { loadOpenExposure } = require('../../src/modules/trading/market-order.service');
 const { multiplyDecimal } = require('../../src/shared/decimal/decimal');
+const { CurrencyConversionEngine } = require('../../src/modules/trading/currency-conversion-engine');
 
 function account(overrides = {}) {
   return {
@@ -931,4 +932,94 @@ test('immediate opening PnL uses the same account-currency conversion path as li
   assert.equal(plan.immediateOpeningPnl, '-16');
   assert.equal(plan.requiredMargin, '880.16');
   assert.equal(plan.projectedAccountState.floatingPnl, '-16');
+});
+
+
+test('GLOBAL-MARKETS-M1 applies stock leverage 1:10 and exposes policy evidence in the plan', () => {
+  const plan = planMarketOpen({
+    account: account({ leverage: 100 }),
+    instrument: instrument({
+      symbol: 'RELIANCE',
+      assetClass: 'EQUITY',
+      quoteCurrency: 'INR',
+      marginCurrency: 'INR',
+      tickSize: '0.01',
+      minVolume: '1',
+      maxVolume: '10000',
+      volumeStep: '1',
+      contractSize: '1',
+      defaultLeverage: 10,
+      leveragePolicyVersion: 2,
+    }),
+    quote: quote({
+      symbol: 'RELIANCE',
+      bid: 2499,
+      ask: 2500,
+    }),
+    side: 'BUY',
+    volume: '10',
+    currencyConverter: new CurrencyConversionEngine({
+      quoteStore: {
+        get(symbol) {
+          if (symbol !== 'USDINR') return null;
+          return {
+            symbol: 'USDINR',
+            bid: 90,
+            ask: 91,
+            source: 'FX_TEST',
+            sequence: 99,
+            receivedAtMs: 10_000,
+            sourceTimestampMs: 10_000,
+            isStale: false,
+          };
+        },
+      },
+      symbols: ['USDINR'],
+      maxQuoteAgeMs: 5000,
+    }),
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.instrumentLeverage, 10);
+  assert.equal(plan.accountLeverage, 100);
+  assert.equal(plan.effectiveLeverage, 10);
+  assert.equal(plan.leveragePolicyVersion, 2);
+  assert.equal(plan.requiredMargin, '27.472527472527');
+  assert.equal(plan.immediateOpeningPnl, '-0.111111111111');
+  assert.equal(plan.marginConversionEvidence.purpose, 'MARGIN');
+  assert.equal(plan.marginConversionEvidence.path[0].symbol, 'USDINR');
+  assert.equal(plan.marginConversionEvidence.path[0].selectedSide, 'ASK');
+  assert.equal(plan.marginConversionEvidence.path[0].quoteRate, '91');
+  assert.equal(plan.openingPnlConversionEvidence.path[0].selectedSide, 'BID');
+  assert.equal(plan.openingPnlConversionEvidence.path[0].quoteRate, '90');
+});
+
+test('GLOBAL-MARKETS-M1 crypto leverage is capped at 1:2 even on a 1:100 account', () => {
+  const plan = planMarketOpen({
+    account: account({ leverage: 100 }),
+    instrument: instrument({
+      symbol: 'BTCUSD',
+      assetClass: 'CRYPTO',
+      quoteCurrency: 'USD',
+      marginCurrency: 'USD',
+      tickSize: '0.01',
+      minVolume: '0.01',
+      maxVolume: '1000',
+      volumeStep: '0.01',
+      contractSize: '1',
+      defaultLeverage: 2,
+      leveragePolicyVersion: 2,
+    }),
+    quote: quote({
+      symbol: 'BTCUSD',
+      bid: 83999,
+      ask: 84000,
+    }),
+    side: 'BUY',
+    volume: '1',
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.effectiveLeverage, 2);
+  assert.equal(plan.requiredMargin, '42000');
 });

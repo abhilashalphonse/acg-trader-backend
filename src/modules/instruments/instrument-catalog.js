@@ -6,7 +6,13 @@
 // New instruments are intentionally inserted with execution disabled. Operators
 // can enable execution only after validating the provider feed and product terms.
 
-const ACG_STANDARD_LEVERAGE = 100;
+const {
+  LEVERAGE_POLICY_VERSION,
+  ACG_ASSET_CLASS_LEVERAGE,
+  leverageForAssetClass,
+} = require('./leverage-policy');
+
+const ACG_STANDARD_LEVERAGE = ACG_ASSET_CLASS_LEVERAGE.FOREX;
 
 const FX_TIGHT_POINTS = Object.freeze({ EURUSD: 2, USDJPY: 2, GBPUSD: 3, AUDUSD: 3, USDCHF: 3, USDCAD: 3, NZDUSD: 4, EURGBP: 4, EURJPY: 4, GBPJPY: 6 });
 const FX_EXOTIC_CURRENCIES = new Set(['CNH', 'CZK', 'DKK', 'HKD', 'HUF', 'MXN', 'NOK', 'PLN', 'SEK', 'SGD', 'TRY', 'ZAR']);
@@ -467,7 +473,9 @@ function baseSpec({
     symbol, displaySymbol, name, assetClass, baseCurrency, quoteCurrency,
     pnlCurrency: quoteCurrency, marginCurrency: quoteCurrency,
     digits, tickSize, pipSize, contractSize, minVolume, maxVolume, volumeStep,
-    defaultLeverage: ACG_STANDARD_LEVERAGE, marginRate,
+    defaultLeverage: leverageForAssetClass(assetClass),
+    leveragePolicyVersion: LEVERAGE_POLICY_VERSION,
+    marginRate,
     commissionPerLot: commissionPerLotPerSide,
     commissionPerLotPerSide,
     commissionRate,
@@ -475,7 +483,12 @@ function baseSpec({
     spread,
     tradingSessions, tradingHolidays: Object.freeze([]), timezone,
     providerMappings: Object.freeze({ twelveData: providerSymbol }),
-    softQuoteAgeMs, maxQuoteAgeMs, chartEnabled: true, executionEnabled: false, status: 'ACTIVE',
+    softQuoteAgeMs,
+    maxQuoteAgeMs,
+    chartEnabled: true,
+    executionEnabled: false,
+    corporateActionPolicy: assetClass === 'EQUITY' ? 'UNSUPPORTED' : 'NOT_APPLICABLE',
+    status: 'ACTIVE',
   });
 }
 
@@ -590,4 +603,6 @@ module.exports = {
   ACG_INSTRUMENT_CATALOG, FX_WEEK, US_EQUITY_SESSION,
   FOREX_PAIRS, COMMODITIES, INDICES, US_EQUITIES, CRYPTO_PAIRS,
   ACG_STANDARD_LEVERAGE,
+  ACG_ASSET_CLASS_LEVERAGE,
+  LEVERAGE_POLICY_VERSION,
 };
