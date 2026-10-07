@@ -22,6 +22,7 @@ function reliance(overrides = {}) {
     executionEnabled: false,
     executionProvisionVersion: 0,
     status: 'ACTIVE',
+    corporateActionPolicy: 'UNSUPPORTED',
     ...overrides,
   };
 }
@@ -85,4 +86,5 @@ test('pilot instrument validator requires INR equity terms at leverage policy v2
   assert.throws(() => assertPilotInstrument(reliance({ leveragePolicyVersion: 1 })), /version 2/);
   assert.throws(() => assertPilotInstrument(reliance({ chartEnabled: false })), /chart feed/);
   assert.throws(() => assertPilotInstrument(reliance({ status: 'HALTED' })), /ACTIVE/);
+  assert.throws(() => assertPilotInstrument(reliance({ corporateActionPolicy: 'NOT_APPLICABLE' })), /corporate actions UNSUPPORTED/);
 });
