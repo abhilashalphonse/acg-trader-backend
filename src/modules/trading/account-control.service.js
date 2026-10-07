@@ -619,6 +619,7 @@ class AccountControlService {
           positionId,
           clientOrderId: `control-liquidation:${positionId}`,
           source: 'SYSTEM',
+          reason: 'ACCOUNT_LIQUIDATION',
         });
         results.push({ positionId, status: 'CLOSED', result });
       } catch (error) {
