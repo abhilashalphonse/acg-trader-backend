@@ -161,3 +161,25 @@ test('conversion evidence age uses the oldest timestamp across all FX legs', () 
 
   assert.equal(conversionEvidenceAgeMs({ path: [] }, NOW), 0);
 });
+
+
+test('reconciliation lastReport issue count is release-blocking', () => {
+  const unhealthy = runtime();
+  unhealthy.reconciliation = {
+    state: 'ISSUES',
+    recovery: { consistent: true },
+    lastReport: { issueCount: 2 },
+  };
+
+  const gate = buildGlobalMarketsOperationalGate({
+    readiness: readiness(),
+    runtimeHealth: unhealthy,
+    reconciliationHealth: unhealthy.reconciliation,
+    thresholds: { ...thresholds, maxReconciliationIssues: 0 },
+    nowMs: NOW,
+  });
+
+  assert.equal(gate.checks.reconciliation.pass, false);
+  assert.equal(gate.checks.reconciliation.observed.issueCount, 2);
+  assert.equal(gate.operationalReady, false);
+});
