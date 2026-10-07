@@ -71,9 +71,11 @@ test('GLOBAL-MARKETS readiness reaches READY_TO_ENABLE_PILOT before execution is
     currencyConverter: converter(store),
     platformEventsHealth: {
       enabled: true,
-      state: 'READY',
-      pending: 0,
+      started: true,
+      webhookConfigured: true,
+      pendingSnapshots: 0,
       deliveryFailures: 0,
+      deadEvents: 0,
     },
     config: {
       marketProvider: 'multi',
@@ -100,7 +102,7 @@ test('GLOBAL-MARKETS readiness becomes EXECUTION_READY only after explicit pilot
     instrument: instrument({ executionEnabled: true, executionProvisionVersion: 1001 }),
     quoteStore: store,
     currencyConverter: converter(store),
-    platformEventsHealth: { enabled: true, state: 'READY' },
+    platformEventsHealth: { enabled: true, started: true, webhookConfigured: true, deadEvents: 0 },
     config: { marketProvider: 'multi', indiaMarketEnabled: true, accelpixConfigured: true },
     nowMs: NOW,
   });
@@ -116,7 +118,7 @@ test('missing staging configuration is reported as blockers without exposing cre
     instrument: instrument(),
     quoteStore: store,
     currencyConverter: converter(store),
-    platformEventsHealth: { enabled: true, state: 'READY' },
+    platformEventsHealth: { enabled: true, started: true, webhookConfigured: true, deadEvents: 0 },
     config: { marketProvider: 'twelve-data', indiaMarketEnabled: false, accelpixConfigured: false },
     nowMs: NOW,
   });
@@ -162,7 +164,7 @@ test('closed NSE session remains explicitly blocked for execution readiness', ()
       symbols: ['USDINR'],
       maxQuoteAgeMs: 5000,
     }),
-    platformEventsHealth: { enabled: true, state: 'READY' },
+    platformEventsHealth: { enabled: true, started: true, webhookConfigured: true, deadEvents: 0 },
     config: { marketProvider: 'multi', indiaMarketEnabled: true, accelpixConfigured: true },
     nowMs: afterClose,
   });
