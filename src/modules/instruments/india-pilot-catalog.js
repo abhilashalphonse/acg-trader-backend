@@ -97,6 +97,7 @@ function nseEquity({ symbol, name, providerSymbol = symbol }) {
 
     chartEnabled: true,
     executionEnabled: false,
+    corporateActionPolicy: 'UNSUPPORTED',
     executionProvisionVersion: 0,
     status: 'ACTIVE',
   });
