@@ -61,6 +61,7 @@ async function run() {
   expect(spec?.quoteCurrency === 'INR', 'RELIANCE quote currency must be INR', spec);
   expect(Number(spec?.defaultLeverage) === 10, 'RELIANCE leverage must be 1:10', spec);
   expect(Number(spec?.leveragePolicyVersion) === 2, 'RELIANCE leverage policy must be v2', spec);
+  expect(spec?.corporateActionPolicy === 'UNSUPPORTED', 'RELIANCE must explicitly disclose unsupported corporate actions', spec);
   expect(spec?.executionEnabled === true, 'RELIANCE pilot execution is not explicitly enabled', spec);
   expect(spec?.sessionOpen === true, 'NSE session is closed; run the execution acceptance during an open session', spec);
   report.checks.push({ name: 'instrument', status: 'PASS', elapsedMs: instrument.elapsedMs });
