@@ -113,3 +113,11 @@ test('tight spread policy is applied across non-FX asset classes', () => {
     assert.equal(instrument.spread.normalPoints, normalPoints, symbol);
   }
 });
+
+
+test('equity catalog never silently claims corporate-action support', () => {
+  for (const item of ACG_INSTRUMENT_CATALOG) {
+    if (item.assetClass === 'EQUITY') assert.equal(item.corporateActionPolicy, 'UNSUPPORTED', item.symbol);
+    else assert.equal(item.corporateActionPolicy, 'NOT_APPLICABLE', item.symbol);
+  }
+});
