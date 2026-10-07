@@ -192,6 +192,97 @@ class MarketOrderService {
     }
   }
 
+  async previewMarketOrder(command, { timing = null, requestId = null } = {}) {
+    const normalized = normalizePreviewCommand(command);
+    setExecutionContext(timing, {
+      requestId,
+      accountId: normalized.accountId,
+      symbol: normalized.symbol,
+    });
+
+    const queuedAt = timingNowMs();
+    return this.commandQueue.run(normalized.accountId, async () => {
+      addDuration(timing, 'queue_wait', timingNowMs() - queuedAt);
+      const quoteSnapshot = await timeAsync(
+        timing,
+        'quote_recovery',
+        () => this.#resolveExecutableQuote(normalized.symbol, 'market-preview'),
+      );
+
+      return this.runTransaction(async session => {
+        const nowMs = Date.now();
+        const account = await timeAsync(
+          timing,
+          'account_read',
+          () => this.accountModel.findById(normalized.accountId).session(session),
+        );
+        const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs })
+          || this.valuationEngine?.currencyConverter
+          || null;
+
+        if (account && this.valuationEngine) {
+          await this.valuationEngine.ensureAccountRevision?.(account, { session });
+          this.valuationEngine.overlayAccountDocument(account, {
+            requireLive: true,
+            currencyConverter: financialConverter,
+            nowMs,
+          });
+        }
+
+        const instrument = await timeAsync(
+          timing,
+          'instrument_read',
+          () => this.instrumentModel.findOne({ symbol: normalized.symbol }).session(session),
+        );
+        const exposure = hasExposureLimits(account)
+          ? await loadOpenExposure(this.positionModel, normalized.accountId, session, {
+            account,
+            symbol: normalized.symbol,
+            nowMs,
+            currencyConverter: financialConverter,
+            instrumentModel: this.instrumentModel,
+          })
+          : null;
+
+        const plan = planMarketOpen({
+          account,
+          instrument,
+          quote: quoteSnapshot,
+          exposure,
+          side: normalized.side,
+          volume: normalized.volume,
+          stopLoss: normalized.stopLoss,
+          takeProfit: normalized.takeProfit,
+          nowMs,
+          currencyConverter: financialConverter,
+        });
+
+        const policyDecision = this.tradingPermissionPolicyService
+          ? await this.tradingPermissionPolicyService.evaluateExposureIncrease({
+            accountId: normalized.accountId,
+            account,
+            instrument,
+            symbol: normalized.symbol,
+            action: 'MARKET_OPEN',
+            referenceId: null,
+            stage: 'PREVIEW',
+            nowMs,
+            recordTelemetry: false,
+          })
+          : null;
+
+        return serializeMarketPreview({
+          account,
+          instrument,
+          plan,
+          quoteSnapshot,
+          policyDecision,
+          nowMs,
+        });
+      }, timing);
+    });
+  }
+
   async closeMarketPosition(command, { timing = null, requestId = null, tenantId = null, weekendClaim = null } = {}) {
     const normalized = normalizeCloseCommand(command);
     const scope = normalized.reason ? 'PROTECTIVE_CLOSE' : 'MARKET_CLOSE';
@@ -774,6 +865,62 @@ function serializeOpenExecution(plan, account, postFillRisk = null) {
   };
 }
 
+function serializeMarketPreview({ account, instrument, plan, quoteSnapshot, policyDecision, nowMs }) {
+  return {
+    previewVersion: 'ACG_ORDER_PREVIEW_V1',
+    generatedAt: new Date(nowMs).toISOString(),
+    accountId: String(account?._id || account?.id || ''),
+    accountCurrency: String(account?.currency || '').toUpperCase() || null,
+    symbol: plan.symbol,
+    assetClass: instrument?.assetClass || null,
+    side: plan.side,
+    volume: plan.volume,
+    fillPrice: plan.fillPrice,
+    quote: {
+      bid: quoteSnapshot?.bid == null ? null : String(quoteSnapshot.bid),
+      ask: quoteSnapshot?.ask == null ? null : String(quoteSnapshot.ask),
+      source: quoteSnapshot?.source || null,
+      sequence: quoteSnapshot?.sequence ?? null,
+      receivedAtMs: Number.isFinite(Number(quoteSnapshot?.receivedAtMs))
+        ? Number(quoteSnapshot.receivedAtMs)
+        : null,
+    },
+    leverage: {
+      account: plan.accountLeverage,
+      instrument: plan.instrumentLeverage,
+      effective: plan.effectiveLeverage,
+      marginRate: plan.marginRate,
+      policyVersion: plan.leveragePolicyVersion,
+    },
+    costs: {
+      requiredMargin: plan.requiredMargin,
+      openingCommission: plan.commission,
+      estimatedCloseCommission: plan.estimatedCloseCommission,
+      immediateOpeningPnl: plan.immediateOpeningPnl,
+    },
+    risk: {
+      amount: plan.riskAmount,
+      percent: plan.riskPercent,
+      rawStopRiskAmount: plan.rawStopRiskAmount,
+    },
+    projectedAccount: { ...plan.projectedAccountState },
+    executionPolicy: policyDecision ? {
+      allowed: policyDecision.allowed === true,
+      wouldBlock: policyDecision.wouldBlock === true,
+      enforced: policyDecision.enforced === true,
+      kind: policyDecision.kind || null,
+      decisions: Array.isArray(policyDecision.decisions)
+        ? policyDecision.decisions.map(item => ({
+          kind: item.kind,
+          wouldBlock: item.wouldBlock === true,
+          enforced: item.enforced === true,
+          allowed: item.allowed === true,
+        }))
+        : [],
+    } : null,
+  };
+}
+
 function marginLevel(equity, usedMargin) {
   if (compareDecimal(usedMargin, '0') <= 0) return null;
   return multiplyDecimal(divideDecimal(equity, usedMargin, { scale: 8 }), '100');
@@ -833,6 +980,19 @@ function normalizeOpenCommand(command) {
   return {
     accountId: String(command?.accountId || '').trim(),
     clientOrderId: String(command?.clientOrderId || '').trim(),
+    symbol: normalizeSymbol(command?.symbol),
+    side: String(command?.side || '').toUpperCase(),
+    volume: String(command?.volume ?? '').trim(),
+    stopLoss: nullableString(command?.stopLoss),
+    takeProfit: nullableString(command?.takeProfit),
+    requestedPrice: nullableString(command?.requestedPrice),
+    source: normalizeSource(command?.source),
+  };
+}
+
+function normalizePreviewCommand(command) {
+  return {
+    accountId: String(command?.accountId || '').trim(),
     symbol: normalizeSymbol(command?.symbol),
     side: String(command?.side || '').toUpperCase(),
     volume: String(command?.volume ?? '').trim(),
@@ -1022,6 +1182,8 @@ module.exports = {
   loadOpenExposure,
   hasExposureLimits,
   serializeOpenExecution,
+  serializeMarketPreview,
+  normalizePreviewCommand,
   marginLevel,
   assertManualCloseSessionOpen,
 };
