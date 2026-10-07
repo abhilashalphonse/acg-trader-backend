@@ -131,3 +131,81 @@ test('GM-001 committed full close is flat: floating P&L zero and equity equals b
   assert.equal(ledgers[0].type, 'REALIZED_PNL');
   assert.equal(ledgers[0].balanceAfter, '10001');
 });
+
+
+test('GM-002 loss-liability conversion uses the same FX side as a realized loss', () => {
+  const { CurrencyConversionEngine } = require('../src/modules/trading/currency-conversion-engine');
+  const engine = new CurrencyConversionEngine({
+    symbols: ['USDINR'],
+    maxQuoteAgeMs: 10000,
+    quoteStore: {
+      get(symbol) {
+        if (symbol !== 'USDINR') return null;
+        return {
+          symbol,
+          bid: 90,
+          ask: 91,
+          receivedAtMs: 1000,
+          sequence: 7,
+          source: 'TEST',
+        };
+      },
+    },
+  });
+
+  const estimated = engine.convertWithEvidence('900', 'INR', 'USD', {
+    nowMs: 1000,
+    purpose: 'LOSS_LIABILITY',
+  });
+  const realized = engine.convert('-900', 'INR', 'USD', { nowMs: 1000 });
+
+  assert.equal(estimated.amount, '10');
+  assert.equal(realized, '-10');
+  assert.equal(estimated.evidence.purpose, 'LOSS_LIABILITY');
+  assert.equal(estimated.evidence.path.length, 1);
+  assert.equal(estimated.evidence.path[0].symbol, 'USDINR');
+  assert.equal(estimated.evidence.path[0].selectedSide, 'BID');
+  assert.equal(estimated.evidence.path[0].operation, 'DIVIDE');
+});
+
+test('GM-002 stop-risk sizing uses loss-liability conversion semantics', () => {
+  const { CurrencyConversionEngine } = require('../src/modules/trading/currency-conversion-engine');
+  const { calculateStopRiskAmount } = require('../src/modules/trading/firm-risk-policy');
+  const engine = new CurrencyConversionEngine({
+    symbols: ['USDINR'],
+    quoteStore: {
+      get(symbol) {
+        if (symbol !== 'USDINR') return null;
+        return { bid: 90, ask: 91, receivedAtMs: 1000, source: 'TEST' };
+      },
+    },
+  });
+
+  const risk = calculateStopRiskAmount({
+    account: { currency: 'USD', state: { equity: '10000' } },
+    instrument: { contractSize: '1', pnlCurrency: 'INR', quoteCurrency: 'INR' },
+    side: 'BUY',
+    entryPrice: '100',
+    volume: '10',
+    stopLoss: '10',
+    currencyConverter: engine,
+    nowMs: 1000,
+  });
+
+  // INR 900 of downside uses the same USD/INR bid convention as INR -900 settlement.
+  assert.equal(risk, '10');
+});
+
+test('GM-002 cross-currency zero still requires a usable FX dependency', () => {
+  const { CurrencyConversionEngine } = require('../src/modules/trading/currency-conversion-engine');
+  const engine = new CurrencyConversionEngine({
+    symbols: ['USDINR'],
+    quoteStore: { get() { return null; } },
+  });
+
+  assert.equal(engine.canConvert('INR', 'USD', { nowMs: 1000 }), false);
+  assert.throws(
+    () => engine.convert('0', 'INR', 'USD', { nowMs: 1000 }),
+    error => error?.code === 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
+  );
+});
