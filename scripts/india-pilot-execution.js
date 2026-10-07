@@ -55,6 +55,9 @@ function assertPilotInstrument(instrument) {
   }
   if (instrument.chartEnabled !== true) throw new Error('RELIANCE chart feed must be enabled before execution');
   if (String(instrument.status || '').toUpperCase() !== 'ACTIVE') throw new Error('RELIANCE instrument status must be ACTIVE');
+  if (String(instrument.corporateActionPolicy || '').toUpperCase() !== 'UNSUPPORTED') {
+    throw new Error('RELIANCE pilot must explicitly declare corporate actions UNSUPPORTED');
+  }
 }
 
 async function setPilotExecution(action) {
