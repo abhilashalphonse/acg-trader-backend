@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const { addDecimal, subtractDecimal } = require('../../shared/decimal/decimal');
+const { isRiskValuationAcceptable } = require('./valuation-quality');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { Position } = require('./position.model');
 const {
@@ -18,6 +19,7 @@ class ValuationEngine {
     quoteStore,
     currencyConverter = null,
     marketPriority = null,
+    instrumentResolver = null,
     logger,
     accountModel = TradingAccount,
     positionModel = Position,
@@ -26,6 +28,7 @@ class ValuationEngine {
     this.quoteStore = quoteStore;
     this.currencyConverter = currencyConverter;
     this.marketPriority = marketPriority;
+    this.instrumentResolver = typeof instrumentResolver === 'function' ? instrumentResolver : null;
     this.logger = logger;
     this.accountModel = accountModel;
     this.positionModel = positionModel;
@@ -144,7 +147,12 @@ class ValuationEngine {
     // In particular, a delayed reconnect snapshot must not restore an older SL/order state.
     const valuedAtMs = Date.now();
     const positionValuations = positions.map(position => ({
-      ...calculatePositionValuation({ position, quote: this.quoteStore.get(position.symbol) }),
+      ...calculatePositionValuation({
+        position,
+        quote: this.quoteStore.get(position.symbol),
+        instrument: this.instrumentResolver?.(position.symbol) || null,
+        nowMs: valuedAtMs,
+      }),
       sequence: ++this.sequence, valuedAtMs,
     }));
     return {
@@ -246,11 +254,17 @@ class ValuationEngine {
         },
       });
     }
-    if (requireLive && projection.valuationStatus !== 'LIVE') {
-      throw new AppError('Account valuation is not live; new exposure is paused until all open positions and currency conversions have executable quotes', {
+    if (requireLive && !isRiskValuationAcceptable(projection)) {
+      throw new AppError('Account valuation is not acceptable for risk evaluation; new exposure is paused until all open positions and currency conversions have approved valuation quality', {
         statusCode: 409,
         code: 'ACCOUNT_VALUATION_NOT_LIVE',
-        details: { valuationStatus: projection.valuationStatus, staleSymbols: projection.staleSymbols },
+        details: {
+          valuationStatus: projection.valuationStatus,
+          instrumentValuationQuality: projection.instrumentValuationQuality,
+          fxValuationQuality: projection.fxValuationQuality,
+          accountValuationQuality: projection.accountValuationQuality,
+          staleSymbols: projection.staleSymbols,
+        },
       });
     }
     if (!projection.complete) return projection;
@@ -430,11 +444,17 @@ class ValuationEngine {
   #revaluePosition(id, quote, emit) {
     const position = this.positions.get(id);
     if (!position) return null;
+    const valuedAtMs = Date.now();
     const valuation = {
-      ...calculatePositionValuation({ position, quote }),
+      ...calculatePositionValuation({
+        position,
+        quote,
+        instrument: this.instrumentResolver?.(position.symbol) || null,
+        nowMs: valuedAtMs,
+      }),
       valuationEpoch: this.valuationEpoch,
       sequence: ++this.sequence,
-      valuedAtMs: Date.now(),
+      valuedAtMs,
     };
     this.positionValuations.set(id, valuation);
     if (emit) this.eventBus.emit('valuation.position.updated', clone(valuation));
