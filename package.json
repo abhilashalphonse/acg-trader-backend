@@ -21,7 +21,8 @@
     "diagnostic:accelpix-live": "node diagnostics/accelpix-live.js",
     "maintenance:closed-session-candles": "node scripts/cleanup-out-of-session-candles.js",
     "pilot:india:execution": "node scripts/india-pilot-execution.js",
-    "acceptance:global-markets:reliance": "node scripts/acceptance-global-markets-reliance.js"
+    "acceptance:global-markets:reliance": "node scripts/acceptance-global-markets-reliance.js",
+    "capacity:global-markets:preview": "node scripts/capacity-global-markets-preview.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
