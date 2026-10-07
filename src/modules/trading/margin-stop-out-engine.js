@@ -285,17 +285,49 @@ class MarginStopOutEngine {
           return;
         }
 
-        const ranked = rankStopOutPositions({
+        const instrumentBySymbol = new Map();
+        for (const symbol of [...new Set(positions.map(item => String(item.symbol || '').toUpperCase()))]) {
+          const instrument = await this.instrumentModel.findOne({ symbol }).lean();
+          if (instrument) instrumentBySymbol.set(symbol, instrument);
+        }
+
+        const classified = classifyStopOutPositions({
           positions,
           account,
           quoteStore: this.quoteStore,
           currencyConverter: financialConverter,
+          instrumentBySymbol,
           nowMs,
         });
-        const position = ranked[0];
-        if (!position) throw retryable('No position has a live valuation for stop-out', 'STOP_OUT_POSITION_VALUATION_UNAVAILABLE');
+        const position = classified.ranked[0];
 
-        const instrument = await this.instrumentModel.findOne({ symbol: position.symbol }).lean();
+        if (classified.deferred.length) {
+          const deferredAction = {
+            type: 'DEFERRED_UNEXECUTABLE_EXPOSURE',
+            deferredPositionIds: classified.deferred.map(item => String(item.position._id)),
+            reasons: classified.deferred.map(item => ({
+              positionId: String(item.position._id),
+              symbol: item.position.symbol,
+              reason: item.reason,
+              instrumentValuationQuality: item.instrumentValuationQuality,
+            })),
+            recordedAt: this.now().toISOString(),
+          };
+          await this.jobModel.updateOne(
+            { _id: job._id, state: 'PROCESSING' },
+            { $set: { lastAction: deferredAction } },
+          );
+          job.lastAction = deferredAction;
+        }
+
+        if (!position) {
+          throw retryable(
+            'Stop-out remains active but no open position is currently executable',
+            'STOP_OUT_EXPOSURE_DEFERRED',
+          );
+        }
+
+        const instrument = instrumentBySymbol.get(String(position.symbol || '').toUpperCase());
         if (!instrument) throw retryable('Instrument is unavailable for stop-out liquidation', 'STOP_OUT_INSTRUMENT_UNAVAILABLE');
 
         const quote = this.quoteStore?.get?.(position.symbol);
