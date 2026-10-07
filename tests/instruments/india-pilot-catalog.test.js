@@ -49,3 +49,14 @@ test('NSE pilot follows the 2026 exchange holiday calendar', () => {
     true,
   );
 });
+
+
+test('India pilot equities inherit the versioned stock leverage policy while execution remains disabled', () => {
+  for (const item of ACG_INDIA_PILOT_CATALOG) {
+    assert.equal(item.assetClass, 'EQUITY');
+    assert.equal(item.defaultLeverage, 10, item.symbol);
+    assert.equal(item.leveragePolicyVersion, 2, item.symbol);
+    assert.equal(item.executionEnabled, false, item.symbol);
+    assert.equal(item.executionProvisionVersion, 0, item.symbol);
+  }
+});
