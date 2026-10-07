@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('../../src/modules/trading/execution-planner');
 const { loadOpenExposure } = require('../../src/modules/trading/market-order.service');
 const { multiplyDecimal } = require('../../src/shared/decimal/decimal');
+const { CurrencyConversionEngine } = require('../../src/modules/trading/currency-conversion-engine');
 
 function account(overrides = {}) {
   return {
@@ -957,13 +958,25 @@ test('GLOBAL-MARKETS-M1 applies stock leverage 1:10 and exposes policy evidence 
     }),
     side: 'BUY',
     volume: '10',
-    currencyConverter: {
-      convert(amount, from, to) {
-        assert.equal(from, 'INR');
-        assert.equal(to, 'USD');
-        return require('../../src/shared/decimal/decimal').divideDecimal(amount, '90', { scale: 12 });
+    currencyConverter: new CurrencyConversionEngine({
+      quoteStore: {
+        get(symbol) {
+          if (symbol !== 'USDINR') return null;
+          return {
+            symbol: 'USDINR',
+            bid: 90,
+            ask: 91,
+            source: 'FX_TEST',
+            sequence: 99,
+            receivedAtMs: 10_000,
+            sourceTimestampMs: 10_000,
+            isStale: false,
+          };
+        },
       },
-    },
+      symbols: ['USDINR'],
+      maxQuoteAgeMs: 5000,
+    }),
     nowMs: 10_100,
   });
 
@@ -971,8 +984,14 @@ test('GLOBAL-MARKETS-M1 applies stock leverage 1:10 and exposes policy evidence 
   assert.equal(plan.accountLeverage, 100);
   assert.equal(plan.effectiveLeverage, 10);
   assert.equal(plan.leveragePolicyVersion, 2);
-  assert.equal(plan.requiredMargin, '27.777777777778');
+  assert.equal(plan.requiredMargin, '27.472527472527');
   assert.equal(plan.immediateOpeningPnl, '-0.111111111111');
+  assert.equal(plan.marginConversionEvidence.purpose, 'MARGIN');
+  assert.equal(plan.marginConversionEvidence.path[0].symbol, 'USDINR');
+  assert.equal(plan.marginConversionEvidence.path[0].selectedSide, 'ASK');
+  assert.equal(plan.marginConversionEvidence.path[0].quoteRate, '91');
+  assert.equal(plan.openingPnlConversionEvidence.path[0].selectedSide, 'BID');
+  assert.equal(plan.openingPnlConversionEvidence.path[0].quoteRate, '90');
 });
 
 test('GLOBAL-MARKETS-M1 crypto leverage is capped at 1:2 even on a 1:100 account', () => {
