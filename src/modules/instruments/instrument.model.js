@@ -89,6 +89,11 @@ const instrumentSchema = new Schema({
   chartEnabled: { type: Boolean, default: true, index: true },
   executionEnabled: { type: Boolean, default: false, index: true },
   executionProvisionVersion: { type: Number, default: 0, min: 0 },
+  corporateActionPolicy: {
+    type: String,
+    enum: ['NOT_APPLICABLE', 'UNSUPPORTED'],
+    default: 'NOT_APPLICABLE',
+  },
   status: { type: String, enum: ['ACTIVE', 'HALTED', 'MAINTENANCE', 'DISABLED'], default: 'ACTIVE', index: true },
 }, {
   timestamps: true,
