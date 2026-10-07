@@ -66,6 +66,14 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     marginPolicy,
   });
   const requiredMargin = marginProjection.amount;
+  const exposureProjection = convertTradingCurrencyWithEvidence(
+    multiplyDecimal(multiplyDecimal(fillPrice, instrument.contractSize), normalizedVolume),
+    String(instrument.marginCurrency || instrument.quoteCurrency || '').toUpperCase(),
+    account.currency,
+    currencyConverter,
+    nowMs,
+    { purpose: 'EXPOSURE' },
+  );
   const firmRisk = validatePreTradeRiskPolicy({
     account,
     instrument,
@@ -134,6 +142,8 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     estimatedCloseCommission: firmRisk.closingCommission ?? estimatedCloseCommission,
     commission,
     requiredMargin,
+    exposureAccountCurrency: exposureProjection.amount,
+    exposureConversionEvidence: exposureProjection.evidence,
     effectiveLeverage: marginPolicy.effectiveLeverage,
     accountLeverage: marginPolicy.accountLeverage,
     instrumentLeverage: marginPolicy.instrumentLeverage,
