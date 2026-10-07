@@ -3,6 +3,7 @@
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { AccountCommandQueue } = require('./account-command-queue');
 const { serializeAccount } = require('./trading.serializer');
+const { isRiskValuationAcceptable } = require('./valuation-quality');
 
 class RiskDayEngine {
   constructor({
@@ -45,7 +46,7 @@ class RiskDayEngine {
   }
 
   #schedule(valuation) {
-    if (!valuation || valuation.complete !== true || String(valuation.valuationStatus || '').toUpperCase() !== 'LIVE') return;
+    if (!isRiskValuationAcceptable(valuation)) return;
 
     const accountId = String(valuation.accountId || valuation.id || '').trim();
     if (!accountId || this.inFlight.has(accountId)) return;
@@ -53,7 +54,11 @@ class RiskDayEngine {
     const cached = this.dayCache.get(accountId);
     if (cached) {
       const currentDay = dayKeyInTimezone(this.now(), cached.timezone);
-      if (cached.dayKey === currentDay) return;
+      if (cached.dayKey === currentDay) {
+        cached.lastAcceptedEquity = String(valuation.equity);
+        cached.lastAcceptedValuedAtMs = Number(valuation.valuedAtMs) || Date.now();
+        return;
+      }
     }
 
     const work = this.#handleValuation(valuation)
@@ -71,6 +76,7 @@ class RiskDayEngine {
     const equity = Number(valuation.equity);
     if (!Number.isFinite(equity)) return;
 
+    const cachedBefore = this.dayCache.get(accountId) || null;
     const result = await this.commandQueue.run(accountId, async () => {
       const account = await this.accountModel.findById(accountId);
       if (!account) return null;
@@ -79,15 +85,25 @@ class RiskDayEngine {
       const dayKey = dayKeyInTimezone(this.now(), timezone);
       if (account.riskDayKey === dayKey) return { account, dayKey, timezone, changed: false };
 
+      const persistedBaseline = metadataValue(account, 'lastAcceptedValuationEquity');
+      const baseline = cachedBefore?.lastAcceptedEquity
+        || (persistedBaseline == null || persistedBaseline === '' ? null : String(persistedBaseline))
+        || String(account.state?.initialBalance ?? account.state?.dailyStartEquity ?? equity);
+
       account.riskDayKey = dayKey;
-      account.state.dailyStartEquity = String(equity);
+      account.state.dailyStartEquity = baseline;
       account.state.realizedPnlToday = '0';
       await account.save();
       return { account, dayKey, timezone, changed: true };
     });
 
     if (!result) return;
-    this.dayCache.set(accountId, { dayKey: result.dayKey, timezone: result.timezone });
+    this.dayCache.set(accountId, {
+      dayKey: result.dayKey,
+      timezone: result.timezone,
+      lastAcceptedEquity: String(equity),
+      lastAcceptedValuedAtMs: Number(valuation.valuedAtMs) || Date.now(),
+    });
 
     if (result.changed) {
       try {
@@ -97,6 +113,11 @@ class RiskDayEngine {
       }
     }
   }
+}
+
+function metadataValue(account, key) {
+  if (account?.metadata instanceof Map) return account.metadata.get(key) ?? null;
+  return account?.metadata?.[key] ?? null;
 }
 
 function dayKeyInTimezone(date, timeZone = 'UTC') {
