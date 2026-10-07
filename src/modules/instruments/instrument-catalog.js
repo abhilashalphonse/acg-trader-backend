@@ -483,7 +483,12 @@ function baseSpec({
     spread,
     tradingSessions, tradingHolidays: Object.freeze([]), timezone,
     providerMappings: Object.freeze({ twelveData: providerSymbol }),
-    softQuoteAgeMs, maxQuoteAgeMs, chartEnabled: true, executionEnabled: false, status: 'ACTIVE',
+    softQuoteAgeMs,
+    maxQuoteAgeMs,
+    chartEnabled: true,
+    executionEnabled: false,
+    corporateActionPolicy: assetClass === 'EQUITY' ? 'UNSUPPORTED' : 'NOT_APPLICABLE',
+    status: 'ACTIVE',
   });
 }
 
