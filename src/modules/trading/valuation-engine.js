@@ -82,6 +82,9 @@ class ValuationEngine {
     this.#detachListeners();
     this.started = false;
     for (const position of this.positions.values()) this.marketPriority?.release?.(position.symbol);
+    for (const symbols of this.conversionSymbolsByAccount.values()) {
+      for (const symbol of symbols) this.marketPriority?.release?.(symbol);
+    }
     this.positions.clear();
     this.positionValuations.clear();
     this.accountBases.clear();
