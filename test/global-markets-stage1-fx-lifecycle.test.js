@@ -188,3 +188,79 @@ test('GM-004 conversion completeness is required even when native P&L is zero', 
   assert.equal(valuation.equity, null);
   await engine.stop();
 });
+
+
+test('GM-004 rejects old FX source timestamps even with a fresh local receipt', () => {
+  const { QuoteStore } = require('../src/modules/market-data/quote-store');
+  const { CurrencyConversionEngine } = require('../src/modules/trading/currency-conversion-engine');
+  const quoteStore = new QuoteStore();
+  quoteStore.set({
+    symbol: 'USDINR',
+    bid: 90,
+    ask: 90.1,
+    providerTimestampMs: 1000,
+    receivedAtMs: 10000,
+    source: 'FX_TEST',
+    isStale: false,
+  });
+  const engine = new CurrencyConversionEngine({
+    quoteStore,
+    symbols: ['USDINR'],
+    maxQuoteAgeMs: 1000,
+  });
+
+  assert.throws(
+    () => engine.convert('900', 'INR', 'USD', { nowMs: 10000 }),
+    error => error?.code === 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
+  );
+});
+
+test('GM-004 explicit approved FX fallback is usable only through its configured validity', () => {
+  const { QuoteStore } = require('../src/modules/market-data/quote-store');
+  const { CurrencyConversionEngine } = require('../src/modules/trading/currency-conversion-engine');
+  const quoteStore = new QuoteStore();
+  quoteStore.set({
+    symbol: 'USDINR',
+    bid: 90,
+    ask: 91,
+    providerTimestampMs: 1000,
+    receivedAtMs: 1000,
+    source: 'FALLBACK_TEST',
+    isStale: true,
+    fxValuationQuality: 'APPROVED_FALLBACK',
+    approvedUntilMs: 20000,
+  });
+  const engine = new CurrencyConversionEngine({
+    quoteStore,
+    symbols: ['USDINR'],
+    maxQuoteAgeMs: 1000,
+  });
+
+  const conversion = engine.convertWithEvidence('900', 'INR', 'USD', { nowMs: 15000 });
+  assert.equal(conversion.amount, '9.89010989011');
+  assert.equal(conversion.evidence.path[0].fxValuationQuality, 'APPROVED_FALLBACK');
+  assert.equal(conversion.evidence.path[0].approvedUntilMs, 20000);
+  assert.throws(
+    () => engine.convert('900', 'INR', 'USD', { nowMs: 20001 }),
+    error => error?.code === 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
+  );
+});
+
+test('GM-004 rejects crossed FX quotes at the financial boundary', () => {
+  const { QuoteStore } = require('../src/modules/market-data/quote-store');
+  const { CurrencyConversionEngine } = require('../src/modules/trading/currency-conversion-engine');
+  const quoteStore = new QuoteStore();
+  quoteStore.set({
+    symbol: 'USDINR',
+    bid: 91,
+    ask: 90,
+    receivedAtMs: 1000,
+    source: 'FX_TEST',
+    isStale: false,
+  });
+  const engine = new CurrencyConversionEngine({ quoteStore, symbols: ['USDINR'] });
+  assert.throws(
+    () => engine.convert('900', 'INR', 'USD', { nowMs: 1000 }),
+    error => error?.code === 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
+  );
+});
