@@ -165,6 +165,34 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   const priceDifference = position.side === 'BUY' ? subtractDecimal(fillPrice, entryPrice) : subtractDecimal(entryPrice, fillPrice);
   const realizedPnlQuote = multiplyDecimal(multiplyDecimal(priceDifference, contractSize), requestedVolume);
   const realizedPnl = convertCurrency(realizedPnlQuote, pnlCurrency, account.currency, currencyConverter, nowMs);
+
+  // Remove the marked contribution of the quantity being closed from account
+  // floating P&L. Realized P&L can differ from the mark because execution
+  // pricing (spread/liquidity adjustment) and the conversion context can differ.
+  // Keeping both values in the immutable plan lets every close path use the
+  // same post-execution projection formula.
+  const marked = calculatePositionValuation({
+    position: {
+      ...position,
+      openVolume: requestedVolume,
+    },
+    quote,
+  });
+  if (marked.valuationStatus !== 'LIVE' || marked.floatingPnl == null) {
+    throw new AppError('Position cannot be marked for close projection', {
+      statusCode: 409,
+      code: 'CLOSE_MARK_VALUATION_UNAVAILABLE',
+    });
+  }
+  const markedClosedPnlQuote = marked.floatingPnl;
+  const markedClosedPnl = convertCurrency(
+    markedClosedPnlQuote,
+    pnlCurrency,
+    account.currency,
+    currencyConverter,
+    nowMs,
+  );
+
   const commission = calculateCommission(instrument, requestedVolume, {
     account,
     fillPrice,
@@ -181,7 +209,8 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   return Object.freeze({
     symbol: normalizeSymbol(position.symbol), closeSide, volume: requestedVolume, remainingVolume, fullClose,
     fillPrice, entryPrice, contractSize, volumeStep, quoteCurrency: pnlCurrency, pnlCurrency,
-    realizedPnlQuote, realizedPnl, commission, netBalanceChange, releasedMargin,
+    realizedPnlQuote, realizedPnl, markedClosedPnlQuote, markedClosedPnl,
+    commission, netBalanceChange, releasedMargin,
     quoteSequence: quote.sequence ?? null, quoteReceivedAtMs: quote.receivedAtMs,
     dealType: fullClose ? 'CLOSE' : 'PARTIAL_CLOSE',
     referencePrice: decimalOrNull(execution.referencePrice),
