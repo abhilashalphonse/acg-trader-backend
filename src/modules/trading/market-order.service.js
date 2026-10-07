@@ -817,8 +817,9 @@ function closeEvents(response, fullClose) {
 function assertManualCloseSessionOpen({ instrument, source = 'API', reason = null, nowMs = Date.now() } = {}) {
   const normalizedSource = String(source || 'API').toUpperCase();
   const isManualClose = reason == null && normalizedSource !== 'SYSTEM';
-  const isStopOutClose = String(reason || '').toUpperCase() === 'MARGIN_STOP_OUT';
-  if ((!isManualClose && !isStopOutClose) || !instrument) return;
+  const systemReason = String(reason || '').toUpperCase();
+  const requiresExecutableSession = ['MARGIN_STOP_OUT', 'ACCOUNT_LIQUIDATION'].includes(systemReason);
+  if ((!isManualClose && !requiresExecutableSession) || !instrument) return;
 
   // Manual closes and stop-out liquidation require an executable session.
   // A stop-out job may value a closed-market position from APPROVED_CLOSE,
@@ -878,7 +879,7 @@ function normalizeSource(source) {
 function normalizeCloseReason(reason) {
   if (reason === null || reason === undefined || reason === '') return null;
   const value = String(reason).toUpperCase();
-  if (!['STOP_LOSS', 'TAKE_PROFIT', 'MARGIN_STOP_OUT', 'WEEKEND_HOLDING_POLICY'].includes(value)) {
+  if (!['STOP_LOSS', 'TAKE_PROFIT', 'MARGIN_STOP_OUT', 'ACCOUNT_LIQUIDATION', 'WEEKEND_HOLDING_POLICY'].includes(value)) {
     throw new AppError('Invalid system close reason', { statusCode: 400, code: 'INVALID_CLOSE_REASON' });
   }
   return value;
