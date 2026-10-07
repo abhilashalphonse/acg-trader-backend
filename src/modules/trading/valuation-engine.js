@@ -365,7 +365,9 @@ class ValuationEngine {
     const positionIds = this.positionsByAccount.get(key) || new Set();
     for (const id of positionIds) {
       const pnlCurrency = String(this.positions.get(id)?.quoteCurrency || '').toUpperCase();
-      for (const symbol of conversionSymbols(pnlCurrency, accountCurrency)) next.add(symbol);
+      for (const symbol of conversionSymbols(pnlCurrency, accountCurrency)) {
+        if (!this.currencyConverter?.symbols?.size || this.currencyConverter.symbols.has(symbol)) next.add(symbol);
+      }
     }
 
     if (next.size) this.conversionSymbolsByAccount.set(key, next);
