@@ -65,6 +65,22 @@ async function run() {
   expect(spec?.sessionOpen === true, 'NSE session is closed; run the execution acceptance during an open session', spec);
   report.checks.push({ name: 'instrument', status: 'PASS', elapsedMs: instrument.elapsedMs });
 
+  const before = await request(`/v1/trading/accounts/${accountId}/valuation`);
+  expect(before.ok, 'Pre-flight account valuation lookup failed', before);
+  const beforeValuation = before.payload;
+  expect(beforeValuation?.complete === true, 'Acceptance account valuation must be complete before testing', beforeValuation);
+  expect(Number(beforeValuation?.positionCount) === 0, 'Acceptance account must be flat before the RELIANCE lifecycle test', beforeValuation);
+  report.before = {
+    balance: beforeValuation?.balance,
+    equity: beforeValuation?.equity,
+    floatingPnl: beforeValuation?.floatingPnl,
+    usedMargin: beforeValuation?.usedMargin,
+    financialRevision: beforeValuation?.financialRevision,
+    valuationEpoch: beforeValuation?.valuationEpoch,
+    sequence: beforeValuation?.sequence,
+  };
+  report.checks.push({ name: 'pre-flight-flat-account', status: 'PASS', elapsedMs: before.elapsedMs });
+
   const preview = await request('/v1/trading/orders/market/preview', {
     method: 'POST',
     body: {
@@ -82,6 +98,10 @@ async function run() {
   expect(p?.leverage?.effective === 10, 'Preview must use stock leverage 1:10', p);
   expect(Number(p?.costs?.requiredMargin) > 0, 'Preview required margin must be positive', p);
   expect(p?.quote?.source, 'Preview must expose quote source evidence', p);
+  expect(p?.conversion?.margin?.purpose === 'MARGIN', 'Preview must expose margin FX purpose', p);
+  expect(p?.conversion?.margin?.path?.[0]?.symbol === 'USDINR', 'Preview margin must use USDINR conversion evidence', p);
+  expect(p?.conversion?.margin?.path?.[0]?.selectedSide === 'ASK', 'Positive INR margin must convert through USDINR ASK', p);
+  expect(p?.conversion?.openingPnl?.path?.[0]?.symbol === 'USDINR', 'Preview opening PnL must expose USDINR conversion evidence', p);
   expect(p?.executionPolicy?.allowed !== false, 'Execution policy blocks RELIANCE open', p);
   report.preview = {
     fillPrice: p.fillPrice,
@@ -90,9 +110,25 @@ async function run() {
     quoteSource: p.quote.source,
     quoteSequence: p.quote.sequence,
     quoteReceivedAtMs: p.quote.receivedAtMs,
+    marginConversion: p.conversion.margin,
+    openingPnlConversion: p.conversion.openingPnl,
     projectedAccount: p.projectedAccount,
   };
   report.checks.push({ name: 'preview', status: 'PASS', elapsedMs: preview.elapsedMs });
+
+  const afterPreview = await request(`/v1/trading/accounts/${accountId}/valuation`);
+  expect(afterPreview.ok, 'Post-preview valuation lookup failed', afterPreview);
+  expect(
+    Number(afterPreview.payload?.financialRevision) === Number(beforeValuation?.financialRevision),
+    'Order preview changed financialRevision',
+    { before: beforeValuation, after: afterPreview.payload },
+  );
+  expect(afterPreview.payload?.balance === beforeValuation?.balance, 'Order preview changed account balance', {
+    before: beforeValuation?.balance,
+    after: afterPreview.payload?.balance,
+  });
+  expect(Number(afterPreview.payload?.positionCount) === 0, 'Order preview created exposure', afterPreview.payload);
+  report.checks.push({ name: 'preview-side-effect-free', status: 'PASS', elapsedMs: afterPreview.elapsedMs });
 
   const nonce = crypto.randomUUID();
   const opened = await request('/v1/trading/orders/market', {
@@ -145,12 +181,22 @@ async function run() {
   expect(valuation.ok, 'Post-close valuation lookup failed', valuation);
   const v = valuation.payload;
   expect(v?.complete === true, 'Post-close account valuation is incomplete', v);
+  expect(Number(v?.positionCount) === 0, 'Post-close account still has open positions', v);
+  expect(String(v?.floatingPnl) === '0', 'Flat account retained floating PnL after full close', v);
+  expect(String(v?.usedMargin) === '0', 'Flat account retained used margin after full close', v);
+  expect(String(v?.equity) === String(v?.balance), 'Flat account equity does not equal balance after full close', v);
+  expect(
+    Number(v?.financialRevision) === Number(beforeValuation?.financialRevision) + 2,
+    'RELIANCE open + close did not advance financialRevision exactly twice',
+    { before: beforeValuation, after: v },
+  );
   report.valuation = {
     status: v?.valuationStatus,
     completeness: v?.accountValuationCompleteness || null,
     equity: v?.equity,
     floatingPnl: v?.floatingPnl,
     usedMargin: v?.usedMargin,
+    positionCount: v?.positionCount,
     financialRevision: v?.financialRevision,
     valuationEpoch: v?.valuationEpoch,
     sequence: v?.sequence,
