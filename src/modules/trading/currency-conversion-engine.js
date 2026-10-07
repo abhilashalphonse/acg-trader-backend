@@ -27,6 +27,42 @@ class CurrencyConversionEngine {
     this.maxQuoteAgeMs = Number(maxQuoteAgeMs) || 10000;
   }
 
+  createContext({ nowMs = Date.now() } = {}) {
+    const snapshots = new Map();
+    const quoteResolver = symbol => {
+      const key = normalizePair(symbol);
+      if (!snapshots.has(key)) {
+        const quote = this.quoteStore?.get?.(key);
+        snapshots.set(key, quote ? Object.freeze({ ...quote }) : null);
+      }
+      return snapshots.get(key);
+    };
+    const fixedNowMs = Number(nowMs);
+    return Object.freeze({
+      nowMs: fixedNowMs,
+      convert: (amount, fromCurrency, toCurrency, options = {}) => this.convert(
+        amount,
+        fromCurrency,
+        toCurrency,
+        { ...options, nowMs: fixedNowMs, quoteResolver },
+      ),
+      convertWithEvidence: (amount, fromCurrency, toCurrency, options = {}) => this.convertWithEvidence(
+        amount,
+        fromCurrency,
+        toCurrency,
+        { ...options, nowMs: fixedNowMs, quoteResolver },
+      ),
+      canConvert: (fromCurrency, toCurrency, options = {}) => {
+        try {
+          this.convert('0', fromCurrency, toCurrency, { ...options, nowMs: fixedNowMs, quoteResolver });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    });
+  }
+
   convert(amount, fromCurrency, toCurrency, options = {}) {
     return this.convertWithEvidence(amount, fromCurrency, toCurrency, options).amount;
   }
@@ -34,6 +70,7 @@ class CurrencyConversionEngine {
   convertWithEvidence(amount, fromCurrency, toCurrency, {
     nowMs = Date.now(),
     purpose = CONVERSION_PURPOSES.GENERIC,
+    quoteResolver = null,
   } = {}) {
     const inputAmount = normalizeDecimal(amount);
     const from = normalizeCurrency(fromCurrency);
@@ -61,13 +98,13 @@ class CurrencyConversionEngine {
     // preview and settlement select the same FX side for identical inputs.
     const economicAmount = economicAmountForPurpose(inputAmount, normalizedPurpose);
 
-    const direct = this.#convertLeg(economicAmount, from, to, nowMs);
+    const direct = this.#convertLeg(economicAmount, from, to, nowMs, quoteResolver);
     if (direct) return finalizeConversion({ inputAmount, economicAmount, from, to, purpose: normalizedPurpose, result: direct, nowMs });
 
     if (from !== 'USD' && to !== 'USD') {
-      const usd = this.#convertLeg(economicAmount, from, 'USD', nowMs);
+      const usd = this.#convertLeg(economicAmount, from, 'USD', nowMs, quoteResolver);
       if (usd) {
-        const target = this.#convertLeg(usd.amount, 'USD', to, nowMs);
+        const target = this.#convertLeg(usd.amount, 'USD', to, nowMs, quoteResolver);
         if (target) {
           return finalizeConversion({
             inputAmount,
@@ -99,11 +136,11 @@ class CurrencyConversionEngine {
     }
   }
 
-  #convertLeg(amount, from, to, nowMs) {
+  #convertLeg(amount, from, to, nowMs, quoteResolver = null) {
     const positive = compareDecimal(amount, '0') >= 0;
     const directSymbol = `${from}${to}`;
     if (this.#symbolAvailable(directSymbol)) {
-      const quote = this.#quote(directSymbol, nowMs);
+      const quote = this.#quote(directSymbol, nowMs, quoteResolver);
       if (quote) {
         const selectedSide = positive ? 'BID' : 'ASK';
         const quoteRate = normalizeDecimal(String(positive ? quote.bid : quote.ask));
@@ -124,7 +161,7 @@ class CurrencyConversionEngine {
 
     const inverseSymbol = `${to}${from}`;
     if (this.#symbolAvailable(inverseSymbol)) {
-      const quote = this.#quote(inverseSymbol, nowMs);
+      const quote = this.#quote(inverseSymbol, nowMs, quoteResolver);
       if (quote) {
         const selectedSide = positive ? 'ASK' : 'BID';
         const quoteRate = normalizeDecimal(String(positive ? quote.ask : quote.bid));
@@ -150,8 +187,8 @@ class CurrencyConversionEngine {
     return !this.symbols.size || this.symbols.has(symbol);
   }
 
-  #quote(symbol, nowMs) {
-    const quote = this.quoteStore?.get?.(symbol);
+  #quote(symbol, nowMs, quoteResolver = null) {
+    const quote = quoteResolver ? quoteResolver(symbol) : this.quoteStore?.get?.(symbol);
     if (!quote || quote.isStale) return null;
     const bid = Number(quote.bid);
     const ask = Number(quote.ask);
