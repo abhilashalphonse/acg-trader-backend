@@ -50,6 +50,7 @@ const instrumentSchema = new Schema({
   volumeStep: { type: Decimal128, required: true },
 
   defaultLeverage: { type: Number, required: true, min: 1 },
+  leveragePolicyVersion: { type: Number, default: 1, min: 1 },
   marginRate: { type: Decimal128, default: null },
   commissionPerLot: { type: Decimal128, default: null },
   commissionPerLotPerSide: { type: Decimal128, default: null },
