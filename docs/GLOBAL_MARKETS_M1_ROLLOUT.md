@@ -47,7 +47,7 @@ Verify normal service health and Funded event relay before continuing.
 Use the authenticated operations endpoint:
 
 ```http
-GET /v1/operations/global-markets/readiness?symbol=RELIANCE
+GET /v1/internal/operations/global-markets/readiness?symbol=RELIANCE
 ```
 
 The report is `GLOBAL_MARKETS_READINESS_V1`.
@@ -183,7 +183,49 @@ npm run capacity:global-markets:preview
 
 The report returns request count, success/errors, error rate, p50/p95/p99/max/mean latency, HTTP status distribution and error-code distribution. The script intentionally does not invent product thresholds.
 
-## 7. Close the pilot window
+## 7. Verify the operational release gate
+
+Before treating staging evidence as release-quality, explicitly configure the approved thresholds:
+
+```text
+GLOBAL_MARKETS_MAX_UNDERLYING_AGE_MS=<approved milliseconds>
+GLOBAL_MARKETS_MAX_FX_AGE_MS=<approved milliseconds>
+GLOBAL_MARKETS_MAX_PLATFORM_EVENT_FAILURES=<approved count>
+GLOBAL_MARKETS_MAX_RISK_IN_FLIGHT=<approved count>
+GLOBAL_MARKETS_MAX_RECONCILIATION_ISSUES=<approved count>
+```
+
+No threshold is invented by the application. Missing values are intentionally release-blocking.
+
+Use:
+
+```http
+GET /v1/internal/operations/global-markets/operational-gate?symbol=RELIANCE
+```
+
+A passing staging result must report:
+
+```text
+contractVersion = GLOBAL_MARKETS_OPERATIONAL_GATE_V1
+status = OPERATIONALLY_READY_FOR_STAGING_EVIDENCE
+operationalReady = true
+productionAuthorized = false
+alerts = []
+```
+
+The gate checks the existing RELIANCE readiness predicates plus:
+
+- underlying receipt/provider timestamp age against the approved threshold,
+- the oldest receipt/provider timestamp across the FX conversion path,
+- platform relay enabled/started/webhook state, dead events and delivery failures,
+- durable ordered-risk engine state and in-flight load,
+- reconciliation consistency/state and issue count.
+
+Any missing threshold, dead platform event, stale FX evidence, degraded reconciliation state or risk backlog beyond the approved threshold returns HTTP 409 and a machine-readable blocking alert.
+
+This gate does **not** authorize production. It only establishes that the current staging observation meets the approved operational thresholds.
+
+## 8. Close the pilot window
 
 Immediately after the acceptance/capacity run:
 
@@ -207,7 +249,7 @@ executionProvisionVersion=0
 
 A normal service restart/catalog synchronization also returns India pilot instruments to disabled, but the explicit disable command is the required rollback step.
 
-## 8. Production gate
+## 9. Production gate
 
 Do not enable production from this runbook.
 
