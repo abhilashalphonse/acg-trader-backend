@@ -26,6 +26,7 @@ const { calculatePositionValuation } = require('./valuation-calculator');
 const {
   validatePreTradeRiskPolicy,
   validateActiveExposurePolicy,
+  calculateProjectedStopRiskAmount,
 } = require('./firm-risk-policy');
 
 function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now(), currencyConverter = null, exposure = null }) {
@@ -135,7 +136,18 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     fillPrice,
     stopLoss: normalizedStopLoss,
     takeProfit: normalizedTakeProfit,
-    riskAmount: firmRisk.tradeRiskAmount,
+    riskAmount: firmRisk.tradeRiskAmount ?? (normalizedStopLoss == null ? null : calculateProjectedStopRiskAmount({
+      account,
+      instrument,
+      side: normalizedSide,
+      entryPrice: fillPrice,
+      volume: normalizedVolume,
+      stopLoss: normalizedStopLoss,
+      openingCommission: commission,
+      closingCommission: estimatedCloseCommission,
+      currencyConverter,
+      nowMs,
+    })),
     riskPercent: firmRisk.tradeRiskPercent,
     rawStopRiskAmount: firmRisk.rawStopRiskAmount ?? null,
     openingCommission: firmRisk.openingCommission ?? commission,
