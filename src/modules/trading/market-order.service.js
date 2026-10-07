@@ -662,16 +662,28 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
   }
 
   account.state.balance = runningBalance;
-  if (valuationComplete) {
-    account.state.floatingPnl = subtractDecimal(account.state.floatingPnl, plan.realizedPnl);
+  const projected = plan?.projectedAccountState;
+  if (valuationComplete && projected) {
+    // The execution planner removes the marked contribution of the closed
+    // quantity before applying realized P&L/fees. This keeps the committed
+    // account projection internally consistent when fill != mark.
+    account.state.floatingPnl = projected.floatingPnl;
+    account.state.equity = projected.equity;
+    account.state.usedMargin = projected.usedMargin;
+    account.state.freeMargin = projected.freeMargin;
+    account.state.marginLevel = projected.marginLevel;
+  } else {
+    // Preserve close/reduce availability when another position cannot be
+    // valued. The valuation engine will repair the aggregate projection once
+    // completeness returns; do not pretend an incomplete projection is live.
+    account.state.equity = subtractDecimal(account.state.equity, plan.commission);
+    let usedMargin = subtractDecimal(account.state.usedMargin, plan.releasedMargin);
+    if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
+    account.state.usedMargin = usedMargin;
+    account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
+    account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
   }
-  account.state.equity = subtractDecimal(account.state.equity, plan.commission);
   account.state.realizedPnlToday = addDecimal(account.state.realizedPnlToday, plan.realizedPnl);
-  let usedMargin = subtractDecimal(account.state.usedMargin, plan.releasedMargin);
-  if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
-  account.state.usedMargin = usedMargin;
-  account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
-  account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
 
   position.openVolume = plan.remainingVolume;
   position.margin = subtractDecimal(position.margin, plan.releasedMargin);
