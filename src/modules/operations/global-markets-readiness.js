@@ -64,6 +64,20 @@ function buildGlobalMarketsReadiness({
   const activationReady = activationPrerequisites.every(item => item.pass);
   const executionEnabled = instrument?.executionEnabled === true;
   const executionProvisionVersion = Number(instrument?.executionProvisionVersion || 0);
+  // The staging pilot deliberately uses UNSUPPORTED equity corporate actions
+  // while exercising financial plumbing. That is not customer-release approval:
+  // any unmitigated corporate action can change already-open positions.
+  const corporateActionCustomerSafe = false;
+  const customerReleaseBlockers = [
+    ...(!corporateActionCustomerSafe ? [{
+      check: 'corporateActionOpenPositionSafety',
+      reason: 'Corporate-action handling for existing positions is not implemented or independently verified',
+    }] : []),
+    ...(!activationReady ? [{
+      check: 'stagingReadiness',
+      reason: 'Underlying staging prerequisites have not passed',
+    }] : []),
+  ];
 
   return {
     contractVersion: 'GLOBAL_MARKETS_READINESS_V1',
@@ -72,6 +86,8 @@ function buildGlobalMarketsReadiness({
     status: activationReady ? (executionEnabled ? 'EXECUTION_READY' : 'READY_TO_ENABLE_PILOT') : 'BLOCKED',
     activationReady,
     executionReady: activationReady && executionEnabled,
+    customerReleaseReady: false,
+    customerReleaseBlockers,
     checks,
     instrument: instrument ? {
       assetClass: instrument.assetClass || null,
