@@ -283,11 +283,26 @@ class MarketOrderService {
           });
 
           if (!quoteSnapshot) quoteSnapshot = this.quoteStore.get(position.symbol);
-          if (position.status === 'OPEN' && ['STOP_LOSS', 'TAKE_PROFIT'].includes(normalized.reason)
-            && detectProtectionTrigger({ position, tick: quoteSnapshot })?.reason !== normalized.reason) {
-            throw new AppError('Position protection changed before execution; the trigger no longer applies', {
-              statusCode: 409, code: 'PROTECTION_TRIGGER_NO_LONGER_ACTIVE',
-            });
+          if (position.status === 'OPEN' && ['STOP_LOSS', 'TAKE_PROFIT'].includes(normalized.reason)) {
+            if (normalized.latchedProtection) {
+              const currentProtection = normalized.reason === 'STOP_LOSS'
+                ? position.stopLoss
+                : position.takeProfit;
+              if (
+                currentProtection == null
+                || compareDecimal(currentProtection, normalized.latchedProtection.protectionPrice) !== 0
+                || normalized.latchedProtection.reason !== normalized.reason
+              ) {
+                throw new AppError('Position protection changed after the trigger was latched', {
+                  statusCode: 409,
+                  code: 'PROTECTION_TRIGGER_NO_LONGER_ACTIVE',
+                });
+              }
+            } else if (detectProtectionTrigger({ position, tick: quoteSnapshot })?.reason !== normalized.reason) {
+              throw new AppError('Position protection changed before execution; the trigger no longer applies', {
+                statusCode: 409, code: 'PROTECTION_TRIGGER_NO_LONGER_ACTIVE',
+              });
+            }
           }
 
           const plan = planMarketClose({
@@ -825,15 +840,27 @@ function normalizeOpenCommand(command) {
 }
 
 function normalizeCloseCommand(command) {
+  const source = normalizeSource(command?.source);
+  const reason = normalizeCloseReason(command?.reason);
   return {
     accountId: String(command?.accountId || '').trim(),
     clientOrderId: String(command?.clientOrderId || '').trim(),
     positionId: String(command?.positionId || '').trim(),
     volume: nullableString(command?.volume),
     requestedPrice: nullableString(command?.requestedPrice),
-    source: normalizeSource(command?.source),
-    reason: normalizeCloseReason(command?.reason),
+    source,
+    reason,
+    latchedProtection: normalizeLatchedProtection(command?.latchedProtection, { source, reason }),
   };
+}
+
+function normalizeLatchedProtection(value, { source, reason }) {
+  if (!value || source !== 'SYSTEM' || !['STOP_LOSS', 'TAKE_PROFIT'].includes(reason)) return null;
+  const latchId = String(value?.latchId || '').trim();
+  const protectionPrice = nullableString(value?.protectionPrice);
+  const latchedReason = String(value?.reason || reason || '').toUpperCase();
+  if (!latchId || !protectionPrice || latchedReason !== reason) return null;
+  return Object.freeze({ latchId, protectionPrice, reason: latchedReason });
 }
 
 function nullableString(value) {
