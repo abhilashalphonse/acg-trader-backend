@@ -558,48 +558,16 @@ function projectStopOutClose({
     currencyConverter,
   });
 
-  const mark = calculatePositionValuation({
-    position: {
-      ...position,
-      openVolume: plan.volume,
-    },
-    quote,
-  });
-  if (mark.valuationStatus !== 'LIVE' || mark.floatingPnl == null) {
-    throw retryable('Selected position cannot be marked for stop-out projection', 'STOP_OUT_POSITION_VALUATION_UNAVAILABLE');
+  // Use the same post-close financial projection as manual/protective/reverse
+  // execution. Stop-out must not maintain a second close-account formula.
+  if (!plan.projectedAccountState) {
+    throw retryable('Post-close account projection is unavailable for stop-out', 'STOP_OUT_PROJECTION_UNAVAILABLE');
   }
-  const markedClosedPnl = convertPnl(
-    mark.floatingPnl,
-    mark.quoteCurrency,
-    account.currency,
-    currencyConverter,
-    nowMs,
-  );
-
-  const balance = addDecimal(
-    addDecimal(normalizeDecimal(account.state.balance), plan.realizedPnl),
-    subtractDecimal('0', plan.commission),
-  );
-  const floatingPnl = subtractDecimal(normalizeDecimal(account.state.floatingPnl), markedClosedPnl);
-  const equity = addDecimal(balance, floatingPnl);
-  let usedMargin = subtractDecimal(normalizeDecimal(account.state.usedMargin), plan.releasedMargin);
-  if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
-  const freeMargin = subtractDecimal(equity, usedMargin);
-  const marginLevel = compareDecimal(usedMargin, '0') > 0
-    ? multiplyDecimal(divideDecimal(equity, usedMargin, { scale: 8, rounding: ROUNDING.HALF_UP }), '100')
-    : null;
 
   return {
     plan,
-    markedClosedPnl,
-    projection: {
-      balance,
-      floatingPnl,
-      equity,
-      usedMargin,
-      freeMargin,
-      marginLevel,
-    },
+    markedClosedPnl: plan.markedPnlRemoved,
+    projection: plan.projectedAccountState,
   };
 }
 
