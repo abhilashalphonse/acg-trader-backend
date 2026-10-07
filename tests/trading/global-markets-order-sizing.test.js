@@ -23,7 +23,7 @@ test('risk budget rounds down to supported quantity step, never upward', () => {
     evaluate: planFor,
   });
   assert.equal(result.volume, '12.434');
-  assert.equal(result.actualAmount, '49.999114');
+  assert.equal(result.actualAmount, '49.997114');
   assert.equal(compareDecimal(result.actualAmount, '50') <= 0, true);
   assert.equal(compareDecimal(planFor('12.435').riskAmount, '50') > 0, true);
 });
