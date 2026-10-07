@@ -191,7 +191,10 @@ class ValuationEngine {
     return true;
   }
 
-  projectAccountDocument(account) {
+  projectAccountDocument(account, {
+    currencyConverter = this.currencyConverter,
+    nowMs = Date.now(),
+  } = {}) {
     if (!account) return null;
     const accountId = String(account._id || account.id || '');
     const base = this.accountBases.get(accountId);
@@ -211,15 +214,19 @@ class ValuationEngine {
       ...aggregateAccountValuation({
         account,
         positionValuations: this.#valuationsForAccount(accountId),
-        currencyConverter: this.currencyConverter,
-        nowMs: Date.now(),
+        currencyConverter,
+        nowMs,
       }),
       financialRevision: documentRevision,
     };
   }
 
-  overlayAccountDocument(account, { requireLive = false } = {}) {
-    const projection = this.projectAccountDocument(account);
+  overlayAccountDocument(account, {
+    requireLive = false,
+    currencyConverter = this.currencyConverter,
+    nowMs = Date.now(),
+  } = {}) {
+    const projection = this.projectAccountDocument(account, { currencyConverter, nowMs });
     if (!projection) return null;
     if (projection.staleFinancialRevision) {
       throw new AppError('Account valuation was calculated from an older financial revision', {
