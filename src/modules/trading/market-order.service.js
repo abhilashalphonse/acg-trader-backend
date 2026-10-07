@@ -163,6 +163,22 @@ class MarketOrderService {
             currencyConverter: financialConverter,
           });
 
+          if (normalized.maxRiskAmount != null) {
+            const maximum = normalizeDecimal(normalized.maxRiskAmount);
+            if (compareDecimal(maximum, '0') <= 0 || plan.riskAmount == null
+                || compareDecimal(plan.riskAmount, maximum) > 0) {
+              throw new AppError('Current execution risk exceeds the confirmed budget', {
+                statusCode: 409,
+                code: 'EXECUTION_RISK_BUDGET_EXCEEDED',
+                details: {
+                  maximumRiskAmount: maximum,
+                  actualRiskAmount: plan.riskAmount ?? null,
+                  accountCurrency: account?.currency || null,
+                },
+              });
+            }
+          }
+
           const policyDecision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session,
             action: 'MARKET_OPEN', referenceId: normalized.clientOrderId });
 
@@ -1020,6 +1036,7 @@ function normalizeOpenCommand(command) {
     symbol: normalizeSymbol(command?.symbol),
     side: String(command?.side || '').toUpperCase(),
     volume: String(command?.volume ?? '').trim(),
+    maxRiskAmount: command?.maxRiskAmount == null ? null : String(command.maxRiskAmount),
     stopLoss: nullableString(command?.stopLoss),
     takeProfit: nullableString(command?.takeProfit),
     requestedPrice: nullableString(command?.requestedPrice),
