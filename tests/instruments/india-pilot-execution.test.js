@@ -41,29 +41,40 @@ test('RELIANCE pilot enable is fail-closed without both explicit staging flags',
   );
   assert.throws(
     () => assertEnableGuard({
-      NODE_ENV: 'staging',
       INDIA_EXECUTION_PILOT_ALLOWED: 'true',
     }),
     /INDIA_EXECUTION_PILOT_CONFIRM=RELIANCE-STAGING-ONLY/,
   );
 });
 
-test('RELIANCE pilot enable accepts the exact non-production confirmation', () => {
-  assert.doesNotThrow(() => assertEnableGuard({
-    NODE_ENV: 'staging',
-    INDIA_EXECUTION_PILOT_ALLOWED: 'true',
-    INDIA_EXECUTION_PILOT_CONFIRM: 'RELIANCE-STAGING-ONLY',
-  }));
-});
-
-test('RELIANCE pilot activation is blocked in production even with confirmation', () => {
+test('RELIANCE pilot enable requires an explicit staging deployment identity', () => {
   assert.throws(
     () => assertEnableGuard({
-      NODE_ENV: 'production',
       INDIA_EXECUTION_PILOT_ALLOWED: 'true',
       INDIA_EXECUTION_PILOT_CONFIRM: 'RELIANCE-STAGING-ONLY',
     }),
-    /blocked in production/,
+    /INDIA_EXECUTION_PILOT_ENVIRONMENT=staging/,
+  );
+
+  assert.doesNotThrow(() => assertEnableGuard({
+    NODE_ENV: 'production',
+    RAILWAY_ENVIRONMENT_NAME: 'staging',
+    INDIA_EXECUTION_PILOT_ALLOWED: 'true',
+    INDIA_EXECUTION_PILOT_CONFIRM: 'RELIANCE-STAGING-ONLY',
+    INDIA_EXECUTION_PILOT_ENVIRONMENT: 'staging',
+  }));
+});
+
+test('RELIANCE pilot activation is blocked in the Railway production environment', () => {
+  assert.throws(
+    () => assertEnableGuard({
+      NODE_ENV: 'production',
+      RAILWAY_ENVIRONMENT_NAME: 'production',
+      INDIA_EXECUTION_PILOT_ALLOWED: 'true',
+      INDIA_EXECUTION_PILOT_CONFIRM: 'RELIANCE-STAGING-ONLY',
+      INDIA_EXECUTION_PILOT_ENVIRONMENT: 'staging',
+    }),
+    /Railway production environment/,
   );
 });
 
