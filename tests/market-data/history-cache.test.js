@@ -186,3 +186,95 @@ test('cache clear prevents pre-outage in-flight history from repopulating cache'
   assert.equal(loads, 2);
   assert.equal(cache.stats().entries, 1);
 });
+
+
+test('serves stale daily history immediately while refreshing it in the background', async () => {
+  let now = 1_000;
+  let loads = 0;
+  let releaseRefresh;
+  const refreshGate = new Promise(resolve => { releaseRefresh = resolve; });
+  const cache = new ProviderHistoryCache({
+    now: () => now,
+    ttlByTimeframe: { '1d': 1_000 },
+    staleTtlByTimeframe: { '1d': 60_000 },
+  });
+
+  const first = await cache.getOrLoad({
+    key: 'XAU/USD:1d',
+    timeframe: '1d',
+    limit: 3,
+    load: async () => {
+      loads += 1;
+      return bars(3);
+    },
+  });
+  assert.equal(first[0].openTimeMs, 0);
+
+  now += 1_001;
+  const stale = await cache.getOrLoad({
+    key: 'XAU/USD:1d',
+    timeframe: '1d',
+    limit: 3,
+    load: async () => {
+      loads += 1;
+      await refreshGate;
+      return bars(3, 1_000_000);
+    },
+  });
+
+  assert.equal(stale[0].openTimeMs, 0);
+  assert.equal(loads, 2);
+  assert.equal(cache.stats().staleHits, 1);
+  assert.equal(cache.stats().backgroundRefreshes, 1);
+  assert.equal(cache.stats().inFlight, 1);
+
+  releaseRefresh();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+
+  const refreshed = await cache.getOrLoad({
+    key: 'XAU/USD:1d',
+    timeframe: '1d',
+    limit: 3,
+    load: async () => { throw new Error('fresh cache should satisfy request'); },
+  });
+
+  assert.equal(refreshed[0].openTimeMs, 1_000_000);
+  assert.equal(cache.stats().inFlight, 0);
+});
+
+test('stale cache never satisfies a request for more bars than it contains', async () => {
+  let now = 1_000;
+  let loads = 0;
+  const cache = new ProviderHistoryCache({
+    now: () => now,
+    ttlByTimeframe: { '1d': 1_000 },
+    staleTtlByTimeframe: { '1d': 60_000 },
+  });
+
+  await cache.getOrLoad({
+    key: 'EUR/USD:1d',
+    timeframe: '1d',
+    limit: 3,
+    load: async () => {
+      loads += 1;
+      return bars(3);
+    },
+  });
+
+  now += 1_001;
+  const larger = await cache.getOrLoad({
+    key: 'EUR/USD:1d',
+    timeframe: '1d',
+    limit: 5,
+    load: async () => {
+      loads += 1;
+      return bars(5, 2_000_000);
+    },
+  });
+
+  assert.equal(larger.length, 5);
+  assert.equal(larger[0].openTimeMs, 2_000_000);
+  assert.equal(loads, 2);
+  assert.equal(cache.stats().staleHits, 0);
+});

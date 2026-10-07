@@ -11,14 +11,26 @@ const DEFAULT_TTL_MS = Object.freeze({
   '1w': 1_800_000,
 });
 
+// Completed higher-timeframe history is expensive to reconstruct from provider
+// source bars but changes very slowly. After the normal freshness window, keep
+// a bounded stale copy that can be returned immediately while a refresh runs
+// in the background. Explicit invalidation still removes both fresh and stale
+// entries, so provider recovery/corrections remain authoritative.
+const DEFAULT_STALE_TTL_MS = Object.freeze({
+  '1d': 12 * 60 * 60 * 1000,
+  '1w': 48 * 60 * 60 * 1000,
+});
+
 class ProviderHistoryCache {
   constructor({
     ttlByTimeframe = DEFAULT_TTL_MS,
+    staleTtlByTimeframe = DEFAULT_STALE_TTL_MS,
     maxEntries = 256,
     maxBars = 50_000,
     now = () => Date.now(),
   } = {}) {
     this.ttlByTimeframe = { ...DEFAULT_TTL_MS, ...ttlByTimeframe };
+    this.staleTtlByTimeframe = { ...DEFAULT_STALE_TTL_MS, ...staleTtlByTimeframe };
     this.maxEntries = Math.max(1, Number(maxEntries) || 256);
     this.maxBars = Math.max(1, Number(maxBars) || 50_000);
     this.now = now;
@@ -32,6 +44,9 @@ class ProviderHistoryCache {
       misses: 0,
       loads: 0,
       deduped: 0,
+      staleHits: 0,
+      backgroundRefreshes: 0,
+      backgroundRefreshFailures: 0,
       evictions: 0,
       expirations: 0,
     };
@@ -45,6 +60,18 @@ class ProviderHistoryCache {
 
     const cached = this.#get(cacheKey, timeframe, requestedLimit);
     if (cached) return cached;
+
+    const stale = this.#get(cacheKey, timeframe, requestedLimit, { allowStale: true });
+    if (stale) {
+      this.counters.staleHits += 1;
+      if (!this.inFlight.has(cacheKey)) {
+        this.counters.backgroundRefreshes += 1;
+        this.#startLoad(cacheKey, timeframe, requestedLimit, load)
+          .catch(() => { this.counters.backgroundRefreshFailures += 1; });
+      }
+      return stale;
+    }
+
     this.counters.misses += 1;
 
     while (true) {
@@ -57,33 +84,37 @@ class ProviderHistoryCache {
         continue;
       }
 
-      const loadGeneration = this.generation;
-      let promise;
-      promise = Promise.resolve()
-        .then(() => {
-          this.counters.loads += 1;
-          return load();
-        })
-        .then(result => {
-          const bars = Array.isArray(result) ? result : [];
-          // A provider disconnect clears the cache while old REST requests may
-          // still be resolving. Never let a pre-outage response repopulate the
-          // post-recovery cache after that invalidation.
-          if (bars.length && loadGeneration === this.generation && this.inFlight.get(cacheKey)?.promise === promise) {
-            this.#set(cacheKey, timeframe, requestedLimit, bars);
-          }
-          return bars;
-        })
-        .finally(() => {
-          if (this.inFlight.get(cacheKey)?.promise === promise) {
-            this.inFlight.delete(cacheKey);
-          }
-        });
-
-      this.inFlight.set(cacheKey, { requestedLimit, promise });
-      const bars = await promise;
+      const bars = await this.#startLoad(cacheKey, timeframe, requestedLimit, load);
       return bars.slice(-requestedLimit);
     }
+  }
+
+  #startLoad(cacheKey, timeframe, requestedLimit, load) {
+    const loadGeneration = this.generation;
+    let promise;
+    promise = Promise.resolve()
+      .then(() => {
+        this.counters.loads += 1;
+        return load();
+      })
+      .then(result => {
+        const bars = Array.isArray(result) ? result : [];
+        // A provider disconnect clears the cache while old REST requests may
+        // still be resolving. Never let a pre-outage response repopulate the
+        // post-recovery cache after that invalidation.
+        if (bars.length && loadGeneration === this.generation && this.inFlight.get(cacheKey)?.promise === promise) {
+          this.#set(cacheKey, timeframe, requestedLimit, bars);
+        }
+        return bars;
+      })
+      .finally(() => {
+        if (this.inFlight.get(cacheKey)?.promise === promise) {
+          this.inFlight.delete(cacheKey);
+        }
+      });
+
+    this.inFlight.set(cacheKey, { requestedLimit, promise });
+    return promise;
   }
 
   stats() {
@@ -110,11 +141,12 @@ class ProviderHistoryCache {
     for (const key of this.inFlight.keys()) if (key.startsWith(prefix)) this.inFlight.delete(key);
   }
 
-  #get(key, timeframe, limit) {
+  #get(key, timeframe, limit, { allowStale = false } = {}) {
     const entry = this.entries.get(key);
     if (!entry) return null;
 
-    if (entry.expiresAtMs <= this.now()) {
+    const nowMs = this.now();
+    if (entry.staleUntilMs <= nowMs) {
       this.#delete(key);
       this.counters.expirations += 1;
       return null;
@@ -122,23 +154,29 @@ class ProviderHistoryCache {
 
     if (!entry.exhausted && entry.requestedLimit < limit) return null;
 
+    const fresh = entry.expiresAtMs > nowMs;
+    if (!fresh && !allowStale) return null;
+
     // Map insertion order doubles as an LRU list.
     this.entries.delete(key);
     this.entries.set(key, entry);
-    this.counters.hits += 1;
+    if (fresh) this.counters.hits += 1;
     return entry.bars.slice(-limit);
   }
 
   #set(key, timeframe, requestedLimit, bars) {
     const ttlMs = Math.max(1_000, Number(this.ttlByTimeframe[timeframe]) || 30_000);
+    const staleTtlMs = Math.max(0, Number(this.staleTtlByTimeframe[timeframe]) || 0);
     const normalized = Object.freeze(bars.map(bar => Object.freeze({ ...bar })));
+    const expiresAtMs = this.now() + ttlMs;
 
     this.#delete(key);
     const entry = {
       timeframe,
       requestedLimit,
       exhausted: normalized.length < requestedLimit,
-      expiresAtMs: this.now() + ttlMs,
+      expiresAtMs,
+      staleUntilMs: expiresAtMs + staleTtlMs,
       bars: normalized,
     };
     this.entries.set(key, entry);
@@ -166,4 +204,5 @@ class ProviderHistoryCache {
 module.exports = {
   ProviderHistoryCache,
   DEFAULT_TTL_MS,
+  DEFAULT_STALE_TTL_MS,
 };
