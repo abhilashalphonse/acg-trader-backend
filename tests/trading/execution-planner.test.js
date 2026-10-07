@@ -932,3 +932,75 @@ test('immediate opening PnL uses the same account-currency conversion path as li
   assert.equal(plan.requiredMargin, '880.16');
   assert.equal(plan.projectedAccountState.floatingPnl, '-16');
 });
+
+
+test('GLOBAL-MARKETS-M1 applies stock leverage 1:10 and exposes policy evidence in the plan', () => {
+  const plan = planMarketOpen({
+    account: account({ leverage: 100 }),
+    instrument: instrument({
+      symbol: 'RELIANCE',
+      assetClass: 'EQUITY',
+      quoteCurrency: 'INR',
+      marginCurrency: 'INR',
+      tickSize: '0.01',
+      minVolume: '1',
+      maxVolume: '10000',
+      volumeStep: '1',
+      contractSize: '1',
+      defaultLeverage: 10,
+      leveragePolicyVersion: 2,
+    }),
+    quote: quote({
+      symbol: 'RELIANCE',
+      bid: 2499,
+      ask: 2500,
+    }),
+    side: 'BUY',
+    volume: '10',
+    currencyConverter: {
+      convert(amount, from, to) {
+        assert.equal(from, 'INR');
+        assert.equal(to, 'USD');
+        return require('../../src/shared/decimal/decimal').divideDecimal(amount, '90', { scale: 12 });
+      },
+    },
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.instrumentLeverage, 10);
+  assert.equal(plan.accountLeverage, 100);
+  assert.equal(plan.effectiveLeverage, 10);
+  assert.equal(plan.leveragePolicyVersion, 2);
+  assert.equal(plan.requiredMargin, '27.777777777778');
+  assert.equal(plan.immediateOpeningPnl, '-0.111111111111');
+});
+
+test('GLOBAL-MARKETS-M1 crypto leverage is capped at 1:2 even on a 1:100 account', () => {
+  const plan = planMarketOpen({
+    account: account({ leverage: 100 }),
+    instrument: instrument({
+      symbol: 'BTCUSD',
+      assetClass: 'CRYPTO',
+      quoteCurrency: 'USD',
+      marginCurrency: 'USD',
+      tickSize: '0.01',
+      minVolume: '0.01',
+      maxVolume: '1000',
+      volumeStep: '0.01',
+      contractSize: '1',
+      defaultLeverage: 2,
+      leveragePolicyVersion: 2,
+    }),
+    quote: quote({
+      symbol: 'BTCUSD',
+      bid: 83999,
+      ask: 84000,
+    }),
+    side: 'BUY',
+    volume: '1',
+    nowMs: 10_100,
+  });
+
+  assert.equal(plan.effectiveLeverage, 2);
+  assert.equal(plan.requiredMargin, '42000');
+});
