@@ -558,23 +558,7 @@ function projectStopOutClose({
     currencyConverter,
   });
 
-  const mark = calculatePositionValuation({
-    position: {
-      ...position,
-      openVolume: plan.volume,
-    },
-    quote,
-  });
-  if (mark.valuationStatus !== 'LIVE' || mark.floatingPnl == null) {
-    throw retryable('Selected position cannot be marked for stop-out projection', 'STOP_OUT_POSITION_VALUATION_UNAVAILABLE');
-  }
-  const markedClosedPnl = convertPnl(
-    mark.floatingPnl,
-    mark.quoteCurrency,
-    account.currency,
-    currencyConverter,
-    nowMs,
-  );
+  const markedClosedPnl = normalizeDecimal(plan.markedClosedPnl);
 
   const balance = addDecimal(
     addDecimal(normalizeDecimal(account.state.balance), plan.realizedPnl),
