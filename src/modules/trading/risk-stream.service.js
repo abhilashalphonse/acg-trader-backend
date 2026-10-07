@@ -8,6 +8,7 @@ const { TradingAccount } = require('../accounts/trading-account.model');
 const { AccountRiskEvent } = require('./account-risk-event.model');
 const { runMongoTransaction } = require('./market-order.service');
 const { dayKeyInTimezone } = require('./risk-day-engine');
+const { isRiskValuationAcceptable } = require('./valuation-quality');
 
 class RiskStreamService {
   constructor({
@@ -23,7 +24,7 @@ class RiskStreamService {
   }
 
   async ingestValuation(valuation) {
-    if (!valuation || valuation.complete !== true || String(valuation.valuationStatus || '').toUpperCase() !== 'LIVE') {
+    if (!isRiskValuationAcceptable(valuation)) {
       return { accepted: false, ignored: true };
     }
     const accountId = String(valuation.accountId || valuation.id || '').trim();
@@ -246,6 +247,11 @@ function valuationContext(account, valuation, financialRevision, riskDayKey, ris
     marginLevel: scalar(valuation.marginLevel),
     valuationSequence: finiteNumber(valuation.sequence),
     valuedAtMs: finiteNumber(valuation.valuedAtMs),
+    valuationStatus: valuation.valuationStatus || null,
+    instrumentValuationQuality: valuation.instrumentValuationQuality || null,
+    fxValuationQuality: valuation.fxValuationQuality || null,
+    accountValuationQuality: valuation.accountValuationQuality || null,
+    accountValuationCompleteness: valuation.accountValuationCompleteness || null,
   });
 }
 
