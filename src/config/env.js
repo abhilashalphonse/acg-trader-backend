@@ -91,6 +91,11 @@ const schema = z.object({
   ACCELPIX_RECONNECT_MIN_MS: positiveInt(1000),
   ACCELPIX_RECONNECT_MAX_MS: positiveInt(30000),
   ACCELPIX_MAX_SYMBOLS: positiveInt(100),
+  GLOBAL_MARKETS_MAX_UNDERLYING_AGE_MS: z.coerce.number().int().positive().optional(),
+  GLOBAL_MARKETS_MAX_FX_AGE_MS: z.coerce.number().int().positive().optional(),
+  GLOBAL_MARKETS_MAX_PLATFORM_EVENT_FAILURES: z.coerce.number().int().min(0).optional(),
+  GLOBAL_MARKETS_MAX_RISK_IN_FLIGHT: z.coerce.number().int().min(0).optional(),
+  GLOBAL_MARKETS_MAX_RECONCILIATION_ISSUES: z.coerce.number().int().min(0).optional(),
 });
 
 const platformEventsExplicitlyConfigured = Object.prototype.hasOwnProperty.call(process.env, 'PLATFORM_EVENTS_ENABLED');
@@ -247,6 +252,13 @@ const env = Object.freeze({
     reconnectMinMs: raw.ACCELPIX_RECONNECT_MIN_MS,
     reconnectMaxMs: raw.ACCELPIX_RECONNECT_MAX_MS,
     maxSymbols: raw.ACCELPIX_MAX_SYMBOLS,
+  }),
+  globalMarkets: Object.freeze({
+    maxUnderlyingAgeMs: raw.GLOBAL_MARKETS_MAX_UNDERLYING_AGE_MS ?? null,
+    maxFxAgeMs: raw.GLOBAL_MARKETS_MAX_FX_AGE_MS ?? null,
+    maxPlatformEventFailures: raw.GLOBAL_MARKETS_MAX_PLATFORM_EVENT_FAILURES ?? null,
+    maxRiskInFlight: raw.GLOBAL_MARKETS_MAX_RISK_IN_FLIGHT ?? null,
+    maxReconciliationIssues: raw.GLOBAL_MARKETS_MAX_RECONCILIATION_ISSUES ?? null,
   }),
 });
 
