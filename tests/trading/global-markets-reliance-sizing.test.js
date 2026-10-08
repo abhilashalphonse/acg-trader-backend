@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { planMarketOpen } = require('../../src/modules/trading/execution-planner');
+const { planMarketOpen, planMarketClose } = require('../../src/modules/trading/execution-planner');
 const { CurrencyConversionEngine } = require('../../src/modules/trading/currency-conversion-engine');
 const { sizeMarketOrder } = require('../../src/modules/trading/order-sizing');
 const { compareDecimal } = require('../../src/shared/decimal/decimal');
@@ -123,4 +123,29 @@ test('same RELIANCE conversion evidence is retained for $196.90 exposure sizing'
   assert.equal(sized.plan.exposureConversionEvidence.path[0].symbol, 'USDINR');
   assert.equal(sized.plan.exposureConversionEvidence.fromCurrency, 'INR');
   assert.equal(sized.plan.exposureConversionEvidence.toCurrency, 'USD');
+});
+
+
+test('FX outage fails closed before any INR realization or USD ledger mutation', () => {
+  const { account, instrument, quote } = fixture();
+  const initialAccountBalance = account.state.balance;
+  const position = {
+    _id: '507f191e810c19729de860ea',
+    accountId: account._id, symbol: 'RELIANCE',
+    side: 'BUY', status: 'OPEN', openVolume: '12.434',
+    entryPrice: '1425.60', contractSize: '1',
+    volumeStep: '0.001', quoteCurrency: 'INR',
+    margin: '19.69',
+  };
+  const converter = new CurrencyConversionEngine({
+    quoteStore: { get: () => null }, symbols: ['USDINR'],
+    maxQuoteAgeMs: 5000,
+  });
+  assert.throws(() => planMarketClose({
+    account, instrument, quote, position, nowMs: NOW,
+    currencyConverter: converter,
+  }), error => Boolean(error?.code || error?.message));
+  assert.equal(account.state.balance, initialAccountBalance);
+  assert.equal(position.openVolume, '12.434');
+  assert.equal(position.status, 'OPEN');
 });
