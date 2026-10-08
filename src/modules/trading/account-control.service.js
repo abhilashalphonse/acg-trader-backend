@@ -11,6 +11,7 @@ const { Order } = require('./order.model');
 const { Position } = require('./position.model');
 const { AccountLedger } = require('./account-ledger.model');
 const { PayoutReservation } = require('./payout-reservation.model');
+const { PayoutCancellation } = require('./payout-cancellation.model');
 const { serializeAccount } = require('./trading.serializer');
 const { buildPayoutSettlementCheckpoint } = require('./payout-settlement-checkpoint');
 const { AccountCommandQueue } = require('./account-command-queue');
@@ -41,6 +42,7 @@ class AccountControlService {
     positionModel = Position,
     ledgerModel = AccountLedger,
     payoutReservationModel = PayoutReservation,
+    payoutCancellationModel = PayoutCancellation,
     lifecycleModel = AccountLifecycleEvent,
     riskEventModel = AccountRiskEvent,
     policyTransitionModel = AccountPolicyTransition,
@@ -58,6 +60,7 @@ class AccountControlService {
       positionModel,
       ledgerModel,
       payoutReservationModel,
+      payoutCancellationModel,
       lifecycleModel,
       riskEventModel,
       policyTransitionModel,
@@ -194,6 +197,12 @@ class AccountControlService {
     return this.commandQueue.run(key, () => this.runTransaction(async session => {
       const account = await this.accountModel.findById(key).session(session);
       if (!account) throw accountNotFound();
+      const cancellation = await this.payoutCancellationModel.findOne({
+        tenantId: account.tenantId, payoutId: id,
+      }).session(session);
+      if (cancellation) {
+        throw payoutConflict('PAYOUT_CANCELLED', 'Cancelled payout cannot be reserved');
+      }
       const existing = await this.payoutReservationModel.findOne({
         tenantId: account.tenantId, payoutId: id,
       }).session(session);
@@ -247,7 +256,34 @@ class AccountControlService {
       const record = await this.payoutReservationModel.findOne({
         tenantId: account.tenantId, accountId: account._id, payoutId: id,
       }).session(session);
-      if (!record) throw payoutConflict('PAYOUT_RESERVATION_NOT_FOUND', 'Payout reservation not found');
+      if (!record) {
+        const cancelled = await this.payoutCancellationModel.findOne({
+          tenantId: account.tenantId, payoutId: id,
+        }).session(session);
+        if (cancelled) {
+          return { reservation: {
+            contractVersion: 'ACG_PAYOUT_RESERVATION_V1',
+            payoutId: id, platformAccountId: key,
+            status: 'CANCELLED', amountUsd: null,
+            settledLedgerEntryId: null,
+          }, idempotentReplay: true };
+        }
+        // Even without a prior reservation, persist a cancellation tombstone:
+        // an in-flight approval on another process must never reserve this ID.
+        const cancelRecord = new this.payoutCancellationModel({
+          tenantId: account.tenantId, accountId: account._id,
+          payoutId: id, reason: releaseReason, cancelledAt: this.now(),
+        });
+        account.payoutCancellationRevision = Number(account.payoutCancellationRevision || 0) + 1;
+        await cancelRecord.save({ session });
+        await account.save({ session });
+        return { reservation: {
+          contractVersion: 'ACG_PAYOUT_RESERVATION_V1',
+          payoutId: id, platformAccountId: key,
+          status: 'CANCELLED', amountUsd: null,
+          settledLedgerEntryId: null,
+        }, idempotentReplay: false };
+      }
       if (record.status === 'SETTLED') throw payoutConflict('PAYOUT_ALREADY_SETTLED', 'Settled payout cannot be released');
       if (record.status === 'RELEASED') {
         return { reservation: serializePayoutReservation(record), idempotentReplay: true };
