@@ -26,6 +26,7 @@ function buildPayoutSettlementCheckpoint({
   if (currency !== 'USD') blockers.push('ACCOUNT_CURRENCY_NOT_USD');
   if (!['ACTIVE', 'PAUSED'].includes(String(account.status || '').toUpperCase())) blockers.push('ACCOUNT_NOT_ACTIVE');
   if (account.tradingEnabled !== false) blockers.push('TRADING_NOT_PAUSED');
+  if (account.payoutRiskBaselineReviewRequired) blockers.push('PAYOUT_RISK_BASELINE_REVIEW_REQUIRED');
   if (account.riskProcessingState !== 'RESOLVED') blockers.push('RISK_NOT_RESOLVED');
   if (String(account.marginStopOutState || 'NONE').toUpperCase() !== 'NONE') blockers.push('STOP_OUT_PENDING');
   if (Number(account.riskSequence || 0) !== Number(account.lastEvaluatedRiskSequence || 0)) {

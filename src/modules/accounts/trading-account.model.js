@@ -78,6 +78,9 @@ const tradingAccountSchema = new Schema({
   federationEnabled: { type: Boolean, default: true, index: true },
   provisioningContractHash: { type: String, default: null, immutable: true },
   financialRevision: { type: Number, default: 0, min: 0 },
+  activePayoutReservationId: { type: String, default: null, index: true },
+  payoutCancellationRevision: { type: Number, default: 0, min: 0 },
+  payoutRiskBaselineReviewRequired: { type: Boolean, default: false },
   policyExecutionRevision: { type: Number, default: 0, min: 0 },
   executionRestrictions: { type: [new Schema({
     deadlineId: { type: String, required: true }, symbol: { type: String, required: true },

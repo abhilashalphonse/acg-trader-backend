@@ -249,6 +249,21 @@ executionProvisionVersion=0
 
 A normal service restart/catalog synchronization also returns India pilot instruments to disabled, but the explicit disable command is the required rollback step.
 
+## FX outage close contract (current staging policy)
+
+For an INR instrument with a USD account, Trader MUST NOT realize an INR
+close using a missing or expired conversion quote. Manual close and USD
+ledger settlement fail closed before execution is persisted. Protective
+SL/TP actions use the durable retry path and must be retried when valid FX
+evidence recovers, including after restart. This policy does not promise
+immediate close while the FX provider is down.
+
+Before customer activation, approve and test an outage policy that includes
+provider redundancy or a separately authorized deferred-close mechanism,
+the maximum permitted outage, account risk during the delay, and operator
+escalation. Never infer an FX rate from an unapproved stale quote or
+silently rewrite immutable historical deals.
+
 ## 9. Production gate
 
 Do not enable production from this runbook.
