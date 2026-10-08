@@ -59,7 +59,7 @@ function fixture() {
     orderModel: { countDocuments: count },
     commandQueue: { run: (_key, fn) => fn() },
     runTransaction: fn => fn({}),
-    platformEventRelay: { enqueueControl: async () => {} },
+    platformEventRelay: { enqueueControl: async () => {}, enqueuePayoutSettlement: async () => {} },
     now: () => new Date('2026-10-08T10:00:00.000Z'),
   });
   return { svc, account, ledgerRows, reservations, cancellations };
