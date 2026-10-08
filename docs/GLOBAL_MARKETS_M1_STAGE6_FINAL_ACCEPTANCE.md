@@ -72,6 +72,37 @@ emits an explicit `cleanup.success` flag, and exits nonzero. If that cleanup
 fails, the test operator must handle the surviving position and assess
 protective policies before disabling the pilot.
 
+## Closed NSE / EURUSD mixed-market acceptance
+
+A separate controlled runner exercises the specific release gate the original
+product plan requires: RELIANCE remains OPEN and NSE has CLOSED, but EURUSD
+must be independently tradable on the same USD account.
+
+Use a **separate staging account** with an approved RELIANCE position opened
+during an earlier NSE session. Preserve the position for an after-hours test
+on a weekday when EURUSD trading is live. Do not simulate NSE closure by
+changing wall-clock time or marking a live quote stale.
+
+Use the same dedicated staging URL, bearer, account and explicit mutation
+acknowledgement configured above, then:
+
+```bash
+export ACCEPTANCE_EURUSD_VOLUME=0.01
+npm run acceptance:global-markets:mixed-market > mixed-market-evidence.json
+```
+
+The runner requires an actual closed RELIANCE session, a live EURUSD session,
+an intact open RELIANCE position and a complete USD account valuation. It
+previews EURUSD, opens and closes that Forex position, and verifies that
+RELIANCE retains its original ID and quantity. It deliberately does not
+close RELIANCE or count an approved closing mark as authorization for Indian
+share execution.
+
+A failure after EURUSD opens attempts a one-time idempotent EURUSD cleanup
+close, then exits nonzero. Manual operator recovery is required if cleanup
+fails. If the NSE closing mark is unexpectedly stale or missing, the test
+fails rather than masking the valuation outage.
+
 ## Additional required acceptance, not covered by this runner
 
 **Do not mark production authorized** from this probe alone. Also retain
