@@ -174,7 +174,7 @@ class AccountControlService {
       .countDocuments({ ...scope, status: 'OPEN' }).session(session);
     const activeOrderCount = await this.orderModel.countDocuments({
       ...scope,
-      status: { $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] },
+      status: mongoose.trusted({ $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] }),
     }).session(session);
     const lastLedger = await this.ledgerModel.findOne(scope)
       .sort({ createdAt: -1, _id: -1 }).session(session).lean();
@@ -345,7 +345,7 @@ class AccountControlService {
         }).session(session);
         const pendingCount = await this.orderModel.countDocuments({
           tenantId: account.tenantId, accountId: account._id,
-          status: { $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] },
+          status: mongoose.trusted({ $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] }),
         }).session(session);
         if (openCount || pendingCount) {
           throw payoutConflict('PAYOUT_TRADING_EXPOSURE_REOPENED', 'Open trading exposure appeared during reservation');
