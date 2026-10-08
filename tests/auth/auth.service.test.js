@@ -105,6 +105,7 @@ test('refresh sessions rotate both access and refresh credentials', async () => 
     refreshTokenHash: hashToken(oldRefresh),
     authMethod: 'FEDERATED',
     ownerExternalRef: 'user-1',
+    metadata: { fundedCustomerEmail: 'Funded.User@Example.com' },
     accountIds: ['account-1'],
     accessExpiresAt: new Date(now.getTime() + 60_000),
     idleExpiresAt: new Date(now.getTime() + 60 * 60_000),
@@ -130,9 +131,11 @@ test('refresh sessions rotate both access and refresh credentials', async () => 
   assert.equal(model.snapshot().previousAccessExpiresAt.toISOString(), '2026-09-19T00:00:45.000Z');
   assert.equal(model.snapshot().refreshTokenHash, hashToken(result.refreshToken));
   assert.equal(result.expiresAt, '2026-09-19T00:15:00.000Z');
+  assert.equal(result.session.fundedCustomerEmail, 'funded.user@example.com');
 
   const previousPrincipal = await service.authenticateSessionToken(oldAccess);
   assert.equal(previousPrincipal.sessionId, 'session-1');
+  assert.equal(previousPrincipal.fundedCustomerEmail, 'funded.user@example.com');
 });
 
 test('legacy one-hour sessions can upgrade once into persistent refresh sessions', async () => {
@@ -162,6 +165,7 @@ test('legacy one-hour sessions can upgrade once into persistent refresh sessions
   assert.match(result.accessToken, /^acg_ts_/);
   assert.match(result.refreshToken, /^acg_tr_/);
   assert.equal(model.snapshot().expiresAt.toISOString(), '2026-10-19T00:00:00.000Z');
+  assert.equal(result.session.fundedCustomerEmail, null);
   assert.equal(model.snapshot().refreshTokenHash, hashToken(result.refreshToken));
 });
 
