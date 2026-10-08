@@ -576,6 +576,13 @@ function accessTokenGraceExpiry(session, now, graceSeconds) {
   const expiresAt = new Date(Math.min(currentExpiry.getTime(), now.getTime() + graceMs));
   return expiresAt > now ? expiresAt : null;
 }
+function verifiedFundedEmail(session) {
+  // Only service-issued federated sessions can carry the authenticated Funded email.
+  if (session?.authMethod !== 'FEDERATED') return null;
+  const email = String(session?.metadata?.fundedCustomerEmail || '').trim().toLowerCase();
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
+
 function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null, context = {}) {
   const accountIds = uniqueIds(context.accountIds ?? session.accountIds);
   const selectedAccountId = accountIds.includes(String(context.selectedAccountId ?? session.selectedAccountId ?? ''))
@@ -585,6 +592,7 @@ function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null, contex
     sessionId: String(session._id),
     tenantId: String(session.tenantId),
     ownerExternalRef: session.ownerExternalRef || null,
+    fundedCustomerEmail: verifiedFundedEmail(session),
     accountIds,
     selectedAccountId,
     authMethod: session.authMethod,
@@ -606,6 +614,7 @@ function authResponse(session, credentials, principal = null) {
       id: String(session._id),
       tenantId: String(session.tenantId),
       ownerExternalRef: session.ownerExternalRef || null,
+      fundedCustomerEmail: resolved.fundedCustomerEmail,
       accountIds: resolved.accountIds,
       selectedAccountId: resolved.selectedAccountId,
       authMethod: session.authMethod,
