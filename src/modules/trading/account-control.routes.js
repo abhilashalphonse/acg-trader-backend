@@ -9,6 +9,16 @@ const { applyPermissionUpdate } = require('./trading-permission-contract');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Expected a MongoDB ObjectId');
 const decimalInput = z.union([z.string().min(1), z.number().finite()]).transform(value => String(value));
+const payoutIdSchema = z.string().trim().min(2).max(128);
+const payoutReserveSchema = z.object({
+  payoutId: payoutIdSchema, amountUsd: decimalInput,
+  financialRevision: z.number().int().min(0),
+  checkpointHash: z.string().length(64),
+}).strict();
+const payoutSettleSchema = z.object({ payoutId: payoutIdSchema }).strict();
+const payoutReleaseSchema = z.object({
+  payoutId: payoutIdSchema, reason: z.string().trim().min(1).max(256),
+}).strict();
 const nullableDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value == null ? null : String(value));
 const patchNullableDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value === undefined ? undefined : value === null ? null : String(value));
 const limitRule = z.object({ limit: decimalInput, reference: z.string().trim().min(1).max(64).optional() }).strict();
