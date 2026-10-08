@@ -319,6 +319,7 @@ class AccountControlService {
         account.state.freeMargin = balanceAfter;
         account.state.floatingPnl = '0';
         account.state.usedMargin = '0';
+        account.payoutRiskBaselineReviewRequired = true;
         // No automatic resume. Trading risk baseline must be reconciled separately.
         account.financialRevision = Number(account.financialRevision || 0) + 1;
         account.activePayoutReservationId = null;
@@ -525,6 +526,9 @@ class AccountControlService {
         if (account.activePayoutReservationId) {
           throw payoutConflict('PAYOUT_RESERVATION_ACTIVE', 'Account has an active payout reservation');
         }
+        if (account.payoutRiskBaselineReviewRequired) {
+          throw payoutConflict('PAYOUT_RISK_BASELINE_REVIEW_REQUIRED', 'Payout settlement requires risk baseline reconciliation before activation');
+        }
         if (RESTRICTED_STATUSES.has(account.status)) {
           throw new AppError('Terminal trading account cannot be activated', {
             statusCode: 409,
@@ -567,6 +571,9 @@ class AccountControlService {
         if (!account) throw accountNotFound();
         if (account.activePayoutReservationId) {
           throw payoutConflict('PAYOUT_RESERVATION_ACTIVE', 'Account has an active payout reservation');
+        }
+        if (account.payoutRiskBaselineReviewRequired) {
+          throw payoutConflict('PAYOUT_RISK_BASELINE_REVIEW_REQUIRED', 'Payout settlement requires risk baseline reconciliation before resume');
         }
         if (
           account.status === 'ACTIVE'
