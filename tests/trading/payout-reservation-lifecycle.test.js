@@ -162,3 +162,45 @@ test('rejection before approval leaves a durable tombstone and forbids a late re
   }), error => error.code === 'PAYOUT_CANCELLED');
   assert.equal(ledgerRows.length, 1);
 });
+
+
+test('verified provider success settles exactly once after account disable or closure', async () => {
+  for (const terminal of ['DISABLED', 'BREACHED', 'CLOSED']) {
+    const { svc, account, ledgerRows } = fixture();
+    const before = await svc.getPayoutSettlementCheckpoint(account._id);
+    const payoutId = `PAYOUT-${terminal}`;
+    await svc.reservePayout(account._id, {
+      payoutId, amountUsd: '400',
+      financialRevision: before.financialRevision,
+      checkpointHash: before.evidenceHash,
+    });
+    // Simulate the existing control service restricting trading without
+    // changing the reserved financial terms or ledger.
+    account.status = terminal;
+    account.tradingEnabled = false;
+    const paid = await svc.settlePayout(account._id, { payoutId });
+    assert.equal(paid.reservation.status, 'SETTLED');
+    assert.equal(account.status, terminal, 'settlement must not reactivate restricted account');
+    assert.equal(account.state.balance, '10100');
+    assert.equal(ledgerRows.filter(x => x.referenceId === payoutId).length, 1);
+    const replay = await svc.settlePayout(account._id, { payoutId });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(ledgerRows.filter(x => x.referenceId === payoutId).length, 1);
+  }
+});
+
+test('restricted account with changed balance still cannot settle', async () => {
+  const { svc, account, ledgerRows } = fixture();
+  const before = await svc.getPayoutSettlementCheckpoint(account._id);
+  await svc.reservePayout(account._id, {
+    payoutId: 'PAYOUT-MISMATCH', amountUsd: '400',
+    financialRevision: before.financialRevision,
+    checkpointHash: before.evidenceHash,
+  });
+  account.status = 'DISABLED';
+  account.state.balance = '10499';
+  await assert.rejects(svc.settlePayout(account._id, {
+    payoutId: 'PAYOUT-MISMATCH',
+  }), error => error.code === 'PAYOUT_RESERVATION_FENCE_CHANGED');
+  assert.equal(ledgerRows.length, 1);
+});
