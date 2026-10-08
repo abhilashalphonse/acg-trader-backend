@@ -14,6 +14,7 @@ function assertStagingAcceptanceEnvironment({
   accountId,
   bearer,
   stopLoss,
+  requireStopLoss = true,
 } = {}) {
   const url = new URL(String(baseUrl || ''));
   const host = url.hostname.toLowerCase();
@@ -28,7 +29,7 @@ function assertStagingAcceptanceEnvironment({
   if (!/^[0-9a-f]{24}$/i.test(String(accountId || '')) || !String(bearer || '').trim()) {
     throw new Error('Dedicated test account ID and authenticated staging bearer are required');
   }
-  if (stopLoss == null || compareDecimal(stopLoss, '0') <= 0) {
+  if (requireStopLoss && (stopLoss == null || compareDecimal(stopLoss, '0') <= 0)) {
     throw new Error('A positive explicit RELIANCE stop loss is required to test $50 risk sizing');
   }
   return url.origin;
