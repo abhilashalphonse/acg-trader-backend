@@ -205,6 +205,9 @@ class AccountControlService {
         if (existing.status === 'RELEASED') {
           throw payoutConflict('PAYOUT_RESERVATION_RELEASED', 'Released payout cannot be re-reserved');
         }
+        if (existing.status === 'RESERVED' && account.activePayoutReservationId !== id) {
+          throw payoutConflict('PAYOUT_RESERVATION_FENCE_CHANGED', 'Reservation record and active account hold disagree');
+        }
         return { reservation: serializePayoutReservation(existing), idempotentReplay: true };
       }
       if (account.activePayoutReservationId) {
