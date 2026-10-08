@@ -380,7 +380,11 @@ class AccountControlService {
         await this.platformEventRelay?.enqueueControl({
           account, sourceEvent: 'trading.account.payout_settled', session,
         });
-        await this.platformEventRelay?.enqueuePayoutSettlement?.({
+        if (typeof this.platformEventRelay?.enqueuePayoutSettlement !== 'function') {
+          throw payoutConflict('PAYOUT_DURABLE_RELAY_UNAVAILABLE',
+            'Settlement cannot commit without a durable Funded financial snapshot');
+        }
+        await this.platformEventRelay.enqueuePayoutSettlement({
           account, payoutId: id, ledgerEntryId: ledger.entryId, session,
         });
         return { reservation: serializePayoutReservation(record), idempotentReplay: false, account };
