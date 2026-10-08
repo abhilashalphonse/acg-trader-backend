@@ -580,7 +580,7 @@ function verifiedFundedEmail(session) {
   // Only service-issued federated sessions can carry the authenticated Funded email.
   if (session?.authMethod !== 'FEDERATED') return null;
   const email = String(session?.metadata?.fundedCustomerEmail || '').trim().toLowerCase();
-  return email.length <= 254 && /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) ? email : null;
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
 }
 
 function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null, context = {}) {
