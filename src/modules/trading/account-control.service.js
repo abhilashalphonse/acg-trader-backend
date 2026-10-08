@@ -380,6 +380,9 @@ class AccountControlService {
         await this.platformEventRelay?.enqueueControl({
           account, sourceEvent: 'trading.account.payout_settled', session,
         });
+        await this.platformEventRelay?.enqueuePayoutSettlement?.({
+          account, payoutId: id, ledgerEntryId: ledger.entryId, session,
+        });
         return { reservation: serializePayoutReservation(record), idempotentReplay: false, account };
       });
       if (!result.idempotentReplay) this.#emit('trading.account.updated', serializeControlledAccount(result.account));
