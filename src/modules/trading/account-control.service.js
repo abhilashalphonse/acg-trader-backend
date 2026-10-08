@@ -4,12 +4,13 @@ const { assertPermissionContract } = require('./trading-permission-contract');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
-const { normalizeDecimal, compareDecimal } = require('../../shared/decimal/decimal');
+const { normalizeDecimal, compareDecimal, addDecimal, subtractDecimal } = require('../../shared/decimal/decimal');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { AccountLifecycleEvent } = require('../accounts/account-lifecycle-event.model');
 const { Order } = require('./order.model');
 const { Position } = require('./position.model');
 const { AccountLedger } = require('./account-ledger.model');
+const { PayoutReservation } = require('./payout-reservation.model');
 const { serializeAccount } = require('./trading.serializer');
 const { buildPayoutSettlementCheckpoint } = require('./payout-settlement-checkpoint');
 const { AccountCommandQueue } = require('./account-command-queue');
@@ -39,6 +40,7 @@ class AccountControlService {
     orderModel = Order,
     positionModel = Position,
     ledgerModel = AccountLedger,
+    payoutReservationModel = PayoutReservation,
     lifecycleModel = AccountLifecycleEvent,
     riskEventModel = AccountRiskEvent,
     policyTransitionModel = AccountPolicyTransition,
@@ -55,6 +57,7 @@ class AccountControlService {
       orderModel,
       positionModel,
       ledgerModel,
+      payoutReservationModel,
       lifecycleModel,
       riskEventModel,
       policyTransitionModel,
@@ -157,25 +160,183 @@ class AccountControlService {
     return this.commandQueue.run(key, () => this.runTransaction(async session => {
       const account = await this.accountModel.findById(key).session(session);
       if (!account) throw accountNotFound();
-      const scope = { tenantId: account.tenantId, accountId: account._id };
-      // MongoDB sessions do not support parallel transaction operations.
-      // Read the three evidence components sequentially in one snapshot.
-      const openPositionCount = await this.positionModel
-        .countDocuments({ ...scope, status: 'OPEN' }).session(session);
-      const activeOrderCount = await this.orderModel.countDocuments({
-        ...scope,
-        status: { $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] },
-      }).session(session);
-      const lastLedger = await this.ledgerModel.findOne(scope)
-        .sort({ createdAt: -1, _id: -1 }).session(session).lean();
-      return buildPayoutSettlementCheckpoint({
-        account,
-        openPositionCount,
-        activeOrderCount,
-        lastLedger,
-        checkedAt: this.now(),
-      });
+      return this.#payoutEvidence(account, session);
     }));
+  }
+
+  async #payoutEvidence(account, session) {
+    const scope = { tenantId: account.tenantId, accountId: account._id };
+    // Mongo transactions do not support parallel operations on one session.
+    const openPositionCount = await this.positionModel
+      .countDocuments({ ...scope, status: 'OPEN' }).session(session);
+    const activeOrderCount = await this.orderModel.countDocuments({
+      ...scope,
+      status: { $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] },
+    }).session(session);
+    const lastLedger = await this.ledgerModel.findOne(scope)
+      .sort({ createdAt: -1, _id: -1 }).session(session).lean();
+    return buildPayoutSettlementCheckpoint({
+      account, openPositionCount, activeOrderCount, lastLedger, checkedAt: this.now(),
+    });
+  }
+
+  async reservePayout(accountId, { payoutId, amountUsd, financialRevision, checkpointHash } = {}) {
+    const key = String(accountId);
+    const id = payoutIdRequired(payoutId);
+    const amount = payoutAmountRequired(amountUsd);
+    const revision = Number(financialRevision);
+    const hash = String(checkpointHash || '').trim();
+    if (!Number.isSafeInteger(revision) || revision < 0 || !/^[a-f0-9]{64}$/.test(hash)) {
+      throw new AppError('Payout checkpoint revision and hash are required', {
+        statusCode: 400, code: 'PAYOUT_CHECKPOINT_REQUIRED',
+      });
+    }
+    return this.commandQueue.run(key, () => this.runTransaction(async session => {
+      const account = await this.accountModel.findById(key).session(session);
+      if (!account) throw accountNotFound();
+      const existing = await this.payoutReservationModel.findOne({
+        tenantId: account.tenantId, payoutId: id,
+      }).session(session);
+      if (existing) {
+        if (String(existing.accountId) !== key || compareDecimal(existing.amountUsd, amount) !== 0
+            || existing.reservedFinancialRevision !== revision || existing.checkpointHash !== hash) {
+          throw payoutConflict('PAYOUT_RESERVATION_ID_REUSED', 'Payout ID was used with different financial terms');
+        }
+        if (existing.status === 'RELEASED') {
+          throw payoutConflict('PAYOUT_RESERVATION_RELEASED', 'Released payout cannot be re-reserved');
+        }
+        return { reservation: serializePayoutReservation(existing), idempotentReplay: true };
+      }
+      if (account.activePayoutReservationId) {
+        throw payoutConflict('PAYOUT_RESERVATION_ACTIVE', 'Another payout already holds the account');
+      }
+      const checkpoint = await this.#payoutEvidence(account, session);
+      if (!checkpoint.settled || checkpoint.financialRevision !== revision
+          || checkpoint.evidenceHash !== hash) {
+        throw payoutConflict('PAYOUT_CHECKPOINT_CHANGED', 'Trader financial checkpoint changed or is not settled');
+      }
+      const realizedProfit = subtractDecimal(checkpoint.balance, checkpoint.initialBalance);
+      if (compareDecimal(realizedProfit, amount) < 0) {
+        throw payoutConflict('PAYOUT_AMOUNT_EXCEEDS_REALIZED_PROFIT', 'Payout exceeds realized USD profit');
+      }
+      const record = new this.payoutReservationModel({
+        tenantId: account.tenantId, accountId: account._id,
+        payoutId: id, activeKey: key, status: 'RESERVED', amountUsd: amount,
+        checkpointHash: hash, reservedFinancialRevision: revision,
+        reservedBalanceUsd: checkpoint.balance, reservedAt: this.now(),
+      });
+      account.activePayoutReservationId = id;
+      await record.save({ session });
+      // Account write fences financial mutations racing the reservation transaction.
+      await account.save({ session });
+      return { reservation: serializePayoutReservation(record), idempotentReplay: false };
+    }));
+  }
+
+  async releasePayout(accountId, { payoutId, reason } = {}) {
+    const key = String(accountId);
+    const id = payoutIdRequired(payoutId);
+    const releaseReason = String(reason || '').trim();
+    if (!releaseReason) throw payoutConflict('PAYOUT_RELEASE_REASON_REQUIRED', 'Release reason is required');
+    return this.commandQueue.run(key, () => this.runTransaction(async session => {
+      const account = await this.accountModel.findById(key).session(session);
+      if (!account) throw accountNotFound();
+      const record = await this.payoutReservationModel.findOne({
+        tenantId: account.tenantId, accountId: account._id, payoutId: id,
+      }).session(session);
+      if (!record) throw payoutConflict('PAYOUT_RESERVATION_NOT_FOUND', 'Payout reservation not found');
+      if (record.status === 'SETTLED') throw payoutConflict('PAYOUT_ALREADY_SETTLED', 'Settled payout cannot be released');
+      if (record.status === 'RELEASED') {
+        return { reservation: serializePayoutReservation(record), idempotentReplay: true };
+      }
+      if (account.activePayoutReservationId !== id) {
+        throw payoutConflict('PAYOUT_RESERVATION_FENCE_CHANGED', 'Active payout reservation mismatch');
+      }
+      record.status = 'RELEASED';
+      record.activeKey = null;
+      record.releasedAt = this.now();
+      record.releaseReason = releaseReason;
+      account.activePayoutReservationId = null;
+      await record.save({ session });
+      await account.save({ session });
+      return { reservation: serializePayoutReservation(record), idempotentReplay: false };
+    }));
+  }
+
+  async settlePayout(accountId, { payoutId } = {}) {
+    const key = String(accountId);
+    const id = payoutIdRequired(payoutId);
+    return this.commandQueue.run(key, async () => {
+      const result = await this.runTransaction(async session => {
+        const account = await this.accountModel.findById(key).session(session);
+        if (!account) throw accountNotFound();
+        const record = await this.payoutReservationModel.findOne({
+          tenantId: account.tenantId, accountId: account._id, payoutId: id,
+        }).session(session);
+        if (!record) throw payoutConflict('PAYOUT_RESERVATION_NOT_FOUND', 'Payout reservation not found');
+        if (record.status === 'SETTLED') {
+          return { reservation: serializePayoutReservation(record), idempotentReplay: true, account };
+        }
+        if (record.status !== 'RESERVED' || account.activePayoutReservationId !== id
+          || Number(account.financialRevision) !== record.reservedFinancialRevision
+          || compareDecimal(account.state.balance, record.reservedBalanceUsd) !== 0
+          || account.tradingEnabled !== false) {
+          throw payoutConflict('PAYOUT_RESERVATION_FENCE_CHANGED', 'Financial state changed during payout reservation');
+        }
+        const amount = normalizeDecimal(record.amountUsd);
+        const balanceBefore = normalizeDecimal(account.state.balance);
+        const balanceAfter = subtractDecimal(balanceBefore, amount);
+        if (compareDecimal(balanceAfter, '0') < 0) {
+          throw payoutConflict('PAYOUT_INSUFFICIENT_BALANCE', 'Settlement exceeds account balance');
+        }
+        const latest = await this.ledgerModel.findOne({
+          tenantId: account.tenantId, accountId: account._id,
+        }).sort({ createdAt: -1, _id: -1 }).session(session).lean();
+        if (!latest || compareDecimal(latest.balanceAfter, balanceBefore) !== 0) {
+          throw payoutConflict('PAYOUT_LEDGER_CHANGED', 'Ledger no longer agrees with reserved balance');
+        }
+        const openCount = await this.positionModel.countDocuments({
+          tenantId: account.tenantId, accountId: account._id, status: 'OPEN',
+        }).session(session);
+        const pendingCount = await this.orderModel.countDocuments({
+          tenantId: account.tenantId, accountId: account._id,
+          status: { $in: ['RECEIVED', 'VALIDATING', 'ACCEPTED', 'PENDING', 'TRIGGERED', 'PARTIALLY_FILLED'] },
+        }).session(session);
+        if (openCount || pendingCount) {
+          throw payoutConflict('PAYOUT_TRADING_EXPOSURE_REOPENED', 'Open trading exposure appeared during reservation');
+        }
+        const ledger = new this.ledgerModel({
+          tenantId: account.tenantId, accountId: account._id,
+          type: 'WITHDRAWAL', amount: subtractDecimal('0', amount),
+          balanceBefore, balanceAfter, currency: 'USD',
+          referenceType: 'SYSTEM', referenceId: id,
+          idempotencyKey: `payout:${id}:settle`,
+          reason: 'ACG Funded payout settlement',
+          metadata: { source: 'ACG_FUNDED_PAYOUT', payoutId: id },
+        });
+        account.state.balance = balanceAfter;
+        account.state.equity = balanceAfter;
+        account.state.freeMargin = balanceAfter;
+        account.state.floatingPnl = '0';
+        account.state.usedMargin = '0';
+        // No automatic resume. Trading risk baseline must be reconciled separately.
+        account.financialRevision = Number(account.financialRevision || 0) + 1;
+        account.activePayoutReservationId = null;
+        record.status = 'SETTLED';
+        record.activeKey = null;
+        record.settledAt = this.now();
+        record.settledLedgerEntryId = ledger.entryId;
+        await ledger.save({ session });
+        await account.save({ session });
+        await record.save({ session });
+        await this.platformEventRelay?.enqueueControl({
+          account, sourceEvent: 'trading.account.payout_settled', session,
+        });
+        return { reservation: serializePayoutReservation(record), idempotentReplay: false, account };
+      });
+      if (!result.idempotentReplay) this.#emit('trading.account.updated', serializeControlledAccount(result.account));
+      return { reservation: result.reservation, idempotentReplay: result.idempotentReplay };
+    });
   }
 
   async transitionRiskPolicy(accountId, command = {}) {
@@ -361,6 +522,9 @@ class AccountControlService {
       const result = await this.runTransaction(async session => {
         const account = await this.accountModel.findById(String(accountId)).session(session);
         if (!account) throw accountNotFound();
+        if (account.activePayoutReservationId) {
+          throw payoutConflict('PAYOUT_RESERVATION_ACTIVE', 'Account has an active payout reservation');
+        }
         if (RESTRICTED_STATUSES.has(account.status)) {
           throw new AppError('Terminal trading account cannot be activated', {
             statusCode: 409,
@@ -401,6 +565,9 @@ class AccountControlService {
       const result = await this.runTransaction(async session => {
         const account = await this.accountModel.findById(String(accountId)).session(session);
         if (!account) throw accountNotFound();
+        if (account.activePayoutReservationId) {
+          throw payoutConflict('PAYOUT_RESERVATION_ACTIVE', 'Account has an active payout reservation');
+        }
         if (
           account.status === 'ACTIVE'
           && account.tradingEnabled === true
@@ -1125,6 +1292,44 @@ function provisionResult(account, idempotentReplay) {
 
 function controlResult(account, extra = {}) {
   return { account: serializeControlledAccount(account), ...extra };
+}
+
+function payoutIdRequired(value) {
+  const id = String(value || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/.test(id)) {
+    throw new AppError('Invalid payout ID', { statusCode: 400, code: 'INVALID_PAYOUT_ID' });
+  }
+  return id;
+}
+
+function payoutAmountRequired(value) {
+  let amount;
+  try { amount = normalizeDecimal(value); }
+  catch { throw payoutConflict('INVALID_PAYOUT_AMOUNT', 'Invalid USD payout amount'); }
+  if (compareDecimal(amount, '0') <= 0) {
+    throw payoutConflict('INVALID_PAYOUT_AMOUNT', 'Payout amount must be positive');
+  }
+  return amount;
+}
+
+function payoutConflict(code, message) {
+  return new AppError(message, { statusCode: 409, code });
+}
+
+function serializePayoutReservation(record) {
+  return {
+    contractVersion: 'ACG_PAYOUT_RESERVATION_V1',
+    payoutId: record.payoutId,
+    platformAccountId: String(record.accountId),
+    status: record.status,
+    amountUsd: normalizeDecimal(record.amountUsd),
+    financialRevision: record.reservedFinancialRevision,
+    checkpointHash: record.checkpointHash,
+    settledLedgerEntryId: record.settledLedgerEntryId || null,
+    reservedAt: record.reservedAt?.toISOString?.() || null,
+    settledAt: record.settledAt?.toISOString?.() || null,
+    releasedAt: record.releasedAt?.toISOString?.() || null,
+  };
 }
 
 function requiredString(value, field) {
