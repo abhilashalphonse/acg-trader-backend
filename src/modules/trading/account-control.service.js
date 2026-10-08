@@ -324,7 +324,9 @@ class AccountControlService {
           || compareDecimal(account.state.floatingPnl, '0') !== 0
           || account.riskProcessingState !== 'RESOLVED'
           || Number(account.riskSequence || 0) !== Number(account.lastEvaluatedRiskSequence || 0)
-          || !['ACTIVE', 'PAUSED'].includes(String(account.status || '').toUpperCase())
+          // A restriction/closure can occur after provider transmission.
+          // Keep the financial, ledger and risk fences but allow a verified
+          // transfer to settle against an already DISABLED/BREACHED/CLOSED account.
           || account.tradingEnabled !== false) {
           throw payoutConflict('PAYOUT_RESERVATION_FENCE_CHANGED', 'Financial state changed during payout reservation');
         }
