@@ -144,7 +144,7 @@ test('FX outage fails closed before any INR realization or USD ledger mutation',
   assert.throws(() => planMarketClose({
     account, instrument, quote, position, nowMs: NOW,
     currencyConverter: converter,
-  }), error => Boolean(error?.code || error?.message));
+  }), error => error?.code === 'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE');
   assert.equal(account.state.balance, initialAccountBalance);
   assert.equal(position.openVolume, '12.434');
   assert.equal(position.status, 'OPEN');
