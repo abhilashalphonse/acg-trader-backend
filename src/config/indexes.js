@@ -13,6 +13,8 @@ const { Order } = require('../modules/trading/order.model');
 const { Deal } = require('../modules/trading/deal.model');
 const { Position } = require('../modules/trading/position.model');
 const { AccountLedger } = require('../modules/trading/account-ledger.model');
+const { PayoutReservation } = require('../modules/trading/payout-reservation.model');
+const { PayoutCancellation } = require('../modules/trading/payout-cancellation.model');
 const { IdempotencyRecord } = require('../modules/trading/idempotency.model');
 const { AccountRiskEvent } = require('../modules/trading/account-risk-event.model');
 const { AccountPolicyTransition } = require('../modules/trading/account-policy-transition.model');
@@ -41,6 +43,8 @@ const CRITICAL_MODELS = Object.freeze([
   Deal,
   Position,
   AccountLedger,
+  PayoutReservation,
+  PayoutCancellation,
   IdempotencyRecord,
   AccountRiskEvent,
   AccountPolicyTransition,
