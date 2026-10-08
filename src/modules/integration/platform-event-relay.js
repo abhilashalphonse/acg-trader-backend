@@ -160,9 +160,11 @@ class PlatformEventRelay {
   }
 
   async enqueuePayoutSettlement({ account, payoutId, ledgerEntryId, session = null } = {}) {
-    if (!this.enabled || !account) return null;
+    if (!account) throw new Error('Payout settlement account is required');
     const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
-    if (!fundedAccountId) return null;
+    if (!this.enabled || !fundedAccountId) {
+      throw new Error('Durable Funded payout settlement relay is unavailable');
+    }
     if (!session) throw new Error('Payout settlement snapshot must be created in its ledger transaction');
     const revision = Number(account.financialRevision);
     if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Missing payout financial revision');
