@@ -19,6 +19,7 @@ function fixture() {
     async save() { return this; },
   };
   const reservations = new Map();
+  const cancellations = new Map();
   const ledgerRows = [{
     entryId: 'opening', balanceAfter: '10500',
   }];
@@ -31,6 +32,11 @@ function fixture() {
     async save() { reservations.set(this.payoutId, this); }
   }
   Reservation.findOne = ({ payoutId }) => sessionValue(() => reservations.get(payoutId) || null);
+  class Cancellation {
+    constructor(data) { Object.assign(this, data); }
+    async save() { cancellations.set(this.payoutId, this); }
+  }
+  Cancellation.findOne = ({ payoutId }) => sessionValue(() => cancellations.get(payoutId) || null);
   class Ledger {
     constructor(data) {
       Object.assign(this, data);
@@ -47,6 +53,7 @@ function fixture() {
   const svc = new AccountControlService({
     accountModel,
     payoutReservationModel: Reservation,
+    payoutCancellationModel: Cancellation,
     ledgerModel: Ledger,
     positionModel: { countDocuments: count },
     orderModel: { countDocuments: count },
@@ -55,7 +62,7 @@ function fixture() {
     platformEventRelay: { enqueueControl: async () => {} },
     now: () => new Date('2026-10-08T10:00:00.000Z'),
   });
-  return { svc, account, ledgerRows, reservations };
+  return { svc, account, ledgerRows, reservations, cancellations };
 }
 
 test('reservation is idempotent, and settling debits USD ledger exactly once', async () => {
@@ -132,4 +139,26 @@ test('changed checkpoint or insufficient profit cannot be reserved', async () =>
     financialRevision: c.financialRevision, checkpointHash: c.evidenceHash,
   }), error => error.code === 'PAYOUT_AMOUNT_EXCEEDS_REALIZED_PROFIT');
   assert.equal(account.activePayoutReservationId, undefined);
+});
+
+
+test('rejection before approval leaves a durable tombstone and forbids a late reservation', async () => {
+  const { svc, account, cancellations, ledgerRows } = fixture();
+  const checkpoint = await svc.getPayoutSettlementCheckpoint(account._id);
+  const cancelled = await svc.releasePayout(account._id, {
+    payoutId: 'PAYOUT-CANCEL-1', reason: 'ADMIN_REJECTED',
+  });
+  assert.equal(cancelled.reservation.status, 'CANCELLED');
+  assert.equal(cancellations.has('PAYOUT-CANCEL-1'), true);
+  assert.equal(account.payoutCancellationRevision, 1);
+  const repeated = await svc.releasePayout(account._id, {
+    payoutId: 'PAYOUT-CANCEL-1', reason: 'ADMIN_REJECTED',
+  });
+  assert.equal(repeated.idempotentReplay, true);
+  await assert.rejects(svc.reservePayout(account._id, {
+    payoutId: 'PAYOUT-CANCEL-1', amountUsd: '100',
+    financialRevision: checkpoint.financialRevision,
+    checkpointHash: checkpoint.evidenceHash,
+  }), error => error.code === 'PAYOUT_CANCELLED');
+  assert.equal(ledgerRows.length, 1);
 });
