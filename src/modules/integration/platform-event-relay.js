@@ -159,6 +159,59 @@ class PlatformEventRelay {
     }, session);
   }
 
+  async enqueuePayoutSettlement({ account, payoutId, ledgerEntryId, session = null } = {}) {
+    if (!this.enabled || !account) return null;
+    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    if (!fundedAccountId) return null;
+    if (!session) throw new Error('Payout settlement snapshot must be created in its ledger transaction');
+    const revision = Number(account.financialRevision);
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Missing payout financial revision');
+    const occurredAt = this.now();
+    const state = account.state || {};
+    // The account has been proved flat inside the same transaction; there is
+    // no open instrument or FX exposure to value. This snapshot is an exact
+    // financial fact, NOT an assertion that NSE is open or an FX quote is live.
+    return this.#enqueue(account, fundedAccountId, 'ACCOUNT_SNAPSHOT', {
+      provider: 'acg-trader',
+      financialContractVersion: 1,
+      source: 'PAYOUT_SETTLEMENT',
+      payoutId: String(payoutId),
+      settlementLedgerEntryId: String(ledgerEntryId),
+      platformAccountId: String(account._id),
+      accountCode: account.accountCode || null,
+      accountCurrency: String(account.currency || '').toUpperCase(),
+      financialRevision: revision,
+      valuationEpoch: `PAYOUT_SETTLEMENT:${payoutId}`,
+      valuationSequence: revision,
+      valuedAtMs: occurredAt.getTime(),
+      policyVersions: {
+        tradingPermissions: numberOrNull(account.tradingPermissionsVersion),
+        riskPolicy: metadataValue(account.metadata, 'riskPolicyVersion') || null,
+        conversion: 'ACG_FX_PURPOSE_V1',
+      },
+      initialBalance: decimal(state.initialBalance),
+      balance: decimal(state.balance),
+      equity: decimal(state.equity),
+      margin: decimal(state.usedMargin),
+      marginFree: decimal(state.freeMargin),
+      marginLevel: null,
+      floatingProfit: decimal(state.floatingPnl),
+      realizedPnlToday: decimal(state.realizedPnlToday),
+      dailyStartEquity: decimal(state.dailyStartEquity),
+      riskDayKey: account.riskDayKey || null,
+      openPositions: 0,
+      valuationStatus: 'VALUATION_ONLY',
+      instrumentValuationQuality: 'APPROVED_CLOSE',
+      fxValuationQuality: 'NOT_REQUIRED',
+      accountValuationQuality: 'COMPLETE',
+      accountValuationCompleteness: 'COMPLETE',
+      complete: true,
+    }, {
+      phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
+      occurredAt,
+    }, session);
+  }
+
   async enqueueControl({ account, sourceEvent, session = null, evidence = null } = {}) {
     if (!this.enabled || !account) return null;
     const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
