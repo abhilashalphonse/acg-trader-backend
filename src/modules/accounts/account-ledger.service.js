@@ -68,6 +68,11 @@ class AccountLedgerService {
       const result = await this.runTransaction(async session => {
         const account = await this.accountModel.findOne({ _id: String(accountId), tenantId: normalized.tenantId }).session(session);
         if (!account) throw accountNotFound();
+        if (account.activePayoutReservationId) {
+          throw new AppError('Financial mutations are blocked during payout settlement', {
+            statusCode: 409, code: 'PAYOUT_RESERVATION_ACTIVE',
+          });
+        }
         if (account.status === 'CLOSED') {
           throw new AppError('Closed trading account cannot receive balance mutations', {
             statusCode: 409,
