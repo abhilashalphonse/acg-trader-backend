@@ -78,6 +78,27 @@ function createAccountControlRouter(runtime, authService) {
   router.use(requireServicePrincipal(authService, 'accounts:write'));
 
   router.post('/provision', async (req, res) => { const result = await runtime.accountControlService.provision({ ...parse(provisionSchema, req.body), tenantId: req.servicePrincipal.tenantId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.post('/:accountId/payout-reservations', async (req, res) => {
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    const input = parse(payoutReserveSchema, req.body || {});
+    const result = await runtime.accountControlService.reservePayout(accountId, input);
+    res.status(result.idempotentReplay ? 200 : 201).json(result);
+  });
+  router.post('/:accountId/payout-reservations/settle', async (req, res) => {
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    const result = await runtime.accountControlService.settlePayout(
+      accountId, parse(payoutSettleSchema, req.body || {}));
+    res.json(result);
+  });
+  router.post('/:accountId/payout-reservations/release', async (req, res) => {
+    const accountId = parseId(req.params.accountId);
+    await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
+    const result = await runtime.accountControlService.releasePayout(
+      accountId, parse(payoutReleaseSchema, req.body || {}));
+    res.json(result);
+  });
   router.get('/:accountId/payout-settlement-checkpoint', async (req, res) => {
     const accountId = parseId(req.params.accountId);
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
