@@ -280,6 +280,12 @@ class AccountControlService {
         if (record.status !== 'RESERVED' || account.activePayoutReservationId !== id
           || Number(account.financialRevision) !== record.reservedFinancialRevision
           || compareDecimal(account.state.balance, record.reservedBalanceUsd) !== 0
+          || compareDecimal(account.state.equity, account.state.balance) !== 0
+          || compareDecimal(account.state.usedMargin, '0') !== 0
+          || compareDecimal(account.state.floatingPnl, '0') !== 0
+          || account.riskProcessingState !== 'RESOLVED'
+          || Number(account.riskSequence || 0) !== Number(account.lastEvaluatedRiskSequence || 0)
+          || !['ACTIVE', 'PAUSED'].includes(String(account.status || '').toUpperCase())
           || account.tradingEnabled !== false) {
           throw payoutConflict('PAYOUT_RESERVATION_FENCE_CHANGED', 'Financial state changed during payout reservation');
         }
