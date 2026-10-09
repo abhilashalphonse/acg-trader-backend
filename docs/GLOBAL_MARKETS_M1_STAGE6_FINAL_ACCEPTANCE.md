@@ -126,65 +126,72 @@ Keep RELIANCE customer execution OFF until those requirements, product
 compliance, data-feed entitlements and independent release review all pass.
 
 
-## Reuse the previous Funded acceptance credentials (Stage 6 bootstrap)
+## Stage 6: fresh fixture from staging SUPER_ADMIN session
 
-Run the bootstrap from a trusted operator shell on the Stage 6 branch. It
-reuses the existing **Funded lifecycle acceptance** customer, admin bearer and
-Challenge A fixture. It requests a customer trading-launch ticket, exchanges
-the ticket for a short-lived Trader token, confirms the token grants precisely
-the selected account, checks a flat/complete valuation, obtains an
-authoritative RELIANCE BUY preview, and derives a 2%-below-fill tick-aligned
-stop from the actual fresh Accelpix-backed preview (override percentage with
-`ACCEPTANCE_RELIANCE_STOP_DISTANCE_PERCENT` only when justified).
+**Dependency:** Funded staging must first deploy the audited
+`/api/admin/launch-readiness/:runId/stage6-ticket` endpoint from Funded
+Stage 6 PR #57. Trader stage 6 bootstrap is run **locally** on the current
+Trader Stage 6 branch, not through Railway's service command.
 
-Required existing secure acceptance environment variables:
+The bootstrap uses only the valid **staging SUPER_ADMIN bearer** obtained
+from the user's own authenticated staging admin session. Do not paste JWTs
+into chat, source control, reports, logs, PowerShell transcripts or screenshots.
+Only the trusted operator environment should hold this bearer.
 
-- `ACCEPTANCE_CUSTOMER_ID`, `ACCEPTANCE_CUSTOMER_BEARER`, `ACCEPTANCE_ADMIN_BEARER`
-- `ACCEPTANCE_CHALLENGE_A_ID` (or `ACCEPTANCE_CHALLENGE_ID`) for a **currently
-  active**, dedicated acceptance-customer Trader account
-- `ACCEPTANCE_TARGET_ENVIRONMENT=staging`
-- `ACCEPTANCE_TRADER_BASE_URL=https://discerning-presence-staging.up.railway.app`
-- `ACCEPTANCE_FUNDED_BASE_URL=https://zealous-benevolence-staging.up.railway.app`
+```powershell
+$env:ACCEPTANCE_TARGET_ENVIRONMENT="staging"
+$env:ACCEPTANCE_TRADER_BASE_URL="https://discerning-presence-staging.up.railway.app"
+$env:ACCEPTANCE_FUNDED_BASE_URL="https://zealous-benevolence-staging.up.railway.app"
+# Securely place the authenticated staging admin JWT into
+# $env:ACCEPTANCE_ADMIN_BEARER in the local operator session.
+npm run acceptance:global-markets:bootstrap -- --create-fixture
+```
 
-If the previous lifecycle acceptance account progressed to review/closed or
-is not flat, provision a new **dedicated acceptance-customer** test fixture
-through the existing authorized Funded staging flow. Never select a live
-customer or silently recycle a mutated account.
+The create-fixture command asks Funded's existing admin-only launch-readiness
+factory to create a new dedicated acceptance customer and two **active $10k
+USD Challenge accounts**, instead of recycling a challenge consumed by
+the previous lifecycle runner. It returns only the run ID and test fixture
+identifiers. Record the returned run ID locally:
 
-Perform the read-only bootstrap check, *after* the authorized STAGING pilot
-activation and a fresh NSE session quote:
+```powershell
+$env:ACCEPTANCE_RUN_ID="<runId output from --create-fixture>"
+```
 
-```bash
+An authorized operator must independently enable the **RELIANCE STAGING
+pilot only** through `npm run pilot:india:execution -- enable` after
+verifying the staging MongoDB URI and required
+`INDIA_EXECUTION_PILOT_*` controls. Check the configured session and live
+Accelpix quote. Never run pilot activation with a production Mongo URI.
+
+Then run the staging bootstrap preflight:
+
+```powershell
 npm run acceptance:global-markets:bootstrap
 ```
 
-The bootstrap returns a sanitized JSON evidence summary containing account ID,
-execution-preview INR BUY price, fresh quote timestamp/source, calculated
-tick-aligned stop, and financial revision; it never prints the federation
-ticket or Trader access token. It refuses production URLs, non-acceptance
-identities, missing grants, stale quotes, incomplete/non-flat accounts,
-disabled RELIANCE execution, and closed NSE sessions.
+The preflight asks the authenticated Funded staging admin endpoint for
+a **one-use federation ticket** scoped to its own clean acceptance Challenge,
+exchanges it with Trader, verifies account access, complete USD valuation,
+1:10 RELIANCE pilot policy, and fresh Accelpix execution-preview price.
+It computes an approximate 2%-below-buy-price **tick-aligned stop loss**.
+Neither ticket nor Trader bearer appears in the JSON output.
 
-For the live, state-mutating Stage 6 lifecycle test, **explicitly** set
-`ACCEPTANCE_ALLOW_MUTATIONS=GLOBAL_MARKETS_RELIANCE_STAGING_ONLY`, then:
+After the preflight passes, with the NSE session open and the authorized
+account still flat, explicitly acknowledge mutation and execute:
 
-```bash
+```powershell
+$env:ACCEPTANCE_ALLOW_MUTATIONS="GLOBAL_MARKETS_RELIANCE_STAGING_ONLY"
 npm run acceptance:global-markets:bootstrap -- --execute
 ```
 
-The bootstrap passes the discovered Trader account ID and ephemeral access
-token **in process memory** to the original `acceptance:global-markets:final`
-runner. Capture its PASS/FAIL financial evidence. The baseline runner retains
-its idempotent cleanup attempt after a partial failure.
+The original Stage 6 runner remains responsible for authoritative USD
+risk/amount preview, fractional RELIANCE open/partial/full close, immutable
+INR/USD settlement, three financial revisions and final flat state.
+On failures inspect cleanup evidence, verify the account is fully flat,
+then **disable the RELIANCE pilot** using the staging database.
+Do not mistake unit/CI pass for live acceptance.
 
-**Pilot activation is not automated by this bootstrap.** An authorized operator
-must separately run `npm run pilot:india:execution -- status` and (only with
-the staging MongoDB connection and the three explicit
-`INDIA_EXECUTION_PILOT_*` guard values set) run
-`npm run pilot:india:execution -- enable`. After acceptance, verify no
-position remains and run `npm run pilot:india:execution -- disable`.
-
-Both existing acceptance bearers can expire; this script cannot regenerate a
-Funded customer/admin login token when they have expired. Refresh them via the
-normal staging identity login, never by copying production credentials. Never
-commit secrets or put tokens in the acceptance report.
+**Fail-closed:** Production/non-ACG hosts, missing admin authentication,
+foreign/consumed acceptance runs, invalid staging confirmation, disabled
+RELIANCE, stale/non-Accelpix quote, closed NSE, non-flat accounts and missing
+trading mutation acknowledgement all prevent execution.
