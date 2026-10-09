@@ -109,7 +109,9 @@ async function bootstrap(input=process.env, {execute=false, createFixture=false}
     httpJson(config.trader, '/health/ready'),
   ]);
   if (traderReady?.status === 'not_ready' || traderReady?.ready === false) {
-    throw new Error('Trader staging  if (createFixture) {
+    throw new Error('Trader staging is not ready');
+  }
+  if (createFixture) {
     if (execute) throw new Error('Fixture creation and trading must be separate commands');
     const result=await httpJson(config.funded, '/api/admin/launch-readiness/fixtures', {
       bearer:config.adminBearer,method:'POST',body:{symbol:'RELIANCE',volume:'0.001'},
@@ -152,7 +154,7 @@ async function bootstrap(input=process.env, {execute=false, createFixture=false}
       String(access?.data?.challengeId||'') !== String(fixture.challengeAId)) {
     throw new Error('Staging federation ticket account did not match the dedicated acceptance fixture');
   }
-t return a ticket');
+
   const exchange=await httpJson(config.trader, '/v1/auth/federated/exchange', {method:'POST',body:{ticket}});
   const token=required(exchange.accessToken,'federated Trader access token');
   const granted=await httpJson(config.trader,'/v1/auth/accounts',{bearer:token});
