@@ -142,9 +142,11 @@ async function run(){
       throw new Error('Stage6 account is not financially flat');
     }
 
+    // Mark activation attempted before the write, so even a partial error is
+    // followed by an explicit disable attempt.
+    pilotEnabled=true;
     const on=await setPilotExecution('enable');
     if(on.executionEnabled!==true)throw new Error('RELIANCE staging pilot activation failed');
-    pilotEnabled=true;
     const live=await http('/v1/instruments/RELIANCE');
     if(live.instrument?.executionEnabled!==true||
        live.instrument?.sessionOpen!==true||
