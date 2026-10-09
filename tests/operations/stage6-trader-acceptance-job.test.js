@@ -41,7 +41,7 @@ test('Stage 6 only operates on allowed NSE session time, never weekends or offic
 test('Stage 6 account cannot be real customer, blocked, changed or non-USD',()=>{
  const obj={
   _id:TARGET.accountId,ownerExternalRef:TARGET.owner,
-  externalRef:TARGET.challenge,currency:'USD',
+  externalRef:TARGET.challenge+':phase:1',currency:'USD',
   accountType:'CHALLENGE',status:'ACTIVE',tradingEnabled:true,federationEnabled:true,
  };
  assert.equal(validateAccount(obj),true);
