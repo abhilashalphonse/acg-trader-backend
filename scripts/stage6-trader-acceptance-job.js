@@ -77,7 +77,7 @@ async function http(route,{method='GET',body,token}={}){
 function validateAccount(account){
   if(!account||String(account._id)!==TARGET.accountId
     ||String(account.ownerExternalRef)!==TARGET.owner
-    ||String(account.externalRef)!==TARGET.challenge
+    ||String(account.externalRef)!==TARGET.challenge+':phase:1'
     ||String(account.currency).toUpperCase()!=='USD'
     ||String(account.accountType)!=='CHALLENGE'
     ||String(account.status)!=='ACTIVE'
