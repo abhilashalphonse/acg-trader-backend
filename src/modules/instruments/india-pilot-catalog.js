@@ -55,7 +55,7 @@ function marketSpread() {
   });
 }
 
-function nseEquity({ symbol, name, providerSymbol = symbol }) {
+function nseEquity({ symbol, name, providerSymbol = symbol, fractionalSimulationPilot = false }) {
   return Object.freeze({
     symbol,
     displaySymbol: symbol,
@@ -71,9 +71,12 @@ function nseEquity({ symbol, name, providerSymbol = symbol }) {
     pipSize: '0.01',
     contractSize: '1',
 
-    minVolume: '1',
+    // M1 RELIANCE is a simulated equity exposure in an ACG funded account,
+    // not a routed NSE share purchase. Fractional units apply only to the
+    // RELIANCE staging pilot until product terms and controls are approved.
+    minVolume: fractionalSimulationPilot ? '0.001' : '1',
     maxVolume: '10000',
-    volumeStep: '1',
+    volumeStep: fractionalSimulationPilot ? '0.001' : '1',
 
     defaultLeverage: leverageForAssetClass('EQUITY'),
     leveragePolicyVersion: LEVERAGE_POLICY_VERSION,
@@ -104,7 +107,7 @@ function nseEquity({ symbol, name, providerSymbol = symbol }) {
 }
 
 const ACG_INDIA_PILOT_CATALOG = Object.freeze([
-  nseEquity({ symbol: 'RELIANCE', name: 'Reliance Industries Ltd' }),
+  nseEquity({ symbol: 'RELIANCE', name: 'Reliance Industries Ltd', fractionalSimulationPilot: true }),
   nseEquity({ symbol: 'TCS', name: 'Tata Consultancy Services Ltd' }),
   nseEquity({ symbol: 'HDFCBANK', name: 'HDFC Bank Ltd' }),
   nseEquity({ symbol: 'INFY', name: 'Infosys Ltd' }),
