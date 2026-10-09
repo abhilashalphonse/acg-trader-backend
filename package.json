@@ -24,7 +24,8 @@
     "acceptance:global-markets:reliance": "node scripts/acceptance-global-markets-reliance.js",
     "acceptance:global-markets:final": "node scripts/acceptance-global-markets-final.js",
     "acceptance:global-markets:mixed-market": "node scripts/acceptance-global-markets-mixed-market.js",
-    "capacity:global-markets:preview": "node scripts/capacity-global-markets-preview.js"
+    "capacity:global-markets:preview": "node scripts/capacity-global-markets-preview.js",
+    "acceptance:global-markets:bootstrap": "node scripts/acceptance-global-markets-bootstrap.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
