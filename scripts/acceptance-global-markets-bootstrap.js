@@ -21,7 +21,7 @@ function stagingOrigin(value, name) {
 }
 
 function required(value, name) {
-  if (!String(value || '').trim()) throw new Error(name + ' is required (reuse the lifecycle acceptance environment)');
+  if (!String(value || '').trim()) throw new Error(name + ' is required');
   return String(value).trim();
 }
 
@@ -36,7 +36,7 @@ function deriveStopFromPreview(preview, tickSize, distancePercent = '2', nowMs =
       !Number.isFinite(distance) || distance <= 0 || distance >= 20 ||
       !Number.isFinite(receivedAtMs) || receivedAtMs <= 0 ||
       receivedAtMs > nowMs + 2000 || nowMs - receivedAtMs > 12000 ||
-      !preview?.quote?.source) {
+      !String(preview?.quote?.source || '').toLowerCase().startsWith('accelpix')) {
     throw new Error('RELIANCE quote is missing, stale, or not an authoritative USD-account preview');
   }
   // The stop is derived from the actual executable BUY preview, never from an invented ticker price.
@@ -68,14 +68,14 @@ function verifyFixture({customer, challenge, customerId, challengeId}) {
   return String(challenge.platformAccountId);
 }
 
-async function httpJson(origin, pathname, {bearer, method='GET', body}={}) {
+async function httpJson(origin, pathname, {bearer, method='GET', body, timeoutMs=12000}={}) {
   const headers = { accept: 'application/json' };
   if (bearer) headers.authorization = 'Bearer ' + bearer;
   if (body !== undefined) headers['content-type'] = 'application/json';
   const response = await fetch(origin + pathname, {
     method, headers,
     ...(body === undefined ? {} : {body: JSON.stringify(body)}),
-    signal: AbortSignal.timeout(12000),
+    signal: AbortSignal.timeout(timeoutMs),
     redirect: 'error',
   });
   if (!response.ok) throw new Error(method + ' ' + pathname.split('?')[0] + ' failed: HTTP ' + response.status);
@@ -94,14 +94,12 @@ function prepareEnvironment(input = process.env) {
   }
   return {
     trader, funded,
-    customerId: required(input.ACCEPTANCE_CUSTOMER_ID, 'ACCEPTANCE_CUSTOMER_ID'),
-    challengeId: required(input.ACCEPTANCE_CHALLENGE_ID || input.ACCEPTANCE_CHALLENGE_A_ID, 'ACCEPTANCE_CHALLENGE_ID or ACCEPTANCE_CHALLENGE_A_ID'),
-    customerBearer: required(input.ACCEPTANCE_CUSTOMER_BEARER, 'ACCEPTANCE_CUSTOMER_BEARER'),
+    runId: String(input.ACCEPTANCE_RUN_ID || '').trim(),
     adminBearer: required(input.ACCEPTANCE_ADMIN_BEARER, 'ACCEPTANCE_ADMIN_BEARER'),
   };
 }
 
-async function bootstrap(input=process.env, {execute=false}={}) {
+async function bootstrap(input=process.env, {execute=false, createFixture=false}={}) {
   const config=prepareEnvironment(input);
   if (execute && input.ACCEPTANCE_ALLOW_MUTATIONS !== MUTATION_ACK) {
     throw new Error('Explicit Stage 6 staging mutation acknowledgement required');
@@ -111,16 +109,50 @@ async function bootstrap(input=process.env, {execute=false}={}) {
     httpJson(config.trader, '/health/ready'),
   ]);
   if (traderReady?.status === 'not_ready' || traderReady?.ready === false) {
-    throw new Error('Trader staging is not ready');
+    throw new Error('Trader staging  if (createFixture) {
+    if (execute) throw new Error('Fixture creation and trading must be separate commands');
+    const result=await httpJson(config.funded, '/api/admin/launch-readiness/fixtures', {
+      bearer:config.adminBearer,method:'POST',body:{symbol:'RELIANCE',volume:'0.001'},
+      timeoutMs:90000,
+    });
+    const run=result?.data;
+    if (run?.status !== 'READY' || !run?.runId ||
+        !/^[0-9a-f]{24}$/i.test(String(run?.fixture?.challengeAPlatformAccountId||''))) {
+      throw new Error('Staging acceptance fixture creation did not return a ready funded account');
+    }
+    return {
+      status:'FIXTURE_CREATED',stage:'GLOBAL-MARKETS-M1-STAGE6',environment:'STAGING',
+      runId:run.runId,customerId:run.fixture.customerId,
+      challengeId:run.fixture.challengeAId,accountId:run.fixture.challengeAPlatformAccountId,
+      next:'Set ACCEPTANCE_RUN_ID to runId, then run bootstrap preflight (without --execute).',
+    };
   }
-  const workspace = await httpJson(config.funded, '/api/admin/users/' + encodeURIComponent(config.customerId), {bearer:config.adminBearer});
-  const challengeResult = await httpJson(config.funded, '/api/admin/challenges/' + encodeURIComponent(config.challengeId), {bearer:config.adminBearer});
-  const challenge=challengeResult?.data?.account;
-  const accountId=verifyFixture({customer:workspace?.data?.customer,challenge,customerId:config.customerId,challengeId:config.challengeId});
-  const launch = await httpJson(config.funded, '/api/customer/accounts/' + encodeURIComponent(config.challengeId) + '/trading-launch', {bearer:config.customerBearer,method:'POST',body:{}});
-  let ticket;
-  try {ticket=new URL(launch?.data?.launchUrl).searchParams.get('ticket');}catch{}
-  if (!ticket) throw new Error('Staging federation trading launch did not return a ticket');
+  if (!config.runId) {
+    throw new Error('ACCEPTANCE_RUN_ID is required. Run bootstrap -- --create-fixture first.');
+  }
+  const result=await httpJson(config.funded, '/api/admin/launch-readiness/'+encodeURIComponent(config.runId), {
+    bearer:config.adminBearer,
+  });
+  const run=result?.data;
+  const fixture=run?.fixture||{};
+  if (run?.status !== 'READY' || run?.symbol !== 'RELIANCE' ||
+      !/^acceptance\+.*@acgfunded\.test$/i.test(String(fixture.email||'')) ||
+      !/^ACG-ACC-/.test(String(fixture.challengeAId||'')) ||
+      !/^[0-9a-f]{24}$/i.test(String(fixture.challengeAPlatformAccountId||''))) {
+    throw new Error('Stage 6 requires a fresh READY RELIANCE fixture created by staging admin');
+  }
+  const accountId=String(fixture.challengeAPlatformAccountId);
+  const access=await httpJson(config.funded,
+    '/api/admin/launch-readiness/'+encodeURIComponent(config.runId)+'/stage6-ticket', {
+      bearer:config.adminBearer,method:'POST',
+      body:{confirmation:'RELIANCE-STAGING-ONLY'},
+    });
+  const ticket=required(access?.data?.ticket,'single-use Stage 6 federation ticket');
+  if (String(access?.data?.accountId||'') !== accountId ||
+      String(access?.data?.challengeId||'') !== String(fixture.challengeAId)) {
+    throw new Error('Staging federation ticket account did not match the dedicated acceptance fixture');
+  }
+t return a ticket');
   const exchange=await httpJson(config.trader, '/v1/auth/federated/exchange', {method:'POST',body:{ticket}});
   const token=required(exchange.accessToken,'federated Trader access token');
   const granted=await httpJson(config.trader,'/v1/auth/accounts',{bearer:token});
@@ -174,7 +206,7 @@ async function bootstrap(input=process.env, {execute=false}={}) {
 }
 
 if (require.main===module){
-  bootstrap(process.env,{execute:process.argv.includes('--execute')})
+  bootstrap(process.env,{execute:process.argv.includes('--execute'),createFixture:process.argv.includes('--create-fixture')})
     .then(result=>process.stdout.write(JSON.stringify(result,null,2)+'\n'))
     .catch(error=>{
       process.stderr.write(JSON.stringify({status:'BLOCKED_OR_FAILED',message:error.message})+'\n');
