@@ -64,4 +64,5 @@ test('bootstrap reuses prior lifecycle acceptance variables; never guesses secre
   assert.throws(()=>prepareEnvironment({...input,ACCEPTANCE_TARGET_ENVIRONMENT:'production'}));
   assert.throws(()=>prepareEnvironment({...input,ACCEPTANCE_ADMIN_BEARER:''}));
   assert.throws(()=>prepareEnvironment({...input,ACCEPTANCE_TRADER_BASE_URL:'https://acg-trader-backend-production.up.railway.app'}));
+  assert.throws(()=>prepareEnvironment({...input,ACCEPTANCE_TRADER_BASE_URL:'https://unknown-staging.example.net'}));
 });
