@@ -47,7 +47,7 @@ test('Stage 6 account cannot be real customer, blocked, changed or non-USD',()=>
  assert.equal(validateAccount(obj),true);
  for(const patch of [
   {ownerExternalRef:'CUS-A-CUSTOMER'}, {_id:'507f1f77bcf86cd799439011'},
-  {externalRef:'CHALLENGE-REAL'}, {status:'DISABLED'}, {tradingEnabled:false},
+  {externalRef:'CHALLENGE-REAL'}, {externalRef:TARGET.challenge}, {status:'DISABLED'}, {tradingEnabled:false},
   {currency:'INR'},{federationEnabled:false},{accountType:'FUNDED'},
  ])assert.throws(()=>validateAccount({...obj,...patch}),/dedicated ACTIVE USD staging fixture/);
 });
