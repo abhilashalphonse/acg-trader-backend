@@ -34,6 +34,7 @@ test('bootstrap derives tick-aligned RELIANCE stop only from a fresh execution p
   assert.throws(()=>deriveStopFromPreview({...preview,symbol:'EURUSD'},'0.01','2',now));
   assert.throws(()=>deriveStopFromPreview(preview,'0.01','0',now));
   assert.throws(()=>deriveStopFromPreview(preview,'0.01','20',now));
+  assert.throws(()=>deriveStopFromPreview({...preview,quote:{...preview.quote,source:'twelve-data'}},'0.01','2',now));
 });
 
 test('bootstrap limits account selection to active acceptance identity and matching customer', () => {
@@ -49,16 +50,14 @@ test('bootstrap limits account selection to active acceptance identity and match
   assert.throws(()=>verifyFixture({customer,challenge:{...challenge,status:'CLOSED'},customerId:'c1',challengeId:'ACCEPTANCE-01'}));
 });
 
-test('bootstrap reuses prior lifecycle acceptance variables; never guesses secrets', () => {
+test('bootstrap requires only staging admin session and optionally existing fixture ID', () => {
   const input={
     ACCEPTANCE_TARGET_ENVIRONMENT:'staging',
-    ACCEPTANCE_CUSTOMER_ID:'customer-1',
-    ACCEPTANCE_CHALLENGE_A_ID:'challenge-A',
-    ACCEPTANCE_CUSTOMER_BEARER:'existing-customer-token',
+    ACCEPTANCE_RUN_ID:'ACC-STAGING-ONE',
     ACCEPTANCE_ADMIN_BEARER:'existing-admin-token',
   };
   const config=prepareEnvironment(input);
-  assert.equal(config.challengeId,'challenge-A');
+  assert.equal(config.runId,'ACC-STAGING-ONE');
   assert.match(config.trader,/staging/);
   assert.match(config.funded,/staging/);
   assert.throws(()=>prepareEnvironment({...input,ACCEPTANCE_TARGET_ENVIRONMENT:'production'}));
