@@ -213,9 +213,21 @@ async function run(){
         const off=await setPilotExecution('disable');
         if(off.executionEnabled!==false)throw new Error('Pilot still enabled');
         result.pilotDisabled=true;
+        if(claimed){
+          await mongoose.connection.db.collection('stage6FinancialAcceptanceJobs')
+            .updateOne({_id:TARGET.runId},{$set:{pilotDisabled:true,pilotDisabledAt:new Date()}});
+        }
       }catch(err){
         result.pilotDisabled=false;
+        result.status='FAIL_SAFETY';
+        result.message='RELIANCE staging pilot disable could not be confirmed';
         failure=failure||err;
+        if(claimed){
+          await mongoose.connection.db.collection('stage6FinancialAcceptanceJobs')
+            .updateOne({_id:TARGET.runId},{$set:{
+              state:'FAILED_SAFETY',pilotDisabled:false,safetyFailedAt:new Date(),
+            }}).catch(()=>{});
+        }
       }
     }
     await disconnectDatabase();
