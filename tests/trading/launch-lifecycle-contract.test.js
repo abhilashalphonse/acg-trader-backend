@@ -144,7 +144,7 @@ test('09 duplicate provisioning with changed parameters is rejected instead of c
   );
 });
 
-test('10 first LIVE valuation after UTC midnight resets daily baseline', async () => {
+test('10 first recovered valuation after UTC midnight preserves the pre-boundary baseline', async () => {
   const eventBus = new EventEmitter();
   const doc = {
     _id: '64b000000000000000000001',
@@ -201,7 +201,7 @@ test('10 first LIVE valuation after UTC midnight resets daily baseline', async (
   engine.stop();
 
   assert.equal(doc.riskDayKey, '2026-09-18');
-  assert.equal(String(doc.state.dailyStartEquity), '99000');
+  assert.equal(String(doc.state.dailyStartEquity), '100000');
   assert.equal(String(doc.state.realizedPnlToday), '0');
   assert.equal(doc.saved, true);
 });

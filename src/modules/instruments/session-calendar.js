@@ -204,6 +204,18 @@ function nextWeekendCloseTimeMs(instrument, nowMs = Date.now()) {
   return null;
 }
 
+function previousSessionCloseTimeMs(instrument, beforeMs = Date.now()) {
+  if (!instrument?.tradingSessions?.length && !instrument?.sessionOverrides?.length) return null;
+  const local = zonedParts(beforeMs, String(instrument.timezone || 'UTC'));
+  for (let day = 0; day < 15; day++) {
+    const candidates = sessionWindowsOnDate(instrument, addLocalCalendarDays(local, -day))
+      .map(window => window.closeMs)
+      .filter(close => close <= beforeMs);
+    if (candidates.length) return Math.max(...candidates);
+  }
+  return null;
+}
+
 function nextSessionOpenTimeMs(instrument, afterMs) {
   const local = zonedParts(afterMs, String(instrument.timezone || 'UTC'));
   for (let day = 0; day < 15; day++) {
@@ -256,4 +268,4 @@ function parseClock(value) {
 
 function pad(value) { return String(value).padStart(2, '0'); }
 
-module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs, nextWeekendCloseTimeMs, nextSessionOpenTimeMs };
+module.exports = { isInstrumentSessionOpen, assertInstrumentSessionOpen, candleOverlapsInstrumentSession, parseClock, zonedParts, zonedDateTimeToUtcMs, activeSessionOpenTimeMs, sessionAlignedBucketOpenTimeMs, nextWeekendCloseTimeMs, previousSessionCloseTimeMs, nextSessionOpenTimeMs };

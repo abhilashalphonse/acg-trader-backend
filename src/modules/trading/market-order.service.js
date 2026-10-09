@@ -117,9 +117,16 @@ class MarketOrderService {
             'account_read',
             () => this.accountModel.findById(normalized.accountId).session(session),
           );
+          const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs })
+            || this.valuationEngine?.currencyConverter
+            || null;
           if (account && this.valuationEngine) {
             await this.valuationEngine.ensureAccountRevision?.(account, { session });
-            this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+            this.valuationEngine.overlayAccountDocument(account, {
+              requireLive: true,
+              currencyConverter: financialConverter,
+              nowMs,
+            });
           }
 
           const instrument = await timeAsync(
@@ -136,6 +143,7 @@ class MarketOrderService {
                 account,
                 symbol: normalized.symbol,
                 nowMs,
+                currencyConverter: financialConverter,
                 instrumentModel: this.instrumentModel,
               }),
             )
@@ -151,6 +159,7 @@ class MarketOrderService {
             stopLoss: normalized.stopLoss,
             takeProfit: normalized.takeProfit,
             nowMs,
+            currencyConverter: financialConverter,
           });
 
           const policyDecision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session,
@@ -231,8 +240,8 @@ class MarketOrderService {
             : null,
         });
 
-        const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
+          const nowMs = Date.now();
           const account = await timeAsync(
             timing,
             'account_read',
@@ -241,9 +250,16 @@ class MarketOrderService {
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
           if (weekendClaim) await this.weekendActionService.fenceExecution(weekendClaim, account, session);
 
+          const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs })
+            || this.valuationEngine?.currencyConverter
+            || null;
           await this.valuationEngine?.ensureAccountRevision?.(account, { session });
           const valuationProjection = this.valuationEngine
-            ? this.valuationEngine.overlayAccountDocument(account, { requireLive: false })
+            ? this.valuationEngine.overlayAccountDocument(account, {
+              requireLive: false,
+              currencyConverter: financialConverter,
+              nowMs,
+            })
             : null;
 
           const position = await timeAsync(
@@ -267,11 +283,26 @@ class MarketOrderService {
           });
 
           if (!quoteSnapshot) quoteSnapshot = this.quoteStore.get(position.symbol);
-          if (position.status === 'OPEN' && ['STOP_LOSS', 'TAKE_PROFIT'].includes(normalized.reason)
-            && detectProtectionTrigger({ position, tick: quoteSnapshot })?.reason !== normalized.reason) {
-            throw new AppError('Position protection changed before execution; the trigger no longer applies', {
-              statusCode: 409, code: 'PROTECTION_TRIGGER_NO_LONGER_ACTIVE',
-            });
+          if (position.status === 'OPEN' && ['STOP_LOSS', 'TAKE_PROFIT'].includes(normalized.reason)) {
+            if (normalized.latchedProtection) {
+              const currentProtection = normalized.reason === 'STOP_LOSS'
+                ? position.stopLoss
+                : position.takeProfit;
+              if (
+                currentProtection == null
+                || compareDecimal(currentProtection, normalized.latchedProtection.protectionPrice) !== 0
+                || normalized.latchedProtection.reason !== normalized.reason
+              ) {
+                throw new AppError('Position protection changed after the trigger was latched', {
+                  statusCode: 409,
+                  code: 'PROTECTION_TRIGGER_NO_LONGER_ACTIVE',
+                });
+              }
+            } else if (detectProtectionTrigger({ position, tick: quoteSnapshot })?.reason !== normalized.reason) {
+              throw new AppError('Position protection changed before execution; the trigger no longer applies', {
+                statusCode: 409, code: 'PROTECTION_TRIGGER_NO_LONGER_ACTIVE',
+              });
+            }
           }
 
           const plan = planMarketClose({
@@ -281,6 +312,7 @@ class MarketOrderService {
             position,
             volume: normalized.volume,
             nowMs,
+            currencyConverter: financialConverter,
           });
 
           return timeAsync(
@@ -662,16 +694,33 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
   }
 
   account.state.balance = runningBalance;
-  if (valuationComplete) {
-    account.state.floatingPnl = subtractDecimal(account.state.floatingPnl, plan.realizedPnl);
+  const projected = plan?.projectedAccountState;
+  if (valuationComplete && projected) {
+    // The execution planner removes the marked contribution of the closed
+    // quantity before applying realized P&L/fees. This keeps the committed
+    // account projection internally consistent when fill != mark.
+    account.state.floatingPnl = projected.floatingPnl;
+    account.state.equity = projected.equity;
+    account.state.usedMargin = projected.usedMargin;
+    account.state.freeMargin = projected.freeMargin;
+    account.state.marginLevel = projected.marginLevel;
+  } else {
+    // Compatibility for callers/tests that construct a close plan without the
+    // new projection contract. Production execution plans always carry it.
+    if (valuationComplete && !projected) {
+      account.state.floatingPnl = subtractDecimal(account.state.floatingPnl, plan.realizedPnl);
+    }
+    // Preserve close/reduce availability when another position cannot be
+    // valued. The valuation engine will repair the aggregate projection once
+    // completeness returns; do not pretend an incomplete projection is live.
+    account.state.equity = subtractDecimal(account.state.equity, plan.commission);
+    let usedMargin = subtractDecimal(account.state.usedMargin, plan.releasedMargin);
+    if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
+    account.state.usedMargin = usedMargin;
+    account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
+    account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
   }
-  account.state.equity = subtractDecimal(account.state.equity, plan.commission);
   account.state.realizedPnlToday = addDecimal(account.state.realizedPnlToday, plan.realizedPnl);
-  let usedMargin = subtractDecimal(account.state.usedMargin, plan.releasedMargin);
-  if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
-  account.state.usedMargin = usedMargin;
-  account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
-  account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
 
   position.openVolume = plan.remainingVolume;
   position.margin = subtractDecimal(position.margin, plan.releasedMargin);
@@ -768,11 +817,15 @@ function closeEvents(response, fullClose) {
 function assertManualCloseSessionOpen({ instrument, source = 'API', reason = null, nowMs = Date.now() } = {}) {
   const normalizedSource = String(source || 'API').toUpperCase();
   const isManualClose = reason == null && normalizedSource !== 'SYSTEM';
-  if (!isManualClose || !instrument) return;
+  const systemReason = String(reason || '').toUpperCase();
+  const requiresExecutableSession = ['MARGIN_STOP_OUT', 'ACCOUNT_LIQUIDATION'].includes(systemReason);
+  if ((!isManualClose && !requiresExecutableSession) || !instrument) return;
 
-  // This gate is specifically about the configured trading session. Preserve
-  // the existing close behavior for an operationally HALTED/DISABLED
-  // instrument; planMarketClose remains authoritative for other close checks.
+  // Manual closes and stop-out liquidation require an executable session.
+  // A stop-out job may value a closed-market position from APPROVED_CLOSE,
+  // but it must defer that position rather than execute against a closing mark.
+  // Preserve existing operational HALTED/DISABLED close behavior for manual
+  // actions; planMarketClose remains authoritative for other close checks.
   assertInstrumentSessionOpen({ ...instrument, status: 'ACTIVE' }, nowMs);
 }
 
@@ -791,15 +844,27 @@ function normalizeOpenCommand(command) {
 }
 
 function normalizeCloseCommand(command) {
+  const source = normalizeSource(command?.source);
+  const reason = normalizeCloseReason(command?.reason);
   return {
     accountId: String(command?.accountId || '').trim(),
     clientOrderId: String(command?.clientOrderId || '').trim(),
     positionId: String(command?.positionId || '').trim(),
     volume: nullableString(command?.volume),
     requestedPrice: nullableString(command?.requestedPrice),
-    source: normalizeSource(command?.source),
-    reason: normalizeCloseReason(command?.reason),
+    source,
+    reason,
+    latchedProtection: normalizeLatchedProtection(command?.latchedProtection, { source, reason }),
   };
+}
+
+function normalizeLatchedProtection(value, { source, reason }) {
+  if (!value || source !== 'SYSTEM' || !['STOP_LOSS', 'TAKE_PROFIT'].includes(reason)) return null;
+  const latchId = String(value?.latchId || '').trim();
+  const protectionPrice = nullableString(value?.protectionPrice);
+  const latchedReason = String(value?.reason || reason || '').toUpperCase();
+  if (!latchId || !protectionPrice || latchedReason !== reason) return null;
+  return Object.freeze({ latchId, protectionPrice, reason: latchedReason });
 }
 
 function nullableString(value) {
@@ -814,7 +879,7 @@ function normalizeSource(source) {
 function normalizeCloseReason(reason) {
   if (reason === null || reason === undefined || reason === '') return null;
   const value = String(reason).toUpperCase();
-  if (!['STOP_LOSS', 'TAKE_PROFIT', 'MARGIN_STOP_OUT', 'WEEKEND_HOLDING_POLICY'].includes(value)) {
+  if (!['STOP_LOSS', 'TAKE_PROFIT', 'MARGIN_STOP_OUT', 'ACCOUNT_LIQUIDATION', 'WEEKEND_HOLDING_POLICY'].includes(value)) {
     throw new AppError('Invalid system close reason', { statusCode: 400, code: 'INVALID_CLOSE_REASON' });
   }
   return value;

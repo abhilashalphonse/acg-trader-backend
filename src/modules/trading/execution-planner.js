@@ -178,10 +178,45 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   let releasedMargin = fullClose ? currentMargin : divideDecimal(multiplyDecimal(currentMargin, requestedVolume), openVolume, { scale: 12, rounding: ROUNDING.HALF_UP });
   if (compareDecimal(releasedMargin, currentMargin) > 0) releasedMargin = currentMargin;
 
+  // Account floating P&L is a marked projection. Closing at an execution price
+  // can realize a different amount because of spread, slippage, volume pricing,
+  // or a changed conversion context. Remove the marked contribution of the
+  // closed quantity, not the realized P&L, when projecting the post-close state.
+  const markedValuation = calculatePositionValuation({ position, quote });
+  if (markedValuation.valuationStatus !== 'LIVE' || markedValuation.floatingPnl == null) {
+    throw new AppError('Position mark is unavailable for post-close account projection', {
+      statusCode: 409,
+      code: 'CLOSE_PROJECTION_VALUATION_UNAVAILABLE',
+    });
+  }
+  const markedPnlAccount = convertCurrency(
+    markedValuation.floatingPnl,
+    pnlCurrency,
+    account.currency,
+    currencyConverter,
+    nowMs,
+  );
+  const markedPnlRemoved = fullClose
+    ? markedPnlAccount
+    : divideDecimal(
+      multiplyDecimal(markedPnlAccount, requestedVolume),
+      openVolume,
+      { scale: 12, rounding: ROUNDING.HALF_UP },
+    );
+  const projectedAccountState = projectAccountAfterClose({
+    account,
+    realizedPnl,
+    commission,
+    markedPnlRemoved,
+    releasedMargin,
+  });
+
   return Object.freeze({
     symbol: normalizeSymbol(position.symbol), closeSide, volume: requestedVolume, remainingVolume, fullClose,
     fillPrice, entryPrice, contractSize, volumeStep, quoteCurrency: pnlCurrency, pnlCurrency,
     realizedPnlQuote, realizedPnl, commission, netBalanceChange, releasedMargin,
+    markedPnlRemoved,
+    projectedAccountState: Object.freeze(projectedAccountState),
     quoteSequence: quote.sequence ?? null, quoteReceivedAtMs: quote.receivedAtMs,
     dealType: fullClose ? 'CLOSE' : 'PARTIAL_CLOSE',
     referencePrice: decimalOrNull(execution.referencePrice),
@@ -436,6 +471,40 @@ function projectAccountAfterOpen({ account, requiredMargin, commission, immediat
   };
 }
 
+function projectAccountAfterClose({
+  account,
+  realizedPnl,
+  commission,
+  markedPnlRemoved,
+  releasedMargin,
+}) {
+  const balance = normalizeDecimal(account.state?.balance ?? '0');
+  const floatingPnl = normalizeDecimal(account.state?.floatingPnl ?? '0');
+  const usedMargin = normalizeDecimal(account.state?.usedMargin ?? '0');
+
+  const projectedBalance = subtractDecimal(addDecimal(balance, realizedPnl), commission);
+  const projectedFloatingPnl = subtractDecimal(floatingPnl, markedPnlRemoved);
+  const projectedEquity = addDecimal(projectedBalance, projectedFloatingPnl);
+  let projectedUsedMargin = subtractDecimal(usedMargin, releasedMargin);
+  if (compareDecimal(projectedUsedMargin, '0') < 0) projectedUsedMargin = '0';
+  const projectedFreeMargin = subtractDecimal(projectedEquity, projectedUsedMargin);
+  const projectedMarginLevel = compareDecimal(projectedUsedMargin, '0') > 0
+    ? multiplyDecimal(
+      divideDecimal(projectedEquity, projectedUsedMargin, { scale: 8, rounding: ROUNDING.HALF_UP }),
+      '100',
+    )
+    : null;
+
+  return {
+    balance: projectedBalance,
+    floatingPnl: projectedFloatingPnl,
+    equity: projectedEquity,
+    usedMargin: projectedUsedMargin,
+    freeMargin: projectedFreeMargin,
+    marginLevel: projectedMarginLevel,
+  };
+}
+
 function validateOpenPosition(position, account) {
   if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
   if (String(position.accountId) !== String(account._id)) throw new AppError('Position does not belong to this trading account', { statusCode: 403, code: 'POSITION_ACCOUNT_MISMATCH' });
@@ -444,4 +513,4 @@ function validateOpenPosition(position, account) {
 function normalizeSide(side) { const value = String(side || '').toUpperCase(); if (!['BUY', 'SELL'].includes(value)) throw new AppError('Order side must be BUY or SELL', { statusCode: 400, code: 'INVALID_ORDER_SIDE' }); return value; }
 function calculateAdverseSlippage({ side, fillPrice, requestedPrice }) { if (requestedPrice == null || requestedPrice === '') return '0'; const requested = normalizeDecimal(requestedPrice); return side === 'BUY' ? subtractDecimal(fillPrice, requested) : subtractDecimal(requested, fillPrice); }
 
-module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, calculateImmediateOpeningPnl, projectAccountAfterOpen, validateVolume, validateExposureLimits, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose, validateQuote };
+module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, calculateImmediateOpeningPnl, projectAccountAfterOpen, projectAccountAfterClose, validateVolume, validateExposureLimits, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose, validateQuote };

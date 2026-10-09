@@ -54,8 +54,8 @@ test('system liquidation is not reclassified as a manual close', () => {
   }));
 });
 
-test('protective/system close reasons retain their existing execution path', () => {
-  for (const reason of ['STOP_LOSS', 'TAKE_PROFIT', 'MARGIN_STOP_OUT']) {
+test('SL/TP retain their protective execution path while stop-out defers outside session', () => {
+  for (const reason of ['STOP_LOSS', 'TAKE_PROFIT']) {
     assert.doesNotThrow(() => assertManualCloseSessionOpen({
       instrument: fxInstrument(),
       source: 'SYSTEM',
@@ -63,6 +63,16 @@ test('protective/system close reasons retain their existing execution path', () 
       nowMs: SATURDAY,
     }));
   }
+
+  assert.throws(
+    () => assertManualCloseSessionOpen({
+      instrument: fxInstrument(),
+      source: 'SYSTEM',
+      reason: 'MARGIN_STOP_OUT',
+      nowMs: SATURDAY,
+    }),
+    error => error.code === 'MARKET_SESSION_CLOSED',
+  );
 });
 
 

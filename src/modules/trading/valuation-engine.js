@@ -1,8 +1,10 @@
 'use strict';
 
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const { addDecimal, subtractDecimal } = require('../../shared/decimal/decimal');
+const { isRiskValuationAcceptable } = require('./valuation-quality');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { Position } = require('./position.model');
 const {
@@ -17,6 +19,7 @@ class ValuationEngine {
     quoteStore,
     currencyConverter = null,
     marketPriority = null,
+    instrumentResolver = null,
     logger,
     accountModel = TradingAccount,
     positionModel = Position,
@@ -25,6 +28,7 @@ class ValuationEngine {
     this.quoteStore = quoteStore;
     this.currencyConverter = currencyConverter;
     this.marketPriority = marketPriority;
+    this.instrumentResolver = typeof instrumentResolver === 'function' ? instrumentResolver : null;
     this.logger = logger;
     this.accountModel = accountModel;
     this.positionModel = positionModel;
@@ -38,12 +42,19 @@ class ValuationEngine {
     this.accountsByConversionSymbol = new Map();
     this.conversionSymbolsByAccount = new Map();
     this.sequence = 0;
+    // Sequence is process-local. Epoch lets consumers distinguish a sequence
+    // reset after restart while valuedAtMs remains the primary ordering key.
+    this.valuationEpoch = crypto.randomUUID();
     this.started = false;
     this.pendingAccountRevalues = new Set();
     this.accountRevalueScheduled = false;
+    this.fxExpiryTimers = new Map();
 
     this.onTick = quote => this.#safeEvent('market.tick', () => this.#handleQuote(quote));
-    this.onStaleQuote = quote => { if (quote?.isStale) this.#safeEvent('market.quote', () => this.#handleQuote(quote)); };
+    // Quote-only publications are valid recovery signals for FX dependencies.
+    // Do not wait for an underlying instrument tick to repair account valuation.
+    this.onQuote = quote => this.#safeEvent('market.quote', () => this.#handleQuote(quote));
+    this.onMarketStatus = status => this.#safeEvent('market.status', () => this.#handleMarketStatus(status));
     this.onPositionOpened = position => this.#safeEvent('trading.position.opened', () => this.#upsertPosition(position));
     this.onPositionUpdated = position => this.#safeEvent('trading.position.updated', () => this.#upsertPosition(position));
     this.onPositionClosed = position => this.#safeEvent('trading.position.closed', () => this.#removePosition(position));
@@ -75,6 +86,9 @@ class ValuationEngine {
     this.#detachListeners();
     this.started = false;
     for (const position of this.positions.values()) this.marketPriority?.release?.(position.symbol);
+    for (const symbols of this.conversionSymbolsByAccount.values()) {
+      for (const symbol of symbols) this.marketPriority?.release?.(symbol);
+    }
     this.positions.clear();
     this.positionValuations.clear();
     this.accountBases.clear();
@@ -85,6 +99,8 @@ class ValuationEngine {
     this.conversionSymbolsByAccount.clear();
     this.pendingAccountRevalues.clear();
     this.accountRevalueScheduled = false;
+    for (const timer of this.fxExpiryTimers.values()) clearTimeout(timer);
+    this.fxExpiryTimers.clear();
   }
 
   scheduleAccountRevalue(accountId) {
@@ -132,14 +148,22 @@ class ValuationEngine {
     // In particular, a delayed reconnect snapshot must not restore an older SL/order state.
     const valuedAtMs = Date.now();
     const positionValuations = positions.map(position => ({
-      ...calculatePositionValuation({ position, quote: this.quoteStore.get(position.symbol) }),
+      ...calculatePositionValuation({
+        position,
+        quote: this.quoteStore.get(position.symbol),
+        instrument: this.instrumentResolver?.(position.symbol) || null,
+        nowMs: valuedAtMs,
+      }),
       sequence: ++this.sequence, valuedAtMs,
     }));
     return {
       positionValuations,
       valuation: {
         ...aggregateAccountValuation({ account: normalizeAccount(account), positionValuations, currencyConverter: this.currencyConverter, nowMs: valuedAtMs }),
-        financialRevision: Number(account.financialRevision || 0), sequence: ++this.sequence, valuedAtMs,
+        financialRevision: Number(account.financialRevision || 0),
+        valuationEpoch: this.valuationEpoch,
+        sequence: ++this.sequence,
+        valuedAtMs,
       },
     };
   }
@@ -184,7 +208,10 @@ class ValuationEngine {
     return true;
   }
 
-  projectAccountDocument(account) {
+  projectAccountDocument(account, {
+    currencyConverter = this.currencyConverter,
+    nowMs = Date.now(),
+  } = {}) {
     if (!account) return null;
     const accountId = String(account._id || account.id || '');
     const base = this.accountBases.get(accountId);
@@ -204,15 +231,19 @@ class ValuationEngine {
       ...aggregateAccountValuation({
         account,
         positionValuations: this.#valuationsForAccount(accountId),
-        currencyConverter: this.currencyConverter,
-        nowMs: Date.now(),
+        currencyConverter,
+        nowMs,
       }),
       financialRevision: documentRevision,
     };
   }
 
-  overlayAccountDocument(account, { requireLive = false } = {}) {
-    const projection = this.projectAccountDocument(account);
+  overlayAccountDocument(account, {
+    requireLive = false,
+    currencyConverter = this.currencyConverter,
+    nowMs = Date.now(),
+  } = {}) {
+    const projection = this.projectAccountDocument(account, { currencyConverter, nowMs });
     if (!projection) return null;
     if (projection.staleFinancialRevision) {
       throw new AppError('Account valuation was calculated from an older financial revision', {
@@ -224,11 +255,17 @@ class ValuationEngine {
         },
       });
     }
-    if (requireLive && projection.valuationStatus !== 'LIVE') {
-      throw new AppError('Account valuation is not live; new exposure is paused until all open positions and currency conversions have executable quotes', {
+    if (requireLive && !isRiskValuationAcceptable(projection)) {
+      throw new AppError('Account valuation is not acceptable for risk evaluation; new exposure is paused until all open positions and currency conversions have approved valuation quality', {
         statusCode: 409,
         code: 'ACCOUNT_VALUATION_NOT_LIVE',
-        details: { valuationStatus: projection.valuationStatus, staleSymbols: projection.staleSymbols },
+        details: {
+          valuationStatus: projection.valuationStatus,
+          instrumentValuationQuality: projection.instrumentValuationQuality,
+          fxValuationQuality: projection.fxValuationQuality,
+          accountValuationQuality: projection.accountValuationQuality,
+          staleSymbols: projection.staleSymbols,
+        },
       });
     }
     if (!projection.complete) return projection;
@@ -246,7 +283,8 @@ class ValuationEngine {
   }
   #attachListeners() {
     this.eventBus.on('market.tick', this.onTick);
-    this.eventBus.on('market.quote', this.onStaleQuote);
+    this.eventBus.on('market.quote', this.onQuote);
+    this.eventBus.on('market.status', this.onMarketStatus);
     this.eventBus.on('trading.position.opened', this.onPositionOpened);
     this.eventBus.on('trading.position.updated', this.onPositionUpdated);
     this.eventBus.on('trading.position.closed', this.onPositionClosed);
@@ -254,7 +292,8 @@ class ValuationEngine {
   }
   #detachListeners() {
     this.eventBus.off('market.tick', this.onTick);
-    this.eventBus.off('market.quote', this.onStaleQuote);
+    this.eventBus.off('market.quote', this.onQuote);
+    this.eventBus.off('market.status', this.onMarketStatus);
     this.eventBus.off('trading.position.opened', this.onPositionOpened);
     this.eventBus.off('trading.position.updated', this.onPositionUpdated);
     this.eventBus.off('trading.position.closed', this.onPositionClosed);
@@ -275,8 +314,26 @@ class ValuationEngine {
     // account-currency conversion path depends on this quote. This keeps
     // challenge equity/current free margin live without an O(all accounts)
     // fan-out on every market tick.
+    const quoteOverrides = new Map([[symbol, quote]]);
+    for (const accountId of touchedAccounts) this.#recalculateAccount(accountId, true, { quoteOverrides });
+  }
+  #handleMarketStatus(status) {
+    if (String(status?.scope || '').toLowerCase() !== 'symbol' || !status?.symbol) return;
+    const symbol = String(status.symbol).toUpperCase();
+    const ids = [...(this.positionsBySymbol.get(symbol) || [])];
+    if (!ids.length) return;
+
+    const quote = this.quoteStore.get(symbol);
+    const touchedAccounts = new Set();
+    for (const id of ids) {
+      const position = this.positions.get(id);
+      if (!position) continue;
+      touchedAccounts.add(position.accountId);
+      this.#revaluePosition(id, quote, true);
+    }
     for (const accountId of touchedAccounts) this.#recalculateAccount(accountId, true);
   }
+
   #upsertPosition(position) {
     const normalized = normalizePosition(position);
     if (!normalized.id || normalized.status !== 'OPEN') { this.#removePosition(position); return; }
@@ -333,44 +390,140 @@ class ValuationEngine {
     if (!key) return;
 
     const previous = this.conversionSymbolsByAccount.get(key) || new Set();
-    for (const symbol of previous) removeIndex(this.accountsByConversionSymbol, symbol, key);
+    for (const symbol of previous) {
+      removeIndex(this.accountsByConversionSymbol, symbol, key);
+      this.marketPriority?.release?.(symbol);
+    }
 
     const next = new Set();
     const accountCurrency = String(this.accountBases.get(key)?.currency || '').toUpperCase();
     const positionIds = this.positionsByAccount.get(key) || new Set();
     for (const id of positionIds) {
       const pnlCurrency = String(this.positions.get(id)?.quoteCurrency || '').toUpperCase();
-      for (const symbol of conversionSymbols(pnlCurrency, accountCurrency)) next.add(symbol);
+      for (const symbol of conversionSymbols(pnlCurrency, accountCurrency)) {
+        if (!this.currencyConverter?.symbols?.size || this.currencyConverter.symbols.has(symbol)) next.add(symbol);
+      }
     }
 
     if (next.size) this.conversionSymbolsByAccount.set(key, next);
     else this.conversionSymbolsByAccount.delete(key);
-    for (const symbol of next) addIndex(this.accountsByConversionSymbol, symbol, key);
+    for (const symbol of next) {
+      addIndex(this.accountsByConversionSymbol, symbol, key);
+      this.marketPriority?.retain?.(symbol);
+    }
+    this.#scheduleFxExpiry(key);
+  }
+
+  #scheduleFxExpiry(accountId, nowMs = Date.now()) {
+    const key = String(accountId || '');
+    const existing = this.fxExpiryTimers.get(key);
+    if (existing) clearTimeout(existing);
+    this.fxExpiryTimers.delete(key);
+
+    if (!key || !this.started || !this.currencyConverter?.convertWithEvidence) return;
+
+    const accountCurrency = String(this.accountBases.get(key)?.currency || '').toUpperCase();
+    const positionIds = this.positionsByAccount.get(key) || new Set();
+    let earliestExpiryMs = null;
+
+    const seenCurrencies = new Set();
+    for (const id of positionIds) {
+      const pnlCurrency = String(this.positions.get(id)?.quoteCurrency || '').toUpperCase();
+      if (!pnlCurrency || pnlCurrency === accountCurrency || seenCurrencies.has(pnlCurrency)) continue;
+      seenCurrencies.add(pnlCurrency);
+
+      try {
+        const conversion = this.currencyConverter.convertWithEvidence(
+          '0',
+          pnlCurrency,
+          accountCurrency,
+          { nowMs },
+        );
+        for (const leg of conversion?.evidence?.path || []) {
+          const receivedAtMs = Number(leg?.quoteReceivedAtMs);
+          if (!Number.isFinite(receivedAtMs)) continue;
+          const expiryMs = receivedAtMs + Number(this.currencyConverter.maxQuoteAgeMs || 10000);
+          earliestExpiryMs = earliestExpiryMs == null ? expiryMs : Math.min(earliestExpiryMs, expiryMs);
+        }
+      } catch {
+        // The account is already incomplete or waiting. Recovery is driven by
+        // retained dependency quote events; there is no valid quote to expire.
+      }
+    }
+
+    if (!Number.isFinite(earliestExpiryMs)) return;
+    const delayMs = Math.max(1, earliestExpiryMs - Date.now() + 1);
+    const timer = setTimeout(() => {
+      if (this.fxExpiryTimers.get(key) !== timer) return;
+      this.fxExpiryTimers.delete(key);
+      this.#safeEvent('valuation.fx.expired', () => this.#recalculateAccount(key, true));
+    }, delayMs);
+    timer.unref?.();
+    this.fxExpiryTimers.set(key, timer);
   }
 
   #revaluePosition(id, quote, emit) {
     const position = this.positions.get(id);
     if (!position) return null;
-    const valuation = { ...calculatePositionValuation({ position, quote }), sequence: ++this.sequence, valuedAtMs: Date.now() };
+    const valuedAtMs = Date.now();
+    const valuation = {
+      ...calculatePositionValuation({
+        position,
+        quote,
+        instrument: this.instrumentResolver?.(position.symbol) || null,
+        nowMs: valuedAtMs,
+      }),
+      valuationEpoch: this.valuationEpoch,
+      sequence: ++this.sequence,
+      valuedAtMs,
+    };
     this.positionValuations.set(id, valuation);
     if (emit) this.eventBus.emit('valuation.position.updated', clone(valuation));
     return valuation;
   }
-  #recalculateAccount(accountId, emit) {
+  #recalculateAccount(accountId, emit, { quoteOverrides = null } = {}) {
     const base = this.accountBases.get(String(accountId));
     if (!base) return null;
+    const valuedAtMs = Date.now();
+
+    // Session quality changes with wall-clock time even if the last market
+    // quote does not. Refresh each cached position from the current mark before
+    // aggregating so a 15:29 LIVE mark becomes APPROVED_CLOSE after session
+    // close without requiring another underlying tick.
+    const ids = this.positionsByAccount.get(String(accountId)) || new Set();
+    const positionValuations = [];
+    for (const id of ids) {
+      const position = this.positions.get(id);
+      if (!position) continue;
+      const refreshed = {
+        ...calculatePositionValuation({
+          position,
+          quote: quoteOverrides?.get?.(position.symbol) || this.quoteStore.get(position.symbol),
+          instrument: this.instrumentResolver?.(position.symbol) || null,
+          nowMs: valuedAtMs,
+        }),
+        valuationEpoch: this.valuationEpoch,
+        sequence: this.positionValuations.get(id)?.sequence ?? ++this.sequence,
+        valuedAtMs,
+      };
+      this.positionValuations.set(id, refreshed);
+      positionValuations.push(refreshed);
+    }
+
     const valuation = {
       ...aggregateAccountValuation({
         account: base,
-        positionValuations: this.#valuationsForAccount(accountId),
+        positionValuations,
         currencyConverter: this.currencyConverter,
-        nowMs: Date.now(),
+        nowMs: valuedAtMs,
       }),
       financialRevision: Number(base.financialRevision || 0),
+      valuationEpoch: this.valuationEpoch,
       sequence: ++this.sequence,
-      valuedAtMs: Date.now(),
+      valuedAtMs,
     };
     this.accountValuations.set(String(accountId), valuation);
+    this.#scheduleFxExpiry(String(accountId), valuation.valuedAtMs);
     if (emit) this.eventBus.emit('valuation.account.updated', clone(valuation));
     return valuation;
   }

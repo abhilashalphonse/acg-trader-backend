@@ -44,7 +44,14 @@ function createTradingRuntime({ marketRuntime }) {
   setDefaultCurrencyConversionEngine(currencyConversionEngine);
 
   const marketPriority = { retain: marketRuntime.retainPriority, release: marketRuntime.releasePriority };
-  const valuationEngine = new ValuationEngine({ quoteStore: marketRuntime.quoteStore, eventBus, currencyConverter: currencyConversionEngine, marketPriority, logger });
+  const valuationEngine = new ValuationEngine({
+    quoteStore: marketRuntime.quoteStore,
+    eventBus,
+    currencyConverter: currencyConversionEngine,
+    marketPriority,
+    instrumentResolver: symbol => marketRuntime.instrumentRegistry.get(symbol),
+    logger,
+  });
   const platformEventRelay = new PlatformEventRelay({
     eventBus,
     enabled: env.platformEvents.enabled,

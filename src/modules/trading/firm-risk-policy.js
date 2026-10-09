@@ -99,7 +99,7 @@ function convertRiskCurrency(amount, fromCurrency, toCurrency, currencyConverter
       details: { fromCurrency: from || null, toCurrency: to || null },
     });
   }
-  return converter.convert(amount, from, to, { nowMs });
+  return converter.convert(amount, from, to, { nowMs, purpose: 'LOSS_LIABILITY' });
 }
 
 function accountEquity(account) {
