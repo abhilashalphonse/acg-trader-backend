@@ -8,6 +8,7 @@ const { TradingAccount } = require('../accounts/trading-account.model');
 const { AccountRiskEvent } = require('./account-risk-event.model');
 const { runMongoTransaction } = require('./market-order.service');
 const { dayKeyInTimezone } = require('./risk-day-engine');
+const { isRiskValuationAcceptable } = require('./valuation-quality');
 
 class RiskStreamService {
   constructor({
@@ -23,7 +24,7 @@ class RiskStreamService {
   }
 
   async ingestValuation(valuation) {
-    if (!valuation || valuation.complete !== true || String(valuation.valuationStatus || '').toUpperCase() !== 'LIVE') {
+    if (!isRiskValuationAcceptable(valuation)) {
       return { accepted: false, ignored: true };
     }
     const accountId = String(valuation.accountId || valuation.id || '').trim();
@@ -51,6 +52,7 @@ class RiskStreamService {
       const created = [];
 
       if (String(account.riskDayKey || '') !== currentDay) {
+        const baseline = rolloverBaseline(account);
         const rollover = await this.#appendWithinTransaction({
           account,
           session,
@@ -66,13 +68,16 @@ class RiskStreamService {
             previousRiskDayKey: account.riskDayKey || null,
             nextRiskDayKey: currentDay,
             previousDailyStartEquity: scalar(account.state?.dailyStartEquity),
-            nextDailyStartEquity: normalizeDecimal(valuation.equity),
+            nextDailyStartEquity: baseline.equity,
+            baselineSource: baseline.source,
+            baselineValuedAtMs: baseline.valuedAtMs,
+            baselineRiskDayKey: baseline.riskDayKey,
             sourceFinancialRevision: currentRevision,
           },
         });
         if (rollover.created) created.push(rollover.event);
         account.riskDayKey = currentDay;
-        account.state.dailyStartEquity = normalizeDecimal(valuation.equity);
+        account.state.dailyStartEquity = baseline.equity;
         account.state.realizedPnlToday = '0';
       }
 
@@ -92,6 +97,9 @@ class RiskStreamService {
       });
 
       if (appended.created) created.push(appended.event);
+      setMetadataValue(account, 'lastAcceptedValuationEquity', normalizeDecimal(valuation.equity));
+      setMetadataValue(account, 'lastAcceptedValuationRiskDayKey', currentDay);
+      setMetadataValue(account, 'lastAcceptedValuationValuedAtMs', String(finiteNumber(valuation.valuedAtMs) ?? this.now().getTime()));
       await account.save({ session });
 
       return {
@@ -246,12 +254,47 @@ function valuationContext(account, valuation, financialRevision, riskDayKey, ris
     marginLevel: scalar(valuation.marginLevel),
     valuationSequence: finiteNumber(valuation.sequence),
     valuedAtMs: finiteNumber(valuation.valuedAtMs),
+    valuationStatus: valuation.valuationStatus || null,
+    instrumentValuationQuality: valuation.instrumentValuationQuality || null,
+    fxValuationQuality: valuation.fxValuationQuality || null,
+    accountValuationQuality: valuation.accountValuationQuality || null,
+    accountValuationCompleteness: valuation.accountValuationCompleteness || null,
   });
 }
 
+function rolloverBaseline(account) {
+  const equity = metadataValue(account, 'lastAcceptedValuationEquity');
+  if (equity != null && equity !== '') {
+    return {
+      equity: normalizeDecimal(equity),
+      source: 'LAST_ACCEPTED_PRE_BOUNDARY',
+      valuedAtMs: finiteNumber(metadataValue(account, 'lastAcceptedValuationValuedAtMs')),
+      riskDayKey: metadataValue(account, 'lastAcceptedValuationRiskDayKey') || null,
+    };
+  }
+
+  return {
+    equity: normalizeDecimal(account?.state?.initialBalance ?? account?.state?.dailyStartEquity ?? '0'),
+    source: 'INITIAL_BALANCE_FALLBACK',
+    valuedAtMs: null,
+    riskDayKey: null,
+  };
+}
+
+function metadataValue(account, key) {
+  if (account?.metadata instanceof Map) return account.metadata.get(key) ?? null;
+  return account?.metadata?.[key] ?? null;
+}
+
+function setMetadataValue(account, key, value) {
+  if (!(account.metadata instanceof Map)) {
+    account.metadata = new Map(Object.entries(account.metadata || {}));
+  }
+  account.metadata.set(key, String(value));
+}
+
 function policyVersionOf(account) {
-  const metadata = account?.metadata instanceof Map ? Object.fromEntries(account.metadata) : (account?.metadata || {});
-  return metadata.riskPolicyVersion || null;
+  return metadataValue(account, 'riskPolicyVersion');
 }
 
 function valuationEventKey(valuation, financialRevision, riskDayKey) {
@@ -281,4 +324,5 @@ module.exports = {
   RiskStreamService,
   valuationContext,
   valuationEventKey,
+  rolloverBaseline,
 };

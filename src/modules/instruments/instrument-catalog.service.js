@@ -3,6 +3,7 @@
 const { Instrument } = require('./instrument.model');
 const { env } = require('../../config/env');
 const { ACG_INSTRUMENT_CATALOG } = require('./instrument-catalog');
+const { LEVERAGE_POLICY_VERSION } = require('./leverage-policy');
 const { ACG_INDIA_PILOT_CATALOG } = require('./india-pilot-catalog');
 
 const EXECUTION_PROVISION_VERSION = 1;
@@ -54,8 +55,19 @@ async function enforceCatalogLeveragePolicy({ logger } = {}) {
 
   const operations = ACG_INSTRUMENT_CATALOG.map(spec => ({
     updateOne: {
-      filter: { symbol: spec.symbol },
-      update: { $set: { defaultLeverage: spec.defaultLeverage } },
+      filter: {
+        symbol: spec.symbol,
+        $or: [
+          { leveragePolicyVersion: { $exists: false } },
+          { leveragePolicyVersion: { $lt: LEVERAGE_POLICY_VERSION } },
+        ],
+      },
+      update: {
+        $set: {
+          defaultLeverage: spec.defaultLeverage,
+          leveragePolicyVersion: LEVERAGE_POLICY_VERSION,
+        },
+      },
       upsert: false,
     },
   }));
@@ -65,7 +77,7 @@ async function enforceCatalogLeveragePolicy({ logger } = {}) {
     matched: Number(result.matchedCount || 0),
     modified: Number(result.modifiedCount || 0),
   };
-  logger?.info?.({ ...summary, leverage: 100 }, 'Catalog leverage policy enforced');
+  logger?.info?.({ ...summary, leveragePolicyVersion: LEVERAGE_POLICY_VERSION }, 'Catalog leverage policy enforced for new exposure; existing position margin is grandfathered');
   return summary;
 }
 
@@ -106,13 +118,25 @@ async function provisionCatalogExecution({ logger } = {}) {
 
 async function syncInstrumentCatalog({ logger } = {}) {
   const operations = ACG_INSTRUMENT_CATALOG.map(spec => {
-    const { executionEnabled: _catalogExecutionDefault, status, ...managedSpec } = spec;
+    const {
+      executionEnabled: _catalogExecutionDefault,
+      status,
+      defaultLeverage,
+      leveragePolicyVersion,
+      ...managedSpec
+    } = spec;
     return {
       updateOne: {
         filter: { symbol: spec.symbol },
         update: {
           $set: managedSpec,
-          $setOnInsert: { executionEnabled: true, status, executionProvisionVersion: EXECUTION_PROVISION_VERSION },
+          $setOnInsert: {
+            executionEnabled: true,
+            status,
+            executionProvisionVersion: EXECUTION_PROVISION_VERSION,
+            defaultLeverage,
+            leveragePolicyVersion,
+          },
         },
         upsert: true,
       },
@@ -168,6 +192,7 @@ function serializeInstrument(document) {
     maxVolume: decimal(doc.maxVolume),
     volumeStep: decimal(doc.volumeStep),
     defaultLeverage: doc.defaultLeverage,
+    leveragePolicyVersion: Number(doc.leveragePolicyVersion || 1),
     marginRate: decimal(doc.marginRate),
     commissionPerLot: decimal(doc.commissionPerLot),
     commissionPerLotPerSide: decimal(doc.commissionPerLotPerSide ?? doc.commissionPerLot),
@@ -205,6 +230,7 @@ function serializeInstrument(document) {
     chartEnabled: doc.chartEnabled,
     executionEnabled: doc.executionEnabled,
     executionProvisionVersion: Number(doc.executionProvisionVersion || 0),
+    corporateActionPolicy: doc.corporateActionPolicy || 'NOT_APPLICABLE',
     status: doc.status,
   };
 }
@@ -217,4 +243,5 @@ module.exports = {
   enforceCatalogLeveragePolicy,
   serializeInstrument,
   EXECUTION_PROVISION_VERSION,
+  LEVERAGE_POLICY_VERSION,
 };

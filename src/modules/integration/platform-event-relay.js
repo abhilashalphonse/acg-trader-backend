@@ -140,6 +140,10 @@ class PlatformEventRelay {
       volume: decimal(deal.volume),
       price: decimal(deal.price),
       realizedPnl: decimal(deal.realizedPnl),
+      nativeRealizedPnl: decimal(deal.nativeRealizedPnl),
+      nativePnlCurrency: deal.nativePnlCurrency || null,
+      accountPnlCurrency: deal.accountPnlCurrency || null,
+      pnlConversionEvidence: deal.pnlConversionEvidence || null,
       commission: decimal(deal.commission),
       referencePrice: decimal(deal.referencePrice),
       executionBid: decimal(deal.executionBid),
@@ -152,6 +156,61 @@ class PlatformEventRelay {
       executedAt: deal.executedAt instanceof Date ? deal.executedAt.toISOString() : (deal.executedAt || this.now().toISOString()),
     }, {
       phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
+    }, session);
+  }
+
+  async enqueuePayoutSettlement({ account, payoutId, ledgerEntryId, session = null } = {}) {
+    if (!account) throw new Error('Payout settlement account is required');
+    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    if (!this.enabled || !fundedAccountId) {
+      throw new Error('Durable Funded payout settlement relay is unavailable');
+    }
+    if (!session) throw new Error('Payout settlement snapshot must be created in its ledger transaction');
+    const revision = Number(account.financialRevision);
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Missing payout financial revision');
+    const occurredAt = this.now();
+    const state = account.state || {};
+    // The account has been proved flat inside the same transaction; there is
+    // no open instrument or FX exposure to value. This snapshot is an exact
+    // financial fact, NOT an assertion that NSE is open or an FX quote is live.
+    return this.#enqueue(account, fundedAccountId, 'ACCOUNT_SNAPSHOT', {
+      provider: 'acg-trader',
+      financialContractVersion: 1,
+      source: 'PAYOUT_SETTLEMENT',
+      payoutId: String(payoutId),
+      settlementLedgerEntryId: String(ledgerEntryId),
+      platformAccountId: String(account._id),
+      accountCode: account.accountCode || null,
+      accountCurrency: String(account.currency || '').toUpperCase(),
+      financialRevision: revision,
+      valuationEpoch: `PAYOUT_SETTLEMENT:${payoutId}`,
+      valuationSequence: revision,
+      valuedAtMs: occurredAt.getTime(),
+      policyVersions: {
+        tradingPermissions: numberOrNull(account.tradingPermissionsVersion),
+        riskPolicy: metadataValue(account.metadata, 'riskPolicyVersion') || null,
+        conversion: 'ACG_FX_PURPOSE_V1',
+      },
+      initialBalance: decimal(state.initialBalance),
+      balance: decimal(state.balance),
+      equity: decimal(state.equity),
+      margin: decimal(state.usedMargin),
+      marginFree: decimal(state.freeMargin),
+      marginLevel: null,
+      floatingProfit: decimal(state.floatingPnl),
+      realizedPnlToday: decimal(state.realizedPnlToday),
+      dailyStartEquity: decimal(state.dailyStartEquity),
+      riskDayKey: account.riskDayKey || null,
+      openPositions: 0,
+      valuationStatus: 'VALUATION_ONLY',
+      instrumentValuationQuality: 'APPROVED_CLOSE',
+      fxValuationQuality: 'NOT_REQUIRED',
+      accountValuationQuality: 'COMPLETE',
+      accountValuationCompleteness: 'COMPLETE',
+      complete: true,
+    }, {
+      phase: metadataValue(account.metadata, 'phase') || metadataValue(account.metadata, 'challengePhase'),
+      occurredAt,
     }, session);
   }
 
@@ -258,18 +317,33 @@ class PlatformEventRelay {
     const state = payload?.state || account.state || {};
     const snapshotPayload = {
       provider: 'acg-trader',
+      financialContractVersion: 1,
       platformAccountId: accountId,
       accountCode: account.accountCode || payload?.accountCode || null,
+      accountCurrency: String(account.currency || '').trim().toUpperCase() || null,
+      financialRevision: numberOrNull(account.financialRevision),
+      valuationEpoch: payload?.valuationEpoch || null,
+      policyVersions: {
+        tradingPermissions: numberOrNull(account.tradingPermissionsVersion),
+        riskPolicy: metadataValue(account.metadata, 'riskPolicyVersion') || null,
+        conversion: 'ACG_FX_PURPOSE_V1',
+      },
+      initialBalance: decimal(account?.state?.initialBalance),
       balance: decimal(payload?.balance ?? state.balance),
       equity: decimal(payload?.equity ?? state.equity),
       margin: decimal(payload?.usedMargin ?? state.usedMargin),
       marginFree: decimal(payload?.freeMargin ?? state.freeMargin),
       marginLevel: decimal(payload?.marginLevel),
       floatingProfit: decimal(payload?.floatingPnl ?? state.floatingPnl),
+      realizedPnlToday: decimal(account?.state?.realizedPnlToday),
       dailyStartEquity: decimal(account?.state?.dailyStartEquity),
       riskDayKey: account?.riskDayKey || null,
       openPositions: numberOrNull(payload?.positionCount),
       valuationStatus: payload?.valuationStatus || null,
+      instrumentValuationQuality: payload?.instrumentValuationQuality || null,
+      fxValuationQuality: payload?.fxValuationQuality || null,
+      accountValuationQuality: payload?.accountValuationQuality || null,
+      accountValuationCompleteness: payload?.accountValuationCompleteness || null,
       complete: payload?.complete == null ? null : Boolean(payload.complete),
       valuationSequence: numberOrNull(payload?.sequence),
       valuedAtMs: numberOrNull(payload?.valuedAtMs),

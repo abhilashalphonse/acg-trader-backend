@@ -8,6 +8,13 @@ const { ensureCriticalIndexes } = require('../src/config/indexes');
 const { createMarketRuntime } = require('../src/modules/market-data/market.runtime');
 const { createTradingRuntime } = require('../src/modules/trading/trading.runtime');
 const { TradingAccount } = require('../src/modules/accounts/trading-account.model');
+const { AccountControlService } = require('../src/modules/trading/account-control.service');
+const { AccountLedger } = require('../src/modules/trading/account-ledger.model');
+const { PayoutReservation } = require('../src/modules/trading/payout-reservation.model');
+const { PayoutCancellation } = require('../src/modules/trading/payout-cancellation.model');
+const { PlatformEventRelay } = require('../src/modules/integration/platform-event-relay');
+const { PlatformEventOutbox } = require('../src/modules/integration/platform-event-outbox.model');
+const { AccountLifecycleEvent } = require('../src/modules/accounts/account-lifecycle-event.model');
 const { runMongoTransaction } = require('../src/modules/trading/market-order.service');
 const mongoose = require('mongoose');
 
@@ -17,6 +24,7 @@ async function run() {
   await ensureCriticalIndexes();
   await verifyConcurrentFinancialTransactions();
   await verifyPostBreachConcurrencyFence();
+  await verifyPayoutSettlementReplicaSet();
 
   const marketRuntime = createMarketRuntime();
   const tradingRuntime = createTradingRuntime({ marketRuntime });
@@ -178,6 +186,91 @@ async function verifyPostBreachConcurrencyFence() {
     }
   } finally {
     releaseStaleOrder?.();
+    await TradingAccount.deleteOne({ _id: account._id });
+  }
+}
+
+async function verifyPayoutSettlementReplicaSet() {
+  const suffix = `payout-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const tenantId = new mongoose.Types.ObjectId();
+  const account = await TradingAccount.create({
+    tenantId,
+    accountCode: `SMOKE-${suffix}`.slice(0, 48),
+    ownerExternalRef: suffix,
+    externalRef: suffix,
+    accountType: 'FUNDED',
+    currency: 'USD', leverage: 100,
+    status: 'PAUSED', tradingEnabled: false,
+    federationEnabled: false,
+    financialRevision: 5,
+    riskProcessingState: 'RESOLVED',
+    riskSequence: 5, lastEvaluatedRiskSequence: 5,
+    marginStopOutState: 'NONE',
+    riskDayKey: '2026-10-08', riskTimezone: 'UTC',
+    metadata: { fundedAccountId: `FUNDED-${suffix}` },
+    state: {
+      initialBalance: '10000', balance: '10500', equity: '10500',
+      floatingPnl: '0', realizedPnlToday: '500',
+      usedMargin: '0', freeMargin: '10500', dailyStartEquity: '10000',
+    },
+    riskPolicy: {},
+  });
+  try {
+    await AccountLedger.create({
+      tenantId, accountId: account._id,
+      type: 'DEPOSIT',
+      amount: '10500', balanceBefore: '0', balanceAfter: '10500',
+      currency: 'USD', referenceType: 'SYSTEM', referenceId: suffix,
+      reason: 'Runtime payout fixture',
+    });
+    const service = new AccountControlService({
+      platformEventRelay: new PlatformEventRelay({
+        enabled: true,
+        now: () => new Date('2026-10-08T09:00:01.000Z'),
+      }),
+      now: () => new Date('2026-10-08T09:00:01.000Z'),
+    });
+    const checkpoint = await service.getPayoutSettlementCheckpoint(account._id);
+    if (!checkpoint.settled) throw new Error(`Replica payout checkpoint blocked: ${checkpoint.blockers.join(',')}`);
+    const request = {
+      payoutId: `PAYOUT-${suffix}`,
+      amountUsd: '400',
+      financialRevision: checkpoint.financialRevision,
+      checkpointHash: checkpoint.evidenceHash,
+    };
+    const reserved = await service.reservePayout(account._id, request);
+    if (reserved.reservation.status !== 'RESERVED') throw new Error('Replica payout reservation failed');
+    await service.disable(account._id, { reason: 'SMOKE_PROVIDER_IN_FLIGHT', cancelPending: true });
+    const settled = await service.settlePayout(account._id, { payoutId: request.payoutId });
+    const replay = await service.settlePayout(account._id, { payoutId: request.payoutId });
+    if (settled.reservation.status !== 'SETTLED' || replay.idempotentReplay !== true) {
+      throw new Error('Replica payout settlement replay failed');
+    }
+    const saved = await TradingAccount.findById(account._id).lean();
+    const ledger = await AccountLedger.find({
+      tenantId, accountId: account._id,
+      idempotencyKey: `payout:${request.payoutId}:settle`,
+    }).lean();
+    const snapshot = await PlatformEventOutbox.findOne({
+      tenantId, accountId: account._id,
+      eventType: 'ACCOUNT_SNAPSHOT', 'payload.source': 'PAYOUT_SETTLEMENT',
+    }).lean();
+    if (saved.status !== 'DISABLED' || saved.financialRevision !== 6
+      || saved.state.balance.toString() !== '10100'
+      || ledger.length !== 1 || ledger[0].balanceAfter.toString() !== '10100'
+      || snapshot?.payload?.financialRevision !== 6
+      || snapshot?.payload?.settlementLedgerEntryId !== ledger[0].entryId
+      || snapshot?.payload?.balance !== '10100') {
+      throw new Error('Replica payout financial snapshot and withdrawal did not reconcile');
+    }
+  } finally {
+    // This is a dedicated transient CI database; immutable financial ledger
+    // records are removed only by direct collection cleanup of test fixtures.
+    await PlatformEventOutbox.collection.deleteMany({ tenantId, accountId: account._id });
+    await AccountLedger.collection.deleteMany({ tenantId, accountId: account._id });
+    await PayoutReservation.collection.deleteMany({ tenantId, accountId: account._id });
+    await PayoutCancellation.collection.deleteMany({ tenantId, accountId: account._id });
+    await AccountLifecycleEvent.collection.deleteMany({ tenantId, accountId: account._id });
     await TradingAccount.deleteOne({ _id: account._id });
   }
 }

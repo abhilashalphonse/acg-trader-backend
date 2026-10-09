@@ -99,7 +99,8 @@ test('risk-day rollover and valuation receive consecutive sequences in one trans
   assert.equal(events[1].sequence, 2);
   assert.equal(account.riskSequence, 2);
   assert.equal(account.riskDayKey, '2026-09-26');
-  assert.equal(String(account.state.dailyStartEquity), '98000');
+  assert.equal(String(account.state.dailyStartEquity), '100000');
+  assert.equal(events[0].context.baselineSource, 'INITIAL_BALANCE_FALLBACK');
   assert.equal(events[1].context.financialRevision, 7);
   assert.equal(events[1].context.policyVersion, 'ACG_FUNDED_V1');
 });
@@ -166,4 +167,40 @@ test('missing durable sequence marks account RISK_UNRESOLVED instead of skipping
   assert.equal(next.expectedSequence, 2);
   assert.equal(account.riskProcessingState, 'RISK_UNRESOLVED');
   assert.equal(account.riskUnresolvedReason, 'RISK_SEQUENCE_GAP');
+});
+
+
+test('risk-day recovery uses the last accepted pre-boundary equity, not the recovered quote', async () => {
+  const { service, account, events } = createFixture();
+  account.metadata.set('lastAcceptedValuationEquity', '97500');
+  account.metadata.set('lastAcceptedValuationRiskDayKey', '2026-09-25');
+  account.metadata.set('lastAcceptedValuationValuedAtMs', String(Date.parse('2026-09-25T23:59:58.000Z')));
+
+  const result = await service.ingestValuation({
+    accountId: String(account._id),
+    complete: true,
+    valuationStatus: 'APPROVED_CLOSE',
+    instrumentValuationQuality: 'APPROVED_CLOSE',
+    fxValuationQuality: 'LIVE',
+    accountValuationQuality: 'APPROVED_CLOSE',
+    accountValuationCompleteness: 'COMPLETE',
+    financialRevision: 7,
+    balance: '100000',
+    equity: '96000',
+    floatingPnl: '-4000',
+    usedMargin: '1200',
+    freeMargin: '94800',
+    marginLevel: '8000',
+    sequence: 88,
+    valuedAtMs: Date.parse('2026-09-26T00:17:00.000Z'),
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(events[0].type, 'RISK_DAY_ROLLOVER');
+  assert.equal(events[0].context.nextDailyStartEquity, '97500');
+  assert.equal(events[0].context.baselineSource, 'LAST_ACCEPTED_PRE_BOUNDARY');
+  assert.equal(events[0].context.baselineValuedAtMs, Date.parse('2026-09-25T23:59:58.000Z'));
+  assert.equal(String(account.state.dailyStartEquity), '97500');
+  assert.equal(account.metadata.get('lastAcceptedValuationEquity'), '96000');
+  assert.equal(account.metadata.get('lastAcceptedValuationRiskDayKey'), '2026-09-26');
 });

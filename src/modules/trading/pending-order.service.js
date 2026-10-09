@@ -121,18 +121,26 @@ class PendingOrderService {
 
     try {
       const result = await this.commandQueue.run(normalized.accountId, async () => {
-        const quoteSnapshot = this.quoteStore.get(normalized.symbol);
         return this.runTransaction(async session => {
           const nowMs = Date.now();
+          const quoteSnapshot = this.quoteStore.get(normalized.symbol);
+          const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs })
+            || this.valuationEngine?.currencyConverter
+            || null;
           const account = await this.accountModel.findById(normalized.accountId).session(session);
           if (account && this.valuationEngine) {
             await this.valuationEngine.ensureAccountRevision?.(account, { session });
-            this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+            this.valuationEngine.overlayAccountDocument(account, {
+              requireLive: true,
+              currencyConverter: financialConverter,
+              nowMs,
+            });
           }
           const exposure = await loadOpenExposure(this.positionModel, normalized.accountId, session, {
             account,
             symbol: normalized.symbol,
             nowMs,
+            currencyConverter: financialConverter,
             instrumentModel: this.instrumentModel,
           });
           const pendingExposure = await loadPendingExposure(this.orderModel, normalized.accountId, normalized.symbol, session);
@@ -151,6 +159,7 @@ class PendingOrderService {
             timeInForce: normalized.timeInForce,
             expiresAt: normalized.expiresAt,
             nowMs,
+            currencyConverter: financialConverter,
             exposure,
             pendingExposure,
           });
@@ -296,17 +305,25 @@ class PendingOrderService {
         if (action?.action === 'EXPIRE') return this.#expireWithinTransaction(order, session, executionNowMs);
         if (action?.action !== 'FILL') return { skipped: true, order: serializeOrder(order) };
 
+        const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs: executionNowMs })
+          || this.valuationEngine?.currencyConverter
+          || null;
         const account = await this.accountModel.findById(accountId).session(session);
         if (account && this.valuationEngine) {
-            await this.valuationEngine.ensureAccountRevision?.(account, { session });
-            this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
-          }
+          await this.valuationEngine.ensureAccountRevision?.(account, { session });
+          this.valuationEngine.overlayAccountDocument(account, {
+            requireLive: true,
+            currencyConverter: financialConverter,
+            nowMs: executionNowMs,
+          });
+        }
         const instrument = await this.instrumentModel.findOne({ symbol: normalizeSymbol(order.symbol) }).session(session);
         const exposure = hasExposureLimits(account)
           ? await loadOpenExposure(this.positionModel, accountId, session, {
             account,
             symbol: order.symbol,
             nowMs: executionNowMs,
+            currencyConverter: financialConverter,
             instrumentModel: this.instrumentModel,
           })
           : null;
@@ -329,6 +346,7 @@ class PendingOrderService {
             stopLoss: order.stopLoss,
             takeProfit: order.takeProfit,
             nowMs: executionNowMs,
+            currencyConverter: financialConverter,
           });
         } catch (error) {
           if (!PERMANENT_TRIGGER_REJECTIONS.has(error?.code)) throw error;

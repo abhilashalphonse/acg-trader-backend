@@ -17,11 +17,16 @@ const { normalizeSymbol } = require('../market-data/market.utils');
 const { assertInstrumentSessionOpen } = require('../instruments/session-calendar');
 const { executionPriceForVolume } = require('../market-data/execution-pricing');
 const { dayKeyInTimezone } = require('./risk-day-engine');
-const { calculateCommission: calculateTradingCommission, convertTradingCurrency } = require('./trading-costs');
+const {
+  calculateCommission: calculateTradingCommission,
+  convertTradingCurrency,
+  convertTradingCurrencyWithEvidence,
+} = require('./trading-costs');
 const { calculatePositionValuation } = require('./valuation-calculator');
 const {
   validatePreTradeRiskPolicy,
   validateActiveExposurePolicy,
+  calculateProjectedStopRiskAmount,
 } = require('./firm-risk-policy');
 
 function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now(), currencyConverter = null, exposure = null }) {
@@ -51,7 +56,29 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
       currencyConverter,
       nowMs,
     });
-  const requiredMargin = calculateRequiredMargin({ account, instrument, volume: normalizedVolume, fillPrice, currencyConverter, nowMs });
+  const marginPolicy = resolveMarginPolicy({ account, instrument });
+  const marginProjection = calculateRequiredMarginWithEvidence({
+    account,
+    instrument,
+    volume: normalizedVolume,
+    fillPrice,
+    currencyConverter,
+    nowMs,
+    marginPolicy,
+  });
+  const requiredMargin = marginProjection.amount;
+  const nativeExposureAmount = multiplyDecimal(
+    multiplyDecimal(fillPrice, instrument.contractSize),
+    normalizedVolume,
+  );
+  const exposureProjection = convertTradingCurrencyWithEvidence(
+    nativeExposureAmount,
+    String(instrument.marginCurrency || instrument.quoteCurrency || '').toUpperCase(),
+    account.currency,
+    currencyConverter,
+    nowMs,
+    { purpose: 'EXPOSURE' },
+  );
   const firmRisk = validatePreTradeRiskPolicy({
     account,
     instrument,
@@ -68,7 +95,7 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     currencyConverter,
     nowMs,
   });
-  const immediateOpeningPnl = calculateImmediateOpeningPnl({
+  const openingPnlProjection = calculateImmediateOpeningPnlWithEvidence({
     account,
     instrument,
     quote,
@@ -78,6 +105,7 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     currencyConverter,
     nowMs,
   });
+  const immediateOpeningPnl = openingPnlProjection.amount;
   const projectedAccountState = projectAccountAfterOpen({
     account,
     requiredMargin,
@@ -112,13 +140,35 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     fillPrice,
     stopLoss: normalizedStopLoss,
     takeProfit: normalizedTakeProfit,
-    riskAmount: firmRisk.tradeRiskAmount,
+    riskAmount: firmRisk.tradeRiskAmount ?? (normalizedStopLoss == null ? null : calculateProjectedStopRiskAmount({
+      account,
+      instrument,
+      side: normalizedSide,
+      entryPrice: fillPrice,
+      volume: normalizedVolume,
+      stopLoss: normalizedStopLoss,
+      openingCommission: commission,
+      closingCommission: estimatedCloseCommission,
+      currencyConverter,
+      nowMs,
+    })),
     riskPercent: firmRisk.tradeRiskPercent,
     rawStopRiskAmount: firmRisk.rawStopRiskAmount ?? null,
     openingCommission: firmRisk.openingCommission ?? commission,
     estimatedCloseCommission: firmRisk.closingCommission ?? estimatedCloseCommission,
     commission,
     requiredMargin,
+    nativeExposureAmount,
+    nativeExposureCurrency: String(instrument.marginCurrency || instrument.quoteCurrency || '').toUpperCase(),
+    exposureAccountCurrency: exposureProjection.amount,
+    exposureConversionEvidence: exposureProjection.evidence,
+    effectiveLeverage: marginPolicy.effectiveLeverage,
+    accountLeverage: marginPolicy.accountLeverage,
+    instrumentLeverage: marginPolicy.instrumentLeverage,
+    leveragePolicyVersion: marginPolicy.leveragePolicyVersion,
+    marginRate: marginPolicy.marginRate,
+    marginConversionEvidence: marginProjection.evidence,
+    openingPnlConversionEvidence: openingPnlProjection.evidence,
     immediateOpeningPnl,
     projectedAccountState: Object.freeze(projectedAccountState),
     projectedEquityAfterCommission: firmRisk.projectedEquityAfterCommission ?? null,
@@ -164,7 +214,23 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   const entryPrice = normalizeDecimal(position.entryPrice);
   const priceDifference = position.side === 'BUY' ? subtractDecimal(fillPrice, entryPrice) : subtractDecimal(entryPrice, fillPrice);
   const realizedPnlQuote = multiplyDecimal(multiplyDecimal(priceDifference, contractSize), requestedVolume);
-  const realizedPnl = convertCurrency(realizedPnlQuote, pnlCurrency, account.currency, currencyConverter, nowMs);
+  const pnlSettlement = currencyConverter?.convertWithEvidence
+    ? currencyConverter.convertWithEvidence(realizedPnlQuote, pnlCurrency, account.currency, {
+      nowMs,
+      purpose: 'GENERIC',
+    })
+    : {
+      amount: convertCurrency(realizedPnlQuote, pnlCurrency, account.currency, currencyConverter, nowMs),
+      evidence: pnlCurrency === String(account.currency || '').toUpperCase() ? {
+        fromCurrency: pnlCurrency,
+        toCurrency: pnlCurrency,
+        inputAmount: realizedPnlQuote,
+        purpose: 'GENERIC',
+        path: [],
+        convertedAtMs: nowMs,
+      } : null,
+    };
+  const realizedPnl = pnlSettlement.amount;
   const commission = calculateCommission(instrument, requestedVolume, {
     account,
     fillPrice,
@@ -178,10 +244,46 @@ function planMarketClose({ account, instrument, quote, position, volume = null, 
   let releasedMargin = fullClose ? currentMargin : divideDecimal(multiplyDecimal(currentMargin, requestedVolume), openVolume, { scale: 12, rounding: ROUNDING.HALF_UP });
   if (compareDecimal(releasedMargin, currentMargin) > 0) releasedMargin = currentMargin;
 
+  // Account floating P&L is a marked projection. Closing at an execution price
+  // can realize a different amount because of spread, slippage, volume pricing,
+  // or a changed conversion context. Remove the marked contribution of the
+  // closed quantity, not the realized P&L, when projecting the post-close state.
+  const markedValuation = calculatePositionValuation({ position, quote });
+  if (markedValuation.valuationStatus !== 'LIVE' || markedValuation.floatingPnl == null) {
+    throw new AppError('Position mark is unavailable for post-close account projection', {
+      statusCode: 409,
+      code: 'CLOSE_PROJECTION_VALUATION_UNAVAILABLE',
+    });
+  }
+  const markedPnlAccount = convertCurrency(
+    markedValuation.floatingPnl,
+    pnlCurrency,
+    account.currency,
+    currencyConverter,
+    nowMs,
+  );
+  const markedPnlRemoved = fullClose
+    ? markedPnlAccount
+    : divideDecimal(
+      multiplyDecimal(markedPnlAccount, requestedVolume),
+      openVolume,
+      { scale: 12, rounding: ROUNDING.HALF_UP },
+    );
+  const projectedAccountState = projectAccountAfterClose({
+    account,
+    realizedPnl,
+    commission,
+    markedPnlRemoved,
+    releasedMargin,
+  });
+
   return Object.freeze({
     symbol: normalizeSymbol(position.symbol), closeSide, volume: requestedVolume, remainingVolume, fullClose,
     fillPrice, entryPrice, contractSize, volumeStep, quoteCurrency: pnlCurrency, pnlCurrency,
-    realizedPnlQuote, realizedPnl, commission, netBalanceChange, releasedMargin,
+    realizedPnlQuote, realizedPnl, pnlConversionEvidence: pnlSettlement.evidence,
+    commission, netBalanceChange, releasedMargin,
+    markedPnlRemoved,
+    projectedAccountState: Object.freeze(projectedAccountState),
     quoteSequence: quote.sequence ?? null, quoteReceivedAtMs: quote.receivedAtMs,
     dealType: fullClose ? 'CLOSE' : 'PARTIAL_CLOSE',
     referencePrice: decimalOrNull(execution.referencePrice),
@@ -351,19 +453,84 @@ function decimalOrNull(value) {
   return Number.isFinite(number) ? normalizeDecimal(String(number)) : null;
 }
 
-function calculateRequiredMargin({ account, instrument, volume, fillPrice, currencyConverter = null, nowMs = Date.now() }) {
+function resolveMarginPolicy({ account, instrument }) {
+  const marginRate = instrument?.marginRate != null && compareDecimal(instrument.marginRate, '0') > 0
+    ? normalizeDecimal(instrument.marginRate)
+    : null;
+  const accountLeverage = Number(account?.leverage);
+  const instrumentLeverage = Number(instrument?.defaultLeverage);
+
+  if (marginRate != null) {
+    return Object.freeze({
+      marginRate,
+      accountLeverage: Number.isFinite(accountLeverage) ? accountLeverage : null,
+      instrumentLeverage: Number.isFinite(instrumentLeverage) ? instrumentLeverage : null,
+      effectiveLeverage: null,
+      leveragePolicyVersion: Number(instrument?.leveragePolicyVersion || 1),
+    });
+  }
+
+  const effectiveLeverage = Math.min(accountLeverage, instrumentLeverage);
+  if (!Number.isFinite(effectiveLeverage) || effectiveLeverage <= 0) {
+    throw new AppError('No valid leverage is configured for margin calculation', {
+      statusCode: 409,
+      code: 'INVALID_LEVERAGE',
+    });
+  }
+
+  return Object.freeze({
+    marginRate: null,
+    accountLeverage,
+    instrumentLeverage,
+    effectiveLeverage,
+    leveragePolicyVersion: Number(instrument?.leveragePolicyVersion || 1),
+  });
+}
+
+function calculateRequiredMargin({
+  account,
+  instrument,
+  volume,
+  fillPrice,
+  currencyConverter = null,
+  nowMs = Date.now(),
+  marginPolicy = null,
+}) {
+  return calculateRequiredMarginWithEvidence({
+    account,
+    instrument,
+    volume,
+    fillPrice,
+    currencyConverter,
+    nowMs,
+    marginPolicy,
+  }).amount;
+}
+
+function calculateRequiredMarginWithEvidence({
+  account,
+  instrument,
+  volume,
+  fillPrice,
+  currencyConverter = null,
+  nowMs = Date.now(),
+  marginPolicy = null,
+}) {
   const notional = multiplyDecimal(multiplyDecimal(fillPrice, instrument.contractSize), volume);
   const marginCurrency = String(instrument.marginCurrency || instrument.quoteCurrency || '').toUpperCase();
-  let rawMargin;
-  if (instrument.marginRate != null && compareDecimal(instrument.marginRate, '0') > 0) rawMargin = multiplyDecimal(notional, instrument.marginRate);
-  else {
-    const accountLeverage = Number(account.leverage);
-    const instrumentLeverage = Number(instrument.defaultLeverage);
-    const effectiveLeverage = Math.min(accountLeverage, instrumentLeverage);
-    if (!Number.isFinite(effectiveLeverage) || effectiveLeverage <= 0) throw new AppError('No valid leverage is configured for margin calculation', { statusCode: 409, code: 'INVALID_LEVERAGE' });
-    rawMargin = divideDecimal(notional, String(effectiveLeverage), { scale: 12, rounding: ROUNDING.HALF_UP });
-  }
-  return convertCurrency(rawMargin, marginCurrency, account.currency, currencyConverter, nowMs);
+  const policy = marginPolicy || resolveMarginPolicy({ account, instrument });
+  const rawMargin = policy.marginRate != null
+    ? multiplyDecimal(notional, policy.marginRate)
+    : divideDecimal(notional, String(policy.effectiveLeverage), { scale: 12, rounding: ROUNDING.HALF_UP });
+
+  return convertTradingCurrencyWithEvidence(
+    rawMargin,
+    marginCurrency,
+    account.currency,
+    currencyConverter,
+    nowMs,
+    { purpose: 'MARGIN' },
+  );
 }
 
 function convertCurrency(amount, fromCurrency, toCurrency, currencyConverter = null, nowMs = Date.now()) {
@@ -371,6 +538,28 @@ function convertCurrency(amount, fromCurrency, toCurrency, currencyConverter = n
 }
 
 function calculateImmediateOpeningPnl({
+  account,
+  instrument,
+  quote,
+  side,
+  volume,
+  fillPrice,
+  currencyConverter = null,
+  nowMs = Date.now(),
+}) {
+  return calculateImmediateOpeningPnlWithEvidence({
+    account,
+    instrument,
+    quote,
+    side,
+    volume,
+    fillPrice,
+    currencyConverter,
+    nowMs,
+  }).amount;
+}
+
+function calculateImmediateOpeningPnlWithEvidence({
   account,
   instrument,
   quote,
@@ -403,12 +592,13 @@ function calculateImmediateOpeningPnl({
     });
   }
 
-  return convertTradingCurrency(
+  return convertTradingCurrencyWithEvidence(
     valuation.floatingPnl,
     instrument?.quoteCurrency,
     account?.currency,
     currencyConverter,
     nowMs,
+    { purpose: 'GENERIC' },
   );
 }
 
@@ -436,6 +626,40 @@ function projectAccountAfterOpen({ account, requiredMargin, commission, immediat
   };
 }
 
+function projectAccountAfterClose({
+  account,
+  realizedPnl,
+  commission,
+  markedPnlRemoved,
+  releasedMargin,
+}) {
+  const balance = normalizeDecimal(account.state?.balance ?? '0');
+  const floatingPnl = normalizeDecimal(account.state?.floatingPnl ?? '0');
+  const usedMargin = normalizeDecimal(account.state?.usedMargin ?? '0');
+
+  const projectedBalance = subtractDecimal(addDecimal(balance, realizedPnl), commission);
+  const projectedFloatingPnl = subtractDecimal(floatingPnl, markedPnlRemoved);
+  const projectedEquity = addDecimal(projectedBalance, projectedFloatingPnl);
+  let projectedUsedMargin = subtractDecimal(usedMargin, releasedMargin);
+  if (compareDecimal(projectedUsedMargin, '0') < 0) projectedUsedMargin = '0';
+  const projectedFreeMargin = subtractDecimal(projectedEquity, projectedUsedMargin);
+  const projectedMarginLevel = compareDecimal(projectedUsedMargin, '0') > 0
+    ? multiplyDecimal(
+      divideDecimal(projectedEquity, projectedUsedMargin, { scale: 8, rounding: ROUNDING.HALF_UP }),
+      '100',
+    )
+    : null;
+
+  return {
+    balance: projectedBalance,
+    floatingPnl: projectedFloatingPnl,
+    equity: projectedEquity,
+    usedMargin: projectedUsedMargin,
+    freeMargin: projectedFreeMargin,
+    marginLevel: projectedMarginLevel,
+  };
+}
+
 function validateOpenPosition(position, account) {
   if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' });
   if (String(position.accountId) !== String(account._id)) throw new AppError('Position does not belong to this trading account', { statusCode: 403, code: 'POSITION_ACCOUNT_MISMATCH' });
@@ -444,4 +668,4 @@ function validateOpenPosition(position, account) {
 function normalizeSide(side) { const value = String(side || '').toUpperCase(); if (!['BUY', 'SELL'].includes(value)) throw new AppError('Order side must be BUY or SELL', { statusCode: 400, code: 'INVALID_ORDER_SIDE' }); return value; }
 function calculateAdverseSlippage({ side, fillPrice, requestedPrice }) { if (requestedPrice == null || requestedPrice === '') return '0'; const requested = normalizeDecimal(requestedPrice); return side === 'BUY' ? subtractDecimal(fillPrice, requested) : subtractDecimal(requested, fillPrice); }
 
-module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateCommission, calculateAdverseSlippage, convertCurrency, calculateImmediateOpeningPnl, projectAccountAfterOpen, validateVolume, validateExposureLimits, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose, validateQuote };
+module.exports = { planMarketOpen, planMarketClose, calculateRequiredMargin, calculateRequiredMarginWithEvidence, resolveMarginPolicy, calculateCommission, calculateAdverseSlippage, convertCurrency, calculateImmediateOpeningPnl, calculateImmediateOpeningPnlWithEvidence, projectAccountAfterOpen, projectAccountAfterClose, validateVolume, validateExposureLimits, validateAccountForOpen, validateChallengeRiskForOpen, validateAccountForClose, validateInstrumentForOpen, validateInstrumentForClose, validateQuote };

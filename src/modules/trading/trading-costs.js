@@ -49,10 +49,44 @@ function convertTradingCurrency(
   toCurrency,
   currencyConverter = null,
   nowMs = Date.now(),
+  options = {},
+) {
+  return convertTradingCurrencyWithEvidence(
+    amount,
+    fromCurrency,
+    toCurrency,
+    currencyConverter,
+    nowMs,
+    options,
+  ).amount;
+}
+
+function convertTradingCurrencyWithEvidence(
+  amount,
+  fromCurrency,
+  toCurrency,
+  currencyConverter = null,
+  nowMs = Date.now(),
+  { purpose = 'GENERIC' } = {},
 ) {
   const from = String(fromCurrency || '').toUpperCase();
   const to = String(toCurrency || '').toUpperCase();
-  if (from && to && from === to) return normalizeDecimal(amount);
+  const inputAmount = normalizeDecimal(amount);
+
+  if (from && to && from === to) {
+    return Object.freeze({
+      amount: inputAmount,
+      evidence: Object.freeze({
+        fromCurrency: from,
+        toCurrency: to,
+        inputAmount,
+        economicAmount: inputAmount,
+        purpose,
+        path: Object.freeze([]),
+        convertedAtMs: Number(nowMs),
+      }),
+    });
+  }
 
   const converter = currencyConverter
     || require('./currency-conversion-engine').getDefaultCurrencyConversionEngine();
@@ -65,10 +99,18 @@ function convertTradingCurrency(
     });
   }
 
-  return converter.convert(amount, from, to, { nowMs });
+  if (converter.convertWithEvidence) {
+    return converter.convertWithEvidence(inputAmount, from, to, { nowMs, purpose });
+  }
+
+  return Object.freeze({
+    amount: converter.convert(inputAmount, from, to, { nowMs, purpose }),
+    evidence: null,
+  });
 }
 
 module.exports = {
   calculateCommission,
   convertTradingCurrency,
+  convertTradingCurrencyWithEvidence,
 };
