@@ -117,9 +117,16 @@ class MarketOrderService {
             'account_read',
             () => this.accountModel.findById(normalized.accountId).session(session),
           );
+          const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs })
+            || this.valuationEngine?.currencyConverter
+            || null;
           if (account && this.valuationEngine) {
             await this.valuationEngine.ensureAccountRevision?.(account, { session });
-            this.valuationEngine.overlayAccountDocument(account, { requireLive: true });
+            this.valuationEngine.overlayAccountDocument(account, {
+              requireLive: true,
+              currencyConverter: financialConverter,
+              nowMs,
+            });
           }
 
           const instrument = await timeAsync(
@@ -136,6 +143,7 @@ class MarketOrderService {
                 account,
                 symbol: normalized.symbol,
                 nowMs,
+                currencyConverter: financialConverter,
                 instrumentModel: this.instrumentModel,
               }),
             )
@@ -151,6 +159,7 @@ class MarketOrderService {
             stopLoss: normalized.stopLoss,
             takeProfit: normalized.takeProfit,
             nowMs,
+            currencyConverter: financialConverter,
           });
 
           const policyDecision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session,
@@ -231,8 +240,8 @@ class MarketOrderService {
             : null,
         });
 
-        const nowMs = Date.now();
         const transactionResult = await this.runTransaction(async session => {
+          const nowMs = Date.now();
           const account = await timeAsync(
             timing,
             'account_read',
@@ -241,9 +250,16 @@ class MarketOrderService {
           if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });
           if (weekendClaim) await this.weekendActionService.fenceExecution(weekendClaim, account, session);
 
+          const financialConverter = this.valuationEngine?.currencyConverter?.createContext?.({ nowMs })
+            || this.valuationEngine?.currencyConverter
+            || null;
           await this.valuationEngine?.ensureAccountRevision?.(account, { session });
           const valuationProjection = this.valuationEngine
-            ? this.valuationEngine.overlayAccountDocument(account, { requireLive: false })
+            ? this.valuationEngine.overlayAccountDocument(account, {
+              requireLive: false,
+              currencyConverter: financialConverter,
+              nowMs,
+            })
             : null;
 
           const position = await timeAsync(
@@ -281,6 +297,7 @@ class MarketOrderService {
             position,
             volume: normalized.volume,
             nowMs,
+            currencyConverter: financialConverter,
           });
 
           return timeAsync(
@@ -662,16 +679,33 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
   }
 
   account.state.balance = runningBalance;
-  if (valuationComplete) {
-    account.state.floatingPnl = subtractDecimal(account.state.floatingPnl, plan.realizedPnl);
+  const projected = plan?.projectedAccountState;
+  if (valuationComplete && projected) {
+    // The execution planner removes the marked contribution of the closed
+    // quantity before applying realized P&L/fees. This keeps the committed
+    // account projection internally consistent when fill != mark.
+    account.state.floatingPnl = projected.floatingPnl;
+    account.state.equity = projected.equity;
+    account.state.usedMargin = projected.usedMargin;
+    account.state.freeMargin = projected.freeMargin;
+    account.state.marginLevel = projected.marginLevel;
+  } else {
+    // Compatibility for callers/tests that construct a close plan without the
+    // new projection contract. Production execution plans always carry it.
+    if (valuationComplete && !projected) {
+      account.state.floatingPnl = subtractDecimal(account.state.floatingPnl, plan.realizedPnl);
+    }
+    // Preserve close/reduce availability when another position cannot be
+    // valued. The valuation engine will repair the aggregate projection once
+    // completeness returns; do not pretend an incomplete projection is live.
+    account.state.equity = subtractDecimal(account.state.equity, plan.commission);
+    let usedMargin = subtractDecimal(account.state.usedMargin, plan.releasedMargin);
+    if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
+    account.state.usedMargin = usedMargin;
+    account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
+    account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
   }
-  account.state.equity = subtractDecimal(account.state.equity, plan.commission);
   account.state.realizedPnlToday = addDecimal(account.state.realizedPnlToday, plan.realizedPnl);
-  let usedMargin = subtractDecimal(account.state.usedMargin, plan.releasedMargin);
-  if (compareDecimal(usedMargin, '0') < 0) usedMargin = '0';
-  account.state.usedMargin = usedMargin;
-  account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
-  account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
 
   position.openVolume = plan.remainingVolume;
   position.margin = subtractDecimal(position.margin, plan.releasedMargin);

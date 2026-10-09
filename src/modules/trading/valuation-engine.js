@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { AppError } = require('../../shared/errors/app-error');
 const { addDecimal, subtractDecimal } = require('../../shared/decimal/decimal');
@@ -38,6 +39,9 @@ class ValuationEngine {
     this.accountsByConversionSymbol = new Map();
     this.conversionSymbolsByAccount = new Map();
     this.sequence = 0;
+    // Sequence is process-local. Epoch lets consumers distinguish a sequence
+    // reset after restart while valuedAtMs remains the primary ordering key.
+    this.valuationEpoch = crypto.randomUUID();
     this.started = false;
     this.pendingAccountRevalues = new Set();
     this.accountRevalueScheduled = false;
@@ -139,7 +143,10 @@ class ValuationEngine {
       positionValuations,
       valuation: {
         ...aggregateAccountValuation({ account: normalizeAccount(account), positionValuations, currencyConverter: this.currencyConverter, nowMs: valuedAtMs }),
-        financialRevision: Number(account.financialRevision || 0), sequence: ++this.sequence, valuedAtMs,
+        financialRevision: Number(account.financialRevision || 0),
+        valuationEpoch: this.valuationEpoch,
+        sequence: ++this.sequence,
+        valuedAtMs,
       },
     };
   }
@@ -184,7 +191,10 @@ class ValuationEngine {
     return true;
   }
 
-  projectAccountDocument(account) {
+  projectAccountDocument(account, {
+    currencyConverter = this.currencyConverter,
+    nowMs = Date.now(),
+  } = {}) {
     if (!account) return null;
     const accountId = String(account._id || account.id || '');
     const base = this.accountBases.get(accountId);
@@ -204,15 +214,19 @@ class ValuationEngine {
       ...aggregateAccountValuation({
         account,
         positionValuations: this.#valuationsForAccount(accountId),
-        currencyConverter: this.currencyConverter,
-        nowMs: Date.now(),
+        currencyConverter,
+        nowMs,
       }),
       financialRevision: documentRevision,
     };
   }
 
-  overlayAccountDocument(account, { requireLive = false } = {}) {
-    const projection = this.projectAccountDocument(account);
+  overlayAccountDocument(account, {
+    requireLive = false,
+    currencyConverter = this.currencyConverter,
+    nowMs = Date.now(),
+  } = {}) {
+    const projection = this.projectAccountDocument(account, { currencyConverter, nowMs });
     if (!projection) return null;
     if (projection.staleFinancialRevision) {
       throw new AppError('Account valuation was calculated from an older financial revision', {
@@ -351,7 +365,12 @@ class ValuationEngine {
   #revaluePosition(id, quote, emit) {
     const position = this.positions.get(id);
     if (!position) return null;
-    const valuation = { ...calculatePositionValuation({ position, quote }), sequence: ++this.sequence, valuedAtMs: Date.now() };
+    const valuation = {
+      ...calculatePositionValuation({ position, quote }),
+      valuationEpoch: this.valuationEpoch,
+      sequence: ++this.sequence,
+      valuedAtMs: Date.now(),
+    };
     this.positionValuations.set(id, valuation);
     if (emit) this.eventBus.emit('valuation.position.updated', clone(valuation));
     return valuation;
@@ -367,6 +386,7 @@ class ValuationEngine {
         nowMs: Date.now(),
       }),
       financialRevision: Number(base.financialRevision || 0),
+      valuationEpoch: this.valuationEpoch,
       sequence: ++this.sequence,
       valuedAtMs: Date.now(),
     };
