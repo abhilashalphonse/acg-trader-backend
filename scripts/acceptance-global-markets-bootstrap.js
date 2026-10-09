@@ -86,6 +86,9 @@ async function httpJson(origin, pathname, {bearer, method='GET', body}={}) {
 function prepareEnvironment(input = process.env) {
   const trader = stagingOrigin(input.ACCEPTANCE_TRADER_BASE_URL || DEFAULT_TRADER, 'ACCEPTANCE_TRADER_BASE_URL');
   const funded = stagingOrigin(input.ACCEPTANCE_FUNDED_BASE_URL || DEFAULT_FUNDED, 'ACCEPTANCE_FUNDED_BASE_URL');
+  if (trader !== DEFAULT_TRADER || funded !== DEFAULT_FUNDED) {
+    throw new Error('Unexpected staging host');
+  }
   if (String(input.ACCEPTANCE_TARGET_ENVIRONMENT || '') !== 'staging') {
     throw new Error('ACCEPTANCE_TARGET_ENVIRONMENT=staging is required');
   }
