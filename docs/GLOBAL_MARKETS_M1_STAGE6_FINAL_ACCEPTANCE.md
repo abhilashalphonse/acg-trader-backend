@@ -135,16 +135,16 @@ the ticket for a short-lived Trader token, confirms the token grants precisely
 the selected account, checks a flat/complete valuation, obtains an
 authoritative RELIANCE BUY preview, and derives a 2%-below-fill tick-aligned
 stop from the actual fresh Accelpix-backed preview (override percentage with
-\`ACCEPTANCE_RELIANCE_STOP_DISTANCE_PERCENT\` only when justified).
+`ACCEPTANCE_RELIANCE_STOP_DISTANCE_PERCENT` only when justified).
 
 Required existing secure acceptance environment variables:
 
-- \`ACCEPTANCE_CUSTOMER_ID\`, \`ACCEPTANCE_CUSTOMER_BEARER\`, \`ACCEPTANCE_ADMIN_BEARER\`
-- \`ACCEPTANCE_CHALLENGE_A_ID\` (or \`ACCEPTANCE_CHALLENGE_ID\`) for a **currently
+- `ACCEPTANCE_CUSTOMER_ID`, `ACCEPTANCE_CUSTOMER_BEARER`, `ACCEPTANCE_ADMIN_BEARER`
+- `ACCEPTANCE_CHALLENGE_A_ID` (or `ACCEPTANCE_CHALLENGE_ID`) for a **currently
   active**, dedicated acceptance-customer Trader account
-- \`ACCEPTANCE_TARGET_ENVIRONMENT=staging\`
-- \`ACCEPTANCE_TRADER_BASE_URL=https://discerning-presence-staging.up.railway.app\`
-- \`ACCEPTANCE_FUNDED_BASE_URL=https://zealous-benevolence-staging.up.railway.app\`
+- `ACCEPTANCE_TARGET_ENVIRONMENT=staging`
+- `ACCEPTANCE_TRADER_BASE_URL=https://discerning-presence-staging.up.railway.app`
+- `ACCEPTANCE_FUNDED_BASE_URL=https://zealous-benevolence-staging.up.railway.app`
 
 If the previous lifecycle acceptance account progressed to review/closed or
 is not flat, provision a new **dedicated acceptance-customer** test fixture
@@ -154,9 +154,9 @@ customer or silently recycle a mutated account.
 Perform the read-only bootstrap check, *after* the authorized STAGING pilot
 activation and a fresh NSE session quote:
 
-\`\`\`bash
+```bash
 npm run acceptance:global-markets:bootstrap
-\`\`\`
+```
 
 The bootstrap returns a sanitized JSON evidence summary containing account ID,
 execution-preview INR BUY price, fresh quote timestamp/source, calculated
@@ -166,23 +166,23 @@ identities, missing grants, stale quotes, incomplete/non-flat accounts,
 disabled RELIANCE execution, and closed NSE sessions.
 
 For the live, state-mutating Stage 6 lifecycle test, **explicitly** set
-\`ACCEPTANCE_ALLOW_MUTATIONS=GLOBAL_MARKETS_RELIANCE_STAGING_ONLY\`, then:
+`ACCEPTANCE_ALLOW_MUTATIONS=GLOBAL_MARKETS_RELIANCE_STAGING_ONLY`, then:
 
-\`\`\`bash
+```bash
 npm run acceptance:global-markets:bootstrap -- --execute
-\`\`\`
+```
 
 The bootstrap passes the discovered Trader account ID and ephemeral access
-token **in process memory** to the original \`acceptance:global-markets:final\`
+token **in process memory** to the original `acceptance:global-markets:final`
 runner. Capture its PASS/FAIL financial evidence. The baseline runner retains
 its idempotent cleanup attempt after a partial failure.
 
 **Pilot activation is not automated by this bootstrap.** An authorized operator
-must separately run \`npm run pilot:india:execution -- status\` and (only with
+must separately run `npm run pilot:india:execution -- status` and (only with
 the staging MongoDB connection and the three explicit
-\`INDIA_EXECUTION_PILOT_*\` guard values set) run
-\`npm run pilot:india:execution -- enable\`. After acceptance, verify no
-position remains and run \`npm run pilot:india:execution -- disable\`.
+`INDIA_EXECUTION_PILOT_*` guard values set) run
+`npm run pilot:india:execution -- enable`. After acceptance, verify no
+position remains and run `npm run pilot:india:execution -- disable`.
 
 Both existing acceptance bearers can expire; this script cannot regenerate a
 Funded customer/admin login token when they have expired. Refresh them via the
