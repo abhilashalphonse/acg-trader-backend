@@ -61,7 +61,7 @@ class PendingOrderAmendService {
           timeInForce: normalized.timeInForce ?? order.timeInForce,
           expiresAt: normalized.expiresAt !== undefined ? normalized.expiresAt : order.expiresAt,
         };
-        const plan = planPendingOrder({ account, instrument, quote, type: merged.type, side: merged.side, volume: merged.volume, limitPrice: merged.limitPrice, stopPrice: merged.stopPrice, stopLoss: merged.stopLoss, takeProfit: merged.takeProfit, timeInForce: merged.timeInForce, expiresAt: merged.expiresAt, nowMs: Date.now(), exposure, pendingExposure });
+        const plan = planPendingOrder({ account, instrument, quote, type: merged.type, side: merged.side, volume: merged.volume, limitPrice: merged.limitPrice, stopPrice: merged.stopPrice, stopLoss: merged.stopLoss, takeProfit: merged.takeProfit, riskBudget: value(order.riskBudget), timeInForce: merged.timeInForce, expiresAt: merged.expiresAt, nowMs: Date.now(), exposure, pendingExposure });
 
         if (amendmentIncreasesRisk(order, merged)) {
           const decision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session,
