@@ -20,7 +20,7 @@ const optionalDecimal = z.union([z.string().min(1), z.number().finite(), z.null(
 const patchDecimal = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value === undefined ? undefined : value === null ? null : String(value));
 const source = z.enum(['WEB', 'MOBILE', 'API']).optional().default('API');
 
-const riskBudgetInput = z.union([z.string().min(1), z.number().finite()]).optional().transform(value => value == null ? null : String(value));
+const riskBudgetInput = z.union([z.string().min(1), z.number().finite(), z.null()]).optional().transform(value => value == null ? null : String(value));
 
 const openSchema = z.object({ accountId: objectId, clientOrderId: z.string().trim().min(1).max(128), symbol: z.string().trim().min(1).max(32), side: z.enum(['BUY', 'SELL']), volume: decimalInput, stopLoss: optionalDecimal, takeProfit: optionalDecimal, requestedPrice: optionalDecimal, riskBudget: riskBudgetInput, source }).strict();
 const pendingSchema = z.object({ accountId: objectId, clientOrderId: z.string().trim().min(1).max(128), symbol: z.string().trim().min(1).max(32), side: z.enum(['BUY', 'SELL']), type: z.enum(['LIMIT', 'STOP', 'STOP_LIMIT']), volume: decimalInput, limitPrice: optionalDecimal, stopPrice: optionalDecimal, stopLoss: optionalDecimal, takeProfit: optionalDecimal, timeInForce: z.enum(['GTC', 'TODAY', 'SPECIFIED']).optional().default('GTC'), expiresAt: z.union([z.string().datetime({ offset: true }), z.null()]).optional().default(null), riskBudget: riskBudgetInput, source }).strict();
