@@ -503,6 +503,32 @@ function validateMarginExposure({
   });
 }
 
+function validateSelectedRiskBudget({ account, instrument, side, entryPrice, volume, stopLoss, openingCommission, closingCommission, riskBudget, currencyConverter, nowMs }) {
+  if (riskBudget === null || riskBudget === undefined || riskBudget === '') return;
+  let budget;
+  try { budget = normalizeDecimal(riskBudget); } catch {
+    throw new AppError('Risk budget must be a positive amount', { statusCode: 400, code: 'INVALID_RISK_BUDGET' });
+  }
+  if (compareDecimal(budget, '0') <= 0) {
+    throw new AppError('Risk budget must be a positive amount', { statusCode: 400, code: 'INVALID_RISK_BUDGET' });
+  }
+  if (stopLoss === null || stopLoss === undefined || stopLoss === '') {
+    throw new AppError('A stop loss is required for a risk-budgeted order', { statusCode: 400, code: 'RISK_BUDGET_REQUIRES_SL' });
+  }
+  const estimatedLoss = calculateProjectedStopRiskAmount({
+    account, instrument, side, entryPrice, volume, stopLoss,
+    openingCommission, closingCommission, currencyConverter, nowMs,
+  });
+  // Prices and fees are server-authoritative at placement / trigger time.
+  if (estimatedLoss === null || compareDecimal(estimatedLoss, budget) > 0) {
+    throw new AppError('Estimated loss including commissions exceeds the selected risk budget', {
+      statusCode: 409,
+      code: 'RISK_BUDGET_EXCEEDED',
+      details: { riskBudget: budget, estimatedLoss, accountCurrency: account?.currency || null },
+    });
+  }
+}
+
 function validatePreTradeRiskPolicy({
   account,
   instrument,
@@ -514,6 +540,7 @@ function validatePreTradeRiskPolicy({
   requiredMargin = null,
   openingCommission = '0',
   closingCommission = '0',
+  riskBudget = null,
   exposure = null,
   pendingExposure = null,
   orderKind = 'OPEN_EXECUTION',
@@ -536,6 +563,10 @@ function validatePreTradeRiskPolicy({
     closingCommission,
     currencyConverter,
     nowMs,
+  });
+  validateSelectedRiskBudget({
+    account, instrument, side, entryPrice, volume, stopLoss,
+    openingCommission, closingCommission, riskBudget, currencyConverter, nowMs,
   });
   const marginExposure = validateMarginExposure({
     account,
