@@ -349,6 +349,7 @@ class MarketOrderService {
       requestedVolume: plan.volume,
       filledVolume: plan.volume,
       stopLoss: plan.stopLoss,
+      riskBudget: normalized.riskBudget,
       takeProfit: plan.takeProfit,
       requestedPrice: normalized.requestedPrice,
       acceptedPrice: plan.fillPrice,
