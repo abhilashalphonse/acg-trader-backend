@@ -58,10 +58,11 @@ class PendingOrderAmendService {
           stopPrice: normalized.stopPrice !== undefined ? normalized.stopPrice : value(order.stopPrice),
           stopLoss: normalized.stopLoss !== undefined ? normalized.stopLoss : value(order.stopLoss),
           takeProfit: normalized.takeProfit !== undefined ? normalized.takeProfit : value(order.takeProfit),
+          riskBudget: normalized.riskBudget !== undefined ? normalized.riskBudget : value(order.riskBudget),
           timeInForce: normalized.timeInForce ?? order.timeInForce,
           expiresAt: normalized.expiresAt !== undefined ? normalized.expiresAt : order.expiresAt,
         };
-        const plan = planPendingOrder({ account, instrument, quote, type: merged.type, side: merged.side, volume: merged.volume, limitPrice: merged.limitPrice, stopPrice: merged.stopPrice, stopLoss: merged.stopLoss, takeProfit: merged.takeProfit, timeInForce: merged.timeInForce, expiresAt: merged.expiresAt, nowMs: Date.now(), exposure, pendingExposure });
+        const plan = planPendingOrder({ account, instrument, quote, type: merged.type, side: merged.side, volume: merged.volume, limitPrice: merged.limitPrice, stopPrice: merged.stopPrice, stopLoss: merged.stopLoss, takeProfit: merged.takeProfit, riskBudget: merged.riskBudget, timeInForce: merged.timeInForce, expiresAt: merged.expiresAt, nowMs: Date.now(), exposure, pendingExposure });
 
         if (amendmentIncreasesRisk(order, merged)) {
           const decision = await this.tradingPermissionPolicyService?.authorizeExecution({ account, instrument, session,
@@ -73,6 +74,7 @@ class PendingOrderAmendService {
         order.limitPrice = plan.limitPrice;
         order.stopPrice = plan.stopPrice;
         order.stopLoss = plan.stopLoss;
+        order.riskBudget = plan.riskBudget;
         order.takeProfit = plan.takeProfit;
         order.timeInForce = plan.timeInForce;
         order.expiresAt = plan.expiresAt;
@@ -95,7 +97,7 @@ class PendingOrderAmendService {
 
 function value(input) { return input === null || input === undefined ? null : String(input); }
 function patchValue(input) { return input === undefined ? undefined : input === null || input === '' ? null : String(input); }
-function normalize(command) { return { accountId: String(command?.accountId || '').trim(), orderId: String(command?.orderId || '').trim(), clientRequestId: String(command?.clientRequestId || '').trim(), volume: patchValue(command?.volume), limitPrice: patchValue(command?.limitPrice), stopPrice: patchValue(command?.stopPrice), stopLoss: patchValue(command?.stopLoss), takeProfit: patchValue(command?.takeProfit), timeInForce: command?.timeInForce === undefined ? undefined : String(command.timeInForce).toUpperCase(), expiresAt: command?.expiresAt === undefined ? undefined : command.expiresAt }; }
+function normalize(command) { return { accountId: String(command?.accountId || '').trim(), orderId: String(command?.orderId || '').trim(), clientRequestId: String(command?.clientRequestId || '').trim(), volume: patchValue(command?.volume), limitPrice: patchValue(command?.limitPrice), stopPrice: patchValue(command?.stopPrice), stopLoss: patchValue(command?.stopLoss), takeProfit: patchValue(command?.takeProfit), riskBudget: patchValue(command?.riskBudget), timeInForce: command?.timeInForce === undefined ? undefined : String(command.timeInForce).toUpperCase(), expiresAt: command?.expiresAt === undefined ? undefined : command.expiresAt }; }
 function resolveReservation(reservation) { if (reservation.created) return null; if (reservation.inProgress) throw new AppError('An identical amend command is already in progress', { statusCode: 409, code: 'COMMAND_IN_PROGRESS' }); if (reservation.record.state === 'COMPLETED') return { ...(reservation.record.response || {}), idempotentReplay: true }; const stored = reservation.record.response?.error || {}; throw new AppError(stored.message || 'Previous amendment failed', { statusCode: Number(stored.statusCode) || 409, code: stored.code || reservation.record.failureCode || 'PENDING_AMEND_FAILED' }); }
 
 module.exports = { PendingOrderAmendService };

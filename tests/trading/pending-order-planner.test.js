@@ -250,3 +250,13 @@ test('pending placement enforces account and per-symbol pending-order caps', () 
     error => error.code === 'MAX_SYMBOL_PENDING',
   );
 });
+
+
+test('pending orders retain an explicit risk budget and enforce it at placement', () => {
+  const setup = { account: account(), instrument: instrument({ commissionPerLotPerSide: '2.5' }), quote: quote(),
+    type: 'LIMIT', side: 'BUY', volume: '1', limitPrice: '1.09900', stopLoss: '1.09800', nowMs: 10_100 };
+  assert.throws(() => planPendingOrder({ ...setup, riskBudget: '104.99' }), error => error.code === 'RISK_BUDGET_EXCEEDED');
+  const valid = planPendingOrder({ ...setup, riskBudget: '105' });
+  assert.equal(valid.riskBudget, '105');
+  assert.throws(() => planPendingOrder({ ...setup, stopLoss: null, riskBudget: '105' }), error => error.code === 'RISK_BUDGET_REQUIRES_SL');
+});

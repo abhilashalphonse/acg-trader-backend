@@ -932,3 +932,23 @@ test('immediate opening PnL uses the same account-currency conversion path as li
   assert.equal(plan.requiredMargin, '880.16');
   assert.equal(plan.projectedAccountState.floatingPnl, '-16');
 });
+
+
+test('market order risk budgets are validated including commissions even when funded percentage caps are disabled', () => {
+  const setup = {
+    account: account(),
+    instrument: instrument({ commissionPerLotPerSide: '2.5' }),
+    quote: quote(),
+    side: 'BUY',
+    volume: '1',
+    stopLoss: '1.09900',
+    nowMs: 10_100,
+  };
+  assert.throws(() => planMarketOpen({ ...setup, riskBudget: '109.99' }), error => error.code === 'RISK_BUDGET_EXCEEDED'
+    && error.details.riskBudget === '109.99');
+  const result = planMarketOpen({ ...setup, riskBudget: '110' });
+  assert.equal(result.fillPrice, '1.10005');
+  assert.equal(result.commission, '2.5');
+  assert.throws(() => planMarketOpen({ ...setup, stopLoss: null, riskBudget: '110' }), error => error.code === 'RISK_BUDGET_REQUIRES_SL');
+  assert.throws(() => planMarketOpen({ ...setup, riskBudget: '0' }), error => error.code === 'INVALID_RISK_BUDGET');
+});
