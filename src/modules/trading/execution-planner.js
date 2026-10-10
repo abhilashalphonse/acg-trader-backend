@@ -24,7 +24,7 @@ const {
   validateActiveExposurePolicy,
 } = require('./firm-risk-policy');
 
-function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, nowMs = Date.now(), currencyConverter = null, exposure = null }) {
+function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = null, takeProfit = null, riskBudget = null, nowMs = Date.now(), currencyConverter = null, exposure = null }) {
   validateAccountForOpen(account, instrument?.symbol, nowMs);
   validateInstrumentForOpen(instrument);
   assertInstrumentSessionOpen(instrument, nowMs);
@@ -63,6 +63,7 @@ function planMarketOpen({ account, instrument, quote, side, volume, stopLoss = n
     requiredMargin,
     openingCommission: commission,
     closingCommission: estimatedCloseCommission,
+    riskBudget,
     exposure,
     orderKind: 'OPEN_EXECUTION',
     currencyConverter,
