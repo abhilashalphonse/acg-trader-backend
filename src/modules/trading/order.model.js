@@ -22,6 +22,7 @@ const orderSchema = new Schema({
   limitPrice: { type: Decimal128, default: null },
   stopPrice: { type: Decimal128, default: null },
   stopLoss: { type: Decimal128, default: null },
+  riskBudget: { type: Decimal128, default: null },
   takeProfit: { type: Decimal128, default: null },
   timeInForce: { type: String, enum: TIME_IN_FORCE, default: 'GTC' },
   expiresAt: { type: Date, default: null },
