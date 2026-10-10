@@ -150,6 +150,7 @@ class MarketOrderService {
             volume: normalized.volume,
             stopLoss: normalized.stopLoss,
             takeProfit: normalized.takeProfit,
+            riskBudget: normalized.riskBudget,
             nowMs,
           });
 
@@ -786,6 +787,7 @@ function normalizeOpenCommand(command) {
     stopLoss: nullableString(command?.stopLoss),
     takeProfit: nullableString(command?.takeProfit),
     requestedPrice: nullableString(command?.requestedPrice),
+    riskBudget: nullableString(command?.riskBudget),
     source: normalizeSource(command?.source),
   };
 }
