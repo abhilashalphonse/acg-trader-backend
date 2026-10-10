@@ -32,6 +32,7 @@ function planPendingOrder({
   stopPrice = null,
   stopLoss = null,
   takeProfit = null,
+  riskBudget = null,
   timeInForce = 'GTC',
   expiresAt = null,
   nowMs = Date.now(),
@@ -100,6 +101,7 @@ function planPendingOrder({
     requiredMargin: projectedRequiredMargin,
     openingCommission: projectedOpeningCommission,
     closingCommission: projectedClosingCommission,
+    riskBudget,
     exposure,
     pendingExposure,
     orderKind: 'PENDING_PLACEMENT',
@@ -123,6 +125,7 @@ function planPendingOrder({
     stopPrice: normalizedStop,
     stopLoss: normalizedStopLoss,
     takeProfit: normalizedTakeProfit,
+    riskBudget,
     timeInForce: expiry.timeInForce,
     expiresAt: expiry.expiresAt,
   });
