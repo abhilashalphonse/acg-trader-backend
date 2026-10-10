@@ -58,6 +58,8 @@ orderSchema.pre('validate', function validateOrderShape(next) {
     if (this.type === 'STOP' && this.stopPrice == null) this.invalidate('stopPrice', 'STOP orders require stopPrice');
     if (this.type === 'STOP_LIMIT') { if (this.stopPrice == null) this.invalidate('stopPrice', 'STOP_LIMIT orders require stopPrice'); if (this.limitPrice == null) this.invalidate('limitPrice', 'STOP_LIMIT orders require limitPrice'); }
     if (['SPECIFIED', 'TODAY'].includes(this.timeInForce) && !this.expiresAt) this.invalidate('expiresAt', `${this.timeInForce} orders require expiresAt`);
+    if (this.riskBudget != null && compareDecimal(this.riskBudget, '0') <= 0) this.invalidate('riskBudget', 'riskBudget must be positive');
+    if (this.riskBudget != null && this.stopLoss == null) this.invalidate('stopLoss', 'Risk-budgeted orders require a stop loss');
     if (this.requestedVolume != null && compareDecimal(this.requestedVolume, '0') <= 0) this.invalidate('requestedVolume', 'requestedVolume must be greater than zero');
     if (this.filledVolume != null && compareDecimal(this.filledVolume, '0') < 0) this.invalidate('filledVolume', 'filledVolume cannot be negative');
     if (this.requestedVolume != null && this.filledVolume != null && compareDecimal(this.filledVolume, this.requestedVolume) > 0) this.invalidate('filledVolume', 'filledVolume cannot exceed requestedVolume');
