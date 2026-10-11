@@ -38,11 +38,30 @@ test('every catalog instrument is chartable, mapped to Twelve Data, and safe-by-
   }
 });
 
-test('every ACG Funded instrument uses the advertised 1:100 leverage', () => {
+test('all crypto instruments use strict 1:2 leverage; other legacy markets remain untouched', () => {
+  let cryptoCount = 0;
   for (const item of ACG_INSTRUMENT_CATALOG) {
-    assert.equal(item.defaultLeverage, 100, item.symbol);
+    if (item.assetClass === 'CRYPTO') {
+      cryptoCount += 1;
+      assert.equal(item.defaultLeverage, 2, item.symbol);
+    } else {
+      assert.equal(item.defaultLeverage, 100, item.symbol);
+    }
     assert.equal(item.marginRate, null, item.symbol);
   }
+  assert.equal(cryptoCount, CRYPTO_PAIRS.length);
+});
+
+test('BTC margin requires half notional regardless of a 100x trader account', () => {
+  const btc = ACG_INSTRUMENT_CATALOG.find(item => item.symbol === 'BTCUSD');
+  assert.equal(btc.contractSize, '1');
+  assert.equal(btc.defaultLeverage, 2);
+  const price = 83738;
+  const btcQty = 0.1;
+  const accountLeverage = 100;
+  const effectiveLeverage = Math.min(accountLeverage, btc.defaultLeverage);
+  assert.equal(effectiveLeverage, 2);
+  assert.ok(Math.abs(price * Number(btc.contractSize) * btcQty / effectiveLeverage - 4186.9) < 1e-8);
 });
 
 test('core launch symbols preserve EURUSD and XAUUSD execution specifications', () => {

@@ -65,7 +65,7 @@ async function enforceCatalogLeveragePolicy({ logger } = {}) {
     matched: Number(result.matchedCount || 0),
     modified: Number(result.modifiedCount || 0),
   };
-  logger?.info?.({ ...summary, leverage: 100 }, 'Catalog leverage policy enforced');
+  logger?.info?.({ ...summary, cryptoLeverage: 2, legacyOtherAssetLeverage: 100 }, 'Catalog leverage policy enforced');
   return summary;
 }
 

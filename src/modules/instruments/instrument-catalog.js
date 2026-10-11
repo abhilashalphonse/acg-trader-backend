@@ -467,7 +467,10 @@ function baseSpec({
     symbol, displaySymbol, name, assetClass, baseCurrency, quoteCurrency,
     pnlCurrency: quoteCurrency, marginCurrency: quoteCurrency,
     digits, tickSize, pipSize, contractSize, minVolume, maxVolume, volumeStep,
-    defaultLeverage: ACG_STANDARD_LEVERAGE, marginRate,
+    // Crypto is contractually 1:2, not the 1:100 legacy default.
+    // Deliberately preserve current leverage policies of other asset classes
+    // in this narrowly scoped release; their future migration is separate.
+    defaultLeverage: assetClass === 'CRYPTO' ? defaultLeverage : ACG_STANDARD_LEVERAGE, marginRate,
     commissionPerLot: commissionPerLotPerSide,
     commissionPerLotPerSide,
     commissionRate,
