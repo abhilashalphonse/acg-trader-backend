@@ -2,7 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { planMarketOpen, planMarketClose, calculateAdverseSlippage } = require('../../src/modules/trading/execution-planner');
+const { planMarketOpen, planMarketClose, calculateAdverseSlippage, calculateRequiredMargin } = require('../../src/modules/trading/execution-planner');
+const { ACG_INSTRUMENT_CATALOG } = require('../../src/modules/instruments/instrument-catalog');
 const { loadOpenExposure } = require('../../src/modules/trading/market-order.service');
 const { multiplyDecimal } = require('../../src/shared/decimal/decimal');
 
@@ -70,6 +71,19 @@ test('market BUY fills at ask and reserves exact margin', () => {
   assert.equal(plan.requiredMargin, '1100.05');
   assert.equal(plan.commission, '0');
   assert.equal(plan.quoteSequence, 42);
+});
+
+test('BTC new-order margin enforces crypto 2x despite account leverage 100x', () => {
+  const btc = ACG_INSTRUMENT_CATALOG.find(item => item.symbol === 'BTCUSD');
+  assert.ok(btc);
+  assert.equal(btc.defaultLeverage, 2);
+  const margin = calculateRequiredMargin({
+    account: account({leverage:100}),
+    instrument: btc,
+    volume: '0.1',
+    fillPrice: '83738',
+  });
+  assert.equal(margin, '4186.9');
 });
 
 test('market SELL fills at bid and applies per-lot commission', () => {
