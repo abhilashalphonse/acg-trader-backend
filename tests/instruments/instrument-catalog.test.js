@@ -61,7 +61,7 @@ test('BTC margin requires half notional regardless of a 100x trader account', ()
   const accountLeverage = 100;
   const effectiveLeverage = Math.min(accountLeverage, btc.defaultLeverage);
   assert.equal(effectiveLeverage, 2);
-  assert.equal(price * Number(btc.contractSize) * btcQty / effectiveLeverage, 4186.9);
+  assert.ok(Math.abs(price * Number(btc.contractSize) * btcQty / effectiveLeverage - 4186.9) < 1e-8);
 });
 
 test('core launch symbols preserve EURUSD and XAUUSD execution specifications', () => {
