@@ -16,6 +16,26 @@ npm run seed:instruments
 
 The sync command preserves an existing instrument's `executionEnabled` and `status` values. This prevents a catalog refresh from silently enabling or re-enabling trading.
 
+## ACG leverage ceilings
+
+| Asset category | Instrument classes | Maximum leverage | Minimum initial margin |
+| --- | --- | ---: | ---: |
+| Forex | FOREX | 1:100 | 1% |
+| Commodities | METAL, ENERGY, OTHER (catalog commodity group) | 1:50 | 2% |
+| Indices | INDEX | 1:20 | 5% |
+| Stocks | EQUITY | 1:10 | 10% |
+| Crypto | CRYPTO | 1:2 | 50% |
+
+Effective leverage is no higher than the account leverage and any stricter
+instrument margin-rate requirement. Pending fills must pass the same server
+margin validation as market opens. Existing positions retain their stored
+reserved margin until an explicitly approved position migration is performed;
+a catalog update must not silently recalculate or liquidate old positions.
+
+The backend enforces managed instrument leverage on startup after database
+initialization; do not apply this change to production until staging acceptance
+and an open-position migration/grandfathering policy are approved.
+
 ## Initial catalog
 
 ### EURUSD
@@ -48,7 +68,7 @@ contractSize      100
 minVolume         0.01
 maxVolume         100
 volumeStep        0.01
-defaultLeverage   100
+defaultLeverage   50
 provider          Twelve Data: XAU/USD
 spreadMode        DYNAMIC
 normalSpread      10 points = 0.10
