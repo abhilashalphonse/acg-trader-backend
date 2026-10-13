@@ -6,7 +6,26 @@
 // New instruments are intentionally inserted with execution disabled. Operators
 // can enable execution only after validating the provider feed and product terms.
 
-const ACG_STANDARD_LEVERAGE = 100;
+// Asset-class ceilings for ACG's simulated CFD product catalog. An account's
+// lower leverage and any stricter instrument margin rate still apply.
+const ACG_LEVERAGE_BY_ASSET_CLASS = Object.freeze({
+  FOREX: 100,
+  METAL: 50,
+  ENERGY: 50,
+  OTHER: 50, // Catalog OTHER currently contains agricultural/industrial commodities.
+  INDEX: 20,
+  EQUITY: 10,
+  CRYPTO: 2,
+});
+const ACG_STANDARD_LEVERAGE = ACG_LEVERAGE_BY_ASSET_CLASS.FOREX;
+
+function leverageForAssetClass(assetClass) {
+  const result = ACG_LEVERAGE_BY_ASSET_CLASS[assetClass];
+  if (!Number.isFinite(result) || result <= 0) {
+    throw new Error('Missing ACG leverage policy for instrument class: ' + assetClass);
+  }
+  return result;
+}
 
 const FX_TIGHT_POINTS = Object.freeze({ EURUSD: 2, USDJPY: 2, GBPUSD: 3, AUDUSD: 3, USDCHF: 3, USDCAD: 3, NZDUSD: 4, EURGBP: 4, EURJPY: 4, GBPJPY: 6 });
 const FX_EXOTIC_CURRENCIES = new Set(['CNH', 'CZK', 'DKK', 'HKD', 'HUF', 'MXN', 'NOK', 'PLN', 'SEK', 'SGD', 'TRY', 'ZAR']);
@@ -457,7 +476,7 @@ function cryptoSpreadProfile(pair) {
 function baseSpec({
   symbol, displaySymbol, name, assetClass, baseCurrency = null, quoteCurrency = 'USD',
   digits, tickSize, pipSize, contractSize, minVolume = '0.01', maxVolume = '100',
-  volumeStep = '0.01', defaultLeverage = 100, marginRate = null,
+  volumeStep = '0.01', marginRate = null,
   commissionPerLotPerSide = '0', commissionRate = '0', spreadProfile = null,
   fixedPoints = '10', tradingSessions = [],
   timezone = 'UTC', providerSymbol, softQuoteAgeMs = 10000, maxQuoteAgeMs = 30000,
@@ -467,7 +486,7 @@ function baseSpec({
     symbol, displaySymbol, name, assetClass, baseCurrency, quoteCurrency,
     pnlCurrency: quoteCurrency, marginCurrency: quoteCurrency,
     digits, tickSize, pipSize, contractSize, minVolume, maxVolume, volumeStep,
-    defaultLeverage: ACG_STANDARD_LEVERAGE, marginRate,
+    defaultLeverage: leverageForAssetClass(assetClass), marginRate,
     commissionPerLot: commissionPerLotPerSide,
     commissionPerLotPerSide,
     commissionRate,
@@ -589,5 +608,5 @@ function validateCatalog(catalog) {
 module.exports = {
   ACG_INSTRUMENT_CATALOG, FX_WEEK, US_EQUITY_SESSION,
   FOREX_PAIRS, COMMODITIES, INDICES, US_EQUITIES, CRYPTO_PAIRS,
-  ACG_STANDARD_LEVERAGE,
+  ACG_STANDARD_LEVERAGE, ACG_LEVERAGE_BY_ASSET_CLASS, leverageForAssetClass,
 };
