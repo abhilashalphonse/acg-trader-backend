@@ -38,9 +38,10 @@ test('every catalog instrument is chartable, mapped to Twelve Data, and safe-by-
   }
 });
 
-test('every ACG Funded instrument uses the advertised 1:100 leverage', () => {
+test('all ACG Funded instruments honor their asset-class leverage ceilings', () => {
+  const limits = { FOREX: 100, METAL: 50, ENERGY: 50, OTHER: 50, INDEX: 20, EQUITY: 10, CRYPTO: 2 };
   for (const item of ACG_INSTRUMENT_CATALOG) {
-    assert.equal(item.defaultLeverage, 100, item.symbol);
+    assert.equal(item.defaultLeverage, limits[item.assetClass], item.symbol);
     assert.equal(item.marginRate, null, item.symbol);
   }
 });
