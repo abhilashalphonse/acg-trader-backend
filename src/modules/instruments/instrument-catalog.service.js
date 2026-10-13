@@ -2,7 +2,7 @@
 
 const { Instrument } = require('./instrument.model');
 const { env } = require('../../config/env');
-const { ACG_INSTRUMENT_CATALOG } = require('./instrument-catalog');
+const { ACG_INSTRUMENT_CATALOG, ACG_LEVERAGE_BY_ASSET_CLASS } = require('./instrument-catalog');
 const { ACG_INDIA_PILOT_CATALOG } = require('./india-pilot-catalog');
 
 const EXECUTION_PROVISION_VERSION = 1;
@@ -65,7 +65,7 @@ async function enforceCatalogLeveragePolicy({ logger } = {}) {
     matched: Number(result.matchedCount || 0),
     modified: Number(result.modifiedCount || 0),
   };
-  logger?.info?.({ ...summary, leverage: 100 }, 'Catalog leverage policy enforced');
+  logger?.info?.({ ...summary, leverageByAssetClass: ACG_LEVERAGE_BY_ASSET_CLASS }, 'Catalog leverage policy enforced');
   return summary;
 }
 
