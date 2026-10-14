@@ -67,7 +67,7 @@ async function main() {
   const spec = await Instrument.findOne({ symbol: 'BTCUSD' });
   if (!spec) throw Error('Crypto instrument unavailable');
   // Eligible products in the disposable database only; never override real sessions.
-  await Instrument.updateMany({ symbol: { $in: ['BTCUSD', 'EURUSD'] } },
+  await Instrument.updateMany({ symbol: mongoose.trusted({ $in: ['BTCUSD', 'EURUSD'] }) },
     { $set: { executionEnabled: true, status: 'ACTIVE' } });
   const tenant = await Tenant.create({
     name: 'PR72 Browser CI', slug: 'acg-pr72-ci', authModes: ['PASSWORD', 'FEDERATED'],
