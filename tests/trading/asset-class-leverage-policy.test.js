@@ -6,9 +6,10 @@ const assert = require('node:assert/strict');
 const { ACG_INSTRUMENT_CATALOG, ACG_LEVERAGE_BY_ASSET_CLASS, leverageForAssetClass } =
   require('../../src/modules/instruments/instrument-catalog');
 const { ACG_INDIA_PILOT_CATALOG } = require('../../src/modules/instruments/india-pilot-catalog');
-const { calculateRequiredMargin } = require('../../src/modules/trading/execution-planner');
+const { calculateRequiredMargin, planMarketClose } = require('../../src/modules/trading/execution-planner');
 const { calculatePositionValuation, aggregateAccountValuation } = require('../../src/modules/trading/valuation-calculator');
 const { shouldTriggerStopOut } = require('../../src/modules/trading/margin-stop-out-engine');
+const { evaluateRiskContext } = require('../../src/modules/trading/challenge-risk-engine');
 
 const expected = {
   FOREX: 100,
@@ -31,6 +32,26 @@ test('All 300 catalog instruments use ACG asset-class leverage, not a blanket 10
   }
   assert.deepEqual([...covered].sort(), Object.keys(expected).sort());
   assert.throws(() => leverageForAssetClass('UNMAPPED'));
+});
+
+test('legacy reservations release proportionally on partial close across every asset class', () => {
+  for (const assetClass of Object.keys(expected)) {
+    const instrument = { ...ACG_INSTRUMENT_CATALOG.find(i => i.assetClass === assetClass && i.quoteCurrency === 'USD'),
+      commissionPerLot: '0', commissionPerLotPerSide: '0', commissionRate: '0' };
+    const position = { accountId: 'a', symbol: instrument.symbol, side: 'BUY', status: 'OPEN', openVolume: '1',
+      entryPrice: '100', contractSize: instrument.contractSize, quoteCurrency: 'USD', margin: '12.34' };
+    const input = { account: { _id: 'a', currency: 'USD' }, instrument, position,
+      quote: { bid: 100, ask: 100, isStale: false, receivedAtMs: Date.now() } };
+    assert.equal(planMarketClose({ ...input, volume: '0.5' }).releasedMargin, '6.17', assetClass);
+    assert.equal(planMarketClose(input).releasedMargin, '12.34', assetClass);
+  }
+});
+
+test('grandfathering does not exempt a losing position from stop-out or challenge loss limits', () => {
+  const state = aggregateAccountValuation({ account: { _id: 'a', currency: 'USD', state: { balance: '100' } },
+    positionValuations: [{ symbol: 'BTCUSD', margin: '100', floatingPnl: '-60', quoteCurrency: 'USD', valuationStatus: 'LIVE' }] });
+  assert.equal(shouldTriggerStopOut(state), true);
+  assert.equal(evaluateRiskContext({ equity: state.equity, initialBalance: '100', dailyStartEquity: '100', dailyLossLimit: '50', maxLossLimit: '60' }).breached, true);
 });
 
 test('Chart-only Indian equities use the stock 10x ceiling', () => {
