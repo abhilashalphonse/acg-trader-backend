@@ -15,6 +15,7 @@ process.env.WEEKEND_HOLDING_ENFORCEMENT = 'false';
 process.env.TRADING_PERMISSION_SHADOW_ENABLED = 'false';
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const EventEmitter = require('node:events');
 const express = require('express');
 const mongoose = require('mongoose');
@@ -40,8 +41,9 @@ const { Deal } = require('../src/modules/trading/deal.model');
 const { createTradingRouter } = require('../src/modules/trading/trading.routes');
 const { errorHandler } = require('../src/shared/http/error-middleware');
 const { ensureCriticalIndexes } = require('../src/config/indexes');
-const { shouldTriggerStopOut } = require('../src/modules/trading/margin-stop-out-engine');
-const { evaluateRiskContext } = require('../src/modules/trading/challenge-risk-engine');
+const { shouldTriggerStopOut, MarginStopOutEngine } = require('../src/modules/trading/margin-stop-out-engine');
+const { evaluateRiskContext, ChallengeRiskEngine } = require('../src/modules/trading/challenge-risk-engine');
+const { ProtectionTriggerEngine } = require('../src/modules/trading/protection-trigger-engine');
 
 const checks = [];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -84,6 +86,11 @@ async function main() {
   const market = new MarketOrderService(options);
   const pending = new PendingOrderService(options);
   const engine = new PendingOrderEngine({ eventBus: bus, pendingOrderService: pending, logger: { info() {}, error() {} } });
+  const controls = new AccountControlService({ eventBus: bus, commandQueue: queue, marketOrderService: market });
+  const protection = new ProtectionTriggerEngine({ eventBus: bus, marketOrderService: market });
+  const stopOut = new MarginStopOutEngine({ eventBus: bus, valuationEngine: valuation, quoteStore,
+    currencyConverter: converter, marketOrderService: market, accountControlService: controls, pollIntervalMs: 100 });
+  const challengeRisk = new ChallengeRiskEngine({ eventBus: bus, accountControlService: controls });
   const runtime = { enabled: true, marketOrderService: market, pendingOrderService: pending,
     valuationEngine: valuation, tradingPermissionPolicyService: policy, positionProtectionService: new PositionProtectionService(options) };
   const app = express(); app.use(express.json());
@@ -93,10 +100,10 @@ async function main() {
   const tenant = await Tenant.create({ name: 'PR72 acceptance', slug: 'pr72-acceptance' });
   const provisioner = new AccountControlService();
   let counter = 0;
-  async function account(currency = 'USD', balance = '100000', accountType = 'DEMO') {
+  async function account(currency = 'USD', balance = '100000', accountType = 'DEMO', riskPolicy = {}) {
     const id = 'acceptance-' + ++counter;
     const provisioned = await provisioner.provision({ tenantId: String(tenant._id), externalRef: id, ownerExternalRef: id,
-      accountType, currency, initialBalance: balance, leverage: 100, tradingPermissionsVersion: 1,
+      accountType, currency, initialBalance: balance, leverage: 100, riskPolicy, tradingPermissionsVersion: 1,
       tradingPermissions: { newsTrading: true, weekendHolding: true } });
     const a = provisioned.account;
     const token = 'acg_ts_' + crypto.randomBytes(32).toString('hex');
@@ -162,8 +169,37 @@ async function main() {
       assert.equal(await Deal.countDocuments({ accountId: a.id }), 1);
       checks.push(type + ': authenticated creation; FX outage blocks; recovery fills exactly once');
     }
-    console.log(JSON.stringify({ result: 'PASS', commit: process.env.RAILWAY_GIT_COMMIT_SHA || null, controlledQuotes: true, checks }, null, 2));
+    await protection.start();
+    for (const [field, target, reason] of [['stopLoss', 90, 'STOP_LOSS'], ['takeProfit', 110, 'TAKE_PROFIT']]) {
+      tick('BTCUSD', 100);
+      const a = await account();
+      const opened = await request(a, '/orders/market', { clientOrderId: field, symbol: 'BTCUSD', side: 'BUY', volume: '1', [field]: String(target) });
+      tick('BTCUSD', target);
+      await until(async () => (await Position.findById(opened.position.id)).status === 'CLOSED');
+      assert.equal((await Position.findById(opened.position.id)).closeReason, reason);
+      checks.push(reason + ': worker executes a transactional close');
+    }
+    await stopOut.start();
+    tick('BTCUSD', 100);
+    const distressed = await account('USD', '100');
+    await request(distressed, '/orders/market', { clientOrderId: 'stop-out', symbol: 'BTCUSD', side: 'BUY', volume: '1' });
+    tick('BTCUSD', 20);
+    await until(async () => await Deal.countDocuments({ accountId: distressed.id, type: 'LIQUIDATION' }) > 0);
+    await until(async () => (await TradingAccount.findById(distressed.id)).marginStopOutState !== 'ACTIVE');
+    assert.ok(Number((await TradingAccount.findById(distressed.id)).state.usedMargin) < 50);
+    checks.push('50% stop-out worker liquidates exposure and recovers margin');
+    await stopOut.stop();
+    tick('BTCUSD', 100);
+    const challenge = await account('USD', '100', 'CHALLENGE', { dailyLoss: { limit: '10' }, maxLoss: { limit: '20' } });
+    await request(challenge, '/orders/market', { clientOrderId: 'challenge-loss', symbol: 'BTCUSD', side: 'BUY', volume: '1' });
+    await challengeRisk.start();
+    tick('BTCUSD', 85);
+    await until(async () => (await TradingAccount.findById(challenge.id)).status === 'BREACHED');
+    assert.equal((await TradingAccount.findById(challenge.id)).tradingEnabled, false);
+    checks.push('challenge loss worker breaches and locks new exposure');
+    console.log(JSON.stringify({ result: 'PASS', commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), controlledQuotes: true, checks }, null, 2));
   } finally {
+    await challengeRisk.stop(); await stopOut.stop(); await protection.stop();
     await engine.stop(); await valuation.stop();
     await new Promise(resolve => server.close(resolve));
     setDefaultCurrencyConversionEngine(null);
@@ -171,3 +207,4 @@ async function main() {
   }
 }
 main().catch(async error => { console.error(JSON.stringify({ result: 'FAIL', checks, error: error.message, stack: error.stack })); await mongoose.disconnect(); process.exitCode = 1; });
+
