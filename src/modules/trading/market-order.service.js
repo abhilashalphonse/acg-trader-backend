@@ -498,6 +498,16 @@ class MarketOrderService {
       executedAt: now,
     });
 
+    // A verified final close must not leave historical floating P&L, equity
+    // or used margin in saved account state. Count other OPEN positions within
+    // the same transaction; never infer flatness from margin == 0.
+    const flatAfterClose = plan.fullClose
+      && (await timeAsync(timing, 'remaining_positions_read', () => this.positionModel.countDocuments({
+        accountId: account._id,
+        status: 'OPEN',
+        _id: { $ne: position._id },
+      }).session(session))) === 0;
+
     const closeReason = normalized.reason || 'MANUAL';
     const ledgers = applyCloseAccountAndPositionMutation({
       account,
@@ -508,6 +518,7 @@ class MarketOrderService {
       ledgerModel: this.ledgerModel,
       now,
       valuationComplete,
+      flatAfterClose,
       closeReason,
     });
 
@@ -621,7 +632,7 @@ function applyOpenAccountMutation(account, plan) {
   account.state.marginLevel = projected.marginLevel;
 }
 
-function applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel, now, valuationComplete = true, closeReason = 'MANUAL' }) {
+function applyCloseAccountAndPositionMutation({ account, position, plan, deal, clientOrderId, ledgerModel, now, valuationComplete = true, flatAfterClose = false, closeReason = 'MANUAL' }) {
   account.financialRevision = Number(account.financialRevision || 0) + 1;
   const ledgers = [];
   let runningBalance = normalizeDecimal(account.state.balance);
@@ -674,6 +685,15 @@ function applyCloseAccountAndPositionMutation({ account, position, plan, deal, c
   account.state.usedMargin = usedMargin;
   account.state.freeMargin = subtractDecimal(account.state.equity, usedMargin);
   account.state.marginLevel = marginLevel(account.state.equity, usedMargin);
+  if (plan.fullClose && flatAfterClose) {
+    // No positions remain: equity equals realized ledger balance regardless
+    // of prior quote quality. This changes saved valuation caches only.
+    account.state.floatingPnl = '0';
+    account.state.equity = runningBalance;
+    account.state.usedMargin = '0';
+    account.state.freeMargin = runningBalance;
+    account.state.marginLevel = null;
+  }
 
   position.openVolume = plan.remainingVolume;
   position.margin = subtractDecimal(position.margin, plan.releasedMargin);
