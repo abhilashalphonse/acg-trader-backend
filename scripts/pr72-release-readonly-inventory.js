@@ -13,8 +13,12 @@ async function main() {
   const uri = process.env.MONGODB_URI;
   const database = process.env.PR72_AUDIT_DATABASE;
   const expectApproved = process.argv.includes('--expect-approved');
-  if (!uri || !['acg_trader', 'acg_trader_staging'].includes(database)) {
-    throw new Error('Provide MONGODB_URI and explicit approved PR72_AUDIT_DATABASE');
+  const disposable = process.env.CI === 'true'
+    && process.env.PR72_E2E_DISPOSABLE === '1'
+    && /^mongodb:\/\/127\.0\.0\.1:27017\/acg_pr72_browser_e2e(?:\?|$)/.test(uri || '')
+    && database === 'acg_pr72_browser_e2e';
+  if (!uri || !(['acg_trader', 'acg_trader_staging'].includes(database) || disposable)) {
+    throw new Error('Provide approved PR72_AUDIT_DATABASE or a strictly guarded disposable localhost DB');
   }
   const client = new MongoClient(uri,{serverSelectionTimeoutMS:10000,retryWrites:false});
   try {
