@@ -51,3 +51,33 @@ history. Startup enforces catalog values in MongoDB, so rolling back application
 code can also restore old catalog leverage; test a rollback that does not silently
 re-enable the blanket 100x policy. Monitor pending FX failures, margin/ledger
 discrepancies and unexpected liquidation after deployment.
+
+## Non-negotiable production rollback contract
+
+**Never restore the old pre-policy backend binary while trading can open new
+positions.** Its startup catalog sync can reapply 100x to stocks, indices,
+commodities and crypto. Roll back only to a known-good, *post-policy* revision
+which retains `ACG_LEVERAGE_BY_ASSET_CLASS`, the authoritative margin floor and
+startup policy enforcement. If such a revision does not exist, pause new
+exposure and perform a forward fix rather than a binary rollback. Preserve
+all existing position margins and ledger balances.
+
+Required operational gates (read-only):
+- Before deployment: run
+  `PR72_READONLY_RELEASE_AUDIT=1 PR72_AUDIT_DATABASE=acg_trader node scripts/pr72-release-readonly-inventory.js`
+  with an authorized MongoDB URI. Retain the output in private release evidence,
+  **never in public PR comments**.
+- Immediately after deployment and after every rollback: rerun with
+  `--expect-approved`. All seven classes must match the catalog policy:
+  Forex 100x, Metals/Energy/Other 50x, Indices 20x, Equities 10x,
+  Crypto 2x. The guard fails on an unexpected leverage value, a
+  stored-position margin discrepancy, or a latest-ledger balance mismatch.
+- An existing-position margin discrepancy is a release STOP, not permission
+  to reprice the position automatically. Examine any valuation-cache warnings
+  separately; do not alter balances or ledger history merely to clear them.
+- A passing guard does not substitute for authenticated frontend, Funded
+  lifecycle, provider-fed execution, or liquidation monitoring.
+
+These checks use collection reads only. Inventory is not a transactional
+snapshot across collections: retain the observation time and repeat at the
+release boundary when trading can alter positions.
