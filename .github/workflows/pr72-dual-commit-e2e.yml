@@ -1,0 +1,194 @@
+name: PR72 dual-commit release acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/pr72-ci-e2e-harness.js'
+      - 'scripts/pr72-release-readonly-inventory.js'
+      - 'scripts/pr72-live-feed-readonly-smoke.js'
+      - '.github/workflows/pr72-dual-commit-e2e.yml'
+      - 'src/**'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr72-dual-commit-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dual-commit-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Require protected unattended acceptance credentials
+        env:
+          REPO_TOKEN: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          PROVIDER_KEY: ${{ secrets.ACG_E2E_TWELVE_DATA_API_KEY }}
+        run: |
+          if [ -z "$REPO_TOKEN" ] || [ -z "$PROVIDER_KEY" ]; then
+            echo "::error::BLOCKED: Configure ACG_E2E_REPO_READ_TOKEN (cross-repo read) and ACG_E2E_TWELVE_DATA_API_KEY as protected CI secrets in both repositories."
+            exit 1
+          fi
+
+      - name: Resolve the exact two unmerged PR commit IDs
+        id: commits
+        env:
+          GH_TOKEN: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+        run: |
+          backend_json="$(gh api repos/abhilashalphonse/acg-trader-backend/pulls/72)"
+          frontend_json="$(gh api repos/abhilashalphonse/acg-trader-frontend/pulls/109)"
+          for json in "$backend_json" "$frontend_json"; do
+            test "$(jq -r '.state' <<<"$json")" = open || { echo "::error::Release PR is not open"; exit 1; }
+            test "$(jq -r '.draft' <<<"$json")" = true || { echo "::error::Release PR must remain draft until acceptance"; exit 1; }
+          done
+          backend_sha="$(jq -r '.head.sha' <<<"$backend_json")"
+          frontend_sha="$(jq -r '.head.sha' <<<"$frontend_json")"
+          [[ "$backend_sha" =~ ^[0-9a-f]{40}$ && "$frontend_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          # The job must attest to its triggering PR commit, never a later branch head.
+          case "${{ github.repository }}" in
+            abhilashalphonse/acg-trader-backend)
+              if [ "${{ github.event_name }}" = pull_request ]; then
+                test "$backend_sha" = "${{ github.event.pull_request.head.sha }}" || { echo "::error::Backend PR moved; rerun"; exit 1; }
+              fi ;;
+            abhilashalphonse/acg-trader-frontend)
+              if [ "${{ github.event_name }}" = pull_request ]; then
+                test "$frontend_sha" = "${{ github.event.pull_request.head.sha }}" || { echo "::error::Frontend PR moved; rerun"; exit 1; }
+              fi ;;
+            *) echo "::error::Unapproved calling repository"; exit 1 ;;
+          esac
+          echo "backend_sha=$backend_sha" >> "$GITHUB_OUTPUT"
+          echo "frontend_sha=$frontend_sha" >> "$GITHUB_OUTPUT"
+          echo "Commit pair: backend $backend_sha / frontend $frontend_sha"
+
+      - name: Checkout exact backend commit
+        uses: actions/checkout@v4
+        with:
+          repository: abhilashalphonse/acg-trader-backend
+          ref: ${{ steps.commits.outputs.backend_sha }}
+          path: backend
+          token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Checkout exact frontend commit
+        uses: actions/checkout@v4
+        with:
+          repository: abhilashalphonse/acg-trader-frontend
+          ref: ${{ steps.commits.outputs.frontend_sha }}
+          path: frontend
+          token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Validate checked-out commits
+        shell: bash
+        run: |
+          test "$(git -C backend rev-parse HEAD)" = "${{ steps.commits.outputs.backend_sha }}"
+          test "$(git -C frontend rev-parse HEAD)" = "${{ steps.commits.outputs.frontend_sha }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install exact dependency locks and system Chrome browser controller
+        run: |
+          (cd backend && npm ci --no-audit)
+          (cd frontend && npm ci --no-audit && npm install --no-save --no-audit --no-fund playwright@1.56.1)
+          command -v google-chrome || command -v google-chrome-stable
+
+      - name: Provision disposable MongoDB replica-set container
+        run: |
+          docker run -d --rm --name pr72-e2e-mongo \
+            -p 127.0.0.1:27017:27017 mongo:7 \
+            mongod --replSet rs0 --bind_ip_all --ipv6
+          for i in $(seq 1 35); do
+            if docker exec pr72-e2e-mongo mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' | grep -qx 1; then break; fi
+            sleep 1
+          done
+          docker exec pr72-e2e-mongo mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' | grep -qx 1
+
+      - name: Boot real backend + provider gateway on the isolated replica set
+        env:
+          CI: 'true'
+          PR72_E2E_DISPOSABLE: '1'
+          MONGODB_URI: mongodb://127.0.0.1:27017/acg_pr72_browser_e2e?replicaSet=rs0
+          NODE_ENV: test
+          LOG_LEVEL: warn
+          MARKET_GATEWAY_ENABLED: 'true'
+          MARKET_PROVIDER: twelve-data
+          MARKET_UNIVERSE_MODE: explicit
+          MARKET_SYMBOLS: BTCUSD,EURUSD
+          MARKET_CLOSED_CANDLE_RECONCILIATION_ENABLED: 'false'
+          TRADING_API_ENABLED: 'true'
+          PLATFORM_EVENTS_ENABLED: 'false'
+          TRADING_PERMISSION_SHADOW_ENABLED: 'false'
+          NEWS_TRADING_ENFORCEMENT: 'false'
+          WEEKEND_HOLDING_ENFORCEMENT: 'false'
+          WEEKEND_WORKER_ENABLED: 'false'
+          CORS_ORIGINS: http://127.0.0.1:5174
+          TWELVE_DATA_API_KEY: ${{ secrets.ACG_E2E_TWELVE_DATA_API_KEY }}
+          PR72_E2E_PRIVATE_DATA: ${{ runner.temp }}/pr72-private-fixtures.json
+        run: |
+          (cd backend && node scripts/pr72-ci-e2e-harness.js > "${{ runner.temp }}/pr72-backend.log" 2>&1) &
+          echo $! > "${{ runner.temp }}/pr72-backend.pid"
+          for i in $(seq 1 80); do
+            if curl -fsS http://127.0.0.1:4000/health/live >/dev/null 2>&1 && test -s "${{ runner.temp }}/pr72-private-fixtures.json"; then
+              echo "Isolated backend and auth fixtures ready"; exit 0
+            fi
+            if ! kill -0 "$(cat "${{ runner.temp }}/pr72-backend.pid")" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          echo "::error::Isolated backend failed health/fixture startup; check private runner log, not production."
+          grep -E 'PR72_E2E_HARNESS_ERROR|ACG Trader backend failed|Error:' "${{ runner.temp }}/pr72-backend.log" | head -8 || true
+          exit 1
+
+      - name: Boot exact frontend commit with real API and WebSocket endpoints
+        env:
+          VITE_ACG_TRADER_API_BASE: http://127.0.0.1:4000
+          VITE_ACG_TRADER_WS_URL: ws://127.0.0.1:4000/v1/ws
+          VITE_ACG_TRADER_TENANT: acg-pr72-ci
+          VITE_ACG_EXECUTION_V4_ENABLED: 'true'
+        run: |
+          (cd frontend && npm run dev -- --host 127.0.0.1 --port 5174 > "${{ runner.temp }}/pr72-frontend.log" 2>&1) &
+          echo $! > "${{ runner.temp }}/pr72-frontend.pid"
+          curl --fail --retry 40 --retry-delay 1 --retry-connrefused \
+            http://127.0.0.1:5174/ >/dev/null
+
+      - name: Exercise fresh native + federated Playwright sessions and actual provider prices
+        env:
+          CI: 'true'
+          PR72_E2E_DISPOSABLE: '1'
+          PR72_E2E_PRIVATE_DATA: ${{ runner.temp }}/pr72-private-fixtures.json
+          PR72_E2E_REPORT: ${{ runner.temp }}/pr72-e2e-result.json
+          PR72_BACKEND_SHA: ${{ steps.commits.outputs.backend_sha }}
+          PR72_FRONTEND_SHA: ${{ steps.commits.outputs.frontend_sha }}
+        run: node frontend/tests/ui/pr72-release-browser.mjs
+
+      - name: Read-only financial and rollback guard on disposable database
+        env:
+          PR72_READONLY_RELEASE_AUDIT: '1'
+          PR72_E2E_DISPOSABLE: '1'
+          MONGODB_URI: mongodb://127.0.0.1:27017/acg_pr72_browser_e2e?replicaSet=rs0
+          PR72_AUDIT_DATABASE: acg_pr72_browser_e2e
+        run: node backend/scripts/pr72-release-readonly-inventory.js --expect-approved
+
+      - name: Publish aggregate-only evidence (never session or screenshots)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr72-dual-commit-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/pr72-e2e-result.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop disposable servers and delete MongoDB container
+        if: always()
+        run: |
+          for name in frontend backend; do
+            file="${{ runner.temp }}/pr72-$name.pid"
+            if test -f "$file"; then kill "$(cat "$file")" 2>/dev/null || true; fi
+          done
+          docker rm -f pr72-e2e-mongo 2>/dev/null || true
+          rm -f "${{ runner.temp }}/pr72-private-fixtures.json"
+          echo 'Disposable account database and ephemeral browser secrets cleaned up.'
