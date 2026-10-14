@@ -505,7 +505,7 @@ class MarketOrderService {
       && (await timeAsync(timing, 'remaining_positions_read', () => this.positionModel.countDocuments({
         accountId: account._id,
         status: 'OPEN',
-        _id: { $ne: position._id },
+        _id: mongoose.trusted({ $ne: position._id }),
       }).session(session))) === 0;
 
     const closeReason = normalized.reason || 'MANUAL';
