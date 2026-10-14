@@ -1,0 +1,22 @@
+name: PR72 real provider path smoke (read-only)
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/pr72-live-feed-readonly-smoke.js'
+      - '.github/workflows/pr72-live-feed-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  live-provider-gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe live quotes through the existing STAGING gateway (GET only)
+        env:
+          ACG_LIVE_FEED_BASE_URL: https://discerning-presence-staging.up.railway.app/
+        run: node scripts/pr72-live-feed-readonly-smoke.js
