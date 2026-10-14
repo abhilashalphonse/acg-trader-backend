@@ -92,7 +92,7 @@ async function main() {
   const authRuntime = createAuthRuntime();
   const nativePassword = crypto.randomBytes(30).toString('base64url') + 'aA1!';
   await authRuntime.authService.createNativeCredential({
-    tenantId: String(tenant._id), accountId: String(native._id),
+    tenantId: String(tenant._id), accountId: String(native.id),
     login: 'pr72-native', password: nativePassword, mustChangePassword: false,
   });
 
@@ -117,8 +117,8 @@ async function main() {
     try {
       const ticket = await authRuntime.authService.createFederationTicket({
         tenantId: String(tenant._id), ownerExternalRef: owner,
-        accountIds: [primary, secondary, eur].map(a => String(a._id)),
-        selectedAccountId: String(primary._id),
+        accountIds: [primary, secondary, eur].map(a => String(a.id)),
+        selectedAccountId: String(primary.id),
       });
       res.json(ticket); // Only to localhost, with private runner token.
     } catch (e) { next(e); }
@@ -146,8 +146,8 @@ async function main() {
   const privateData = {
     controlToken: secret, nativeLogin: 'pr72-native', nativePassword,
     tenant: 'acg-pr72-ci',
-    accounts: { native: String(native._id), primary: String(primary._id),
-      secondary: String(secondary._id), eur: String(eur._id) },
+    accounts: { native: String(native.id), primary: String(primary.id),
+      secondary: String(secondary.id), eur: String(eur.id) },
     accountCodes: { primary:primary.accountCode, secondary:secondary.accountCode, eur:eur.accountCode },
   };
   fs.writeFileSync(process.env.PR72_E2E_PRIVATE_DATA, JSON.stringify(privateData), { mode: 0o600, flag: 'wx' });
