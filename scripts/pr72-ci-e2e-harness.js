@@ -159,12 +159,11 @@ async function stop() {
   if (marketRuntime) await marketRuntime.stop();
   if (tradingRuntime) await tradingRuntime.stop();
   await mongoose.disconnect();
-  process.exit(0);
 }
-process.on('SIGTERM', () => { void stop(); });
-process.on('SIGINT', () => { void stop(); });
+process.on('SIGTERM', () => { void stop().finally(() => process.exit(0)); });
+process.on('SIGINT', () => { void stop().finally(() => process.exit(0)); });
 main().catch(async error => {
   console.error('PR72_E2E_HARNESS_ERROR', error.message);
-  try { await stop(); } catch { process.exit(1); }
+  try { await stop(); } catch { /* startup already failed */ }
   process.exit(1);
 });
