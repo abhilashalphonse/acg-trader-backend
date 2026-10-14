@@ -1,15 +1,24 @@
-name: PR72 dual-commit release acceptance
+name: Paired release acceptance
 
 on:
   pull_request:
-    paths:
-      - 'scripts/pr72-ci-e2e-harness.js'
-      - 'scripts/pr72-release-readonly-inventory.js'
-      - 'scripts/pr72-live-feed-readonly-smoke.js'
-      - '.github/workflows/pr72-dual-commit-e2e.yml'
-      - 'src/**'
+    types: [opened, synchronize, reopened, edited, ready_for_review]
   workflow_dispatch:
+    inputs:
+      peer_pr:
+        description: 'Optional companion PR number; otherwise companion main'
+        type: string
+        default: ''
   workflow_call:
+    inputs:
+      peer_pr:
+        type: string
+        default: ''
+    secrets:
+      ACG_E2E_REPO_READ_TOKEN:
+        required: true
+      ACG_E2E_TWELVE_DATA_API_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -33,35 +42,49 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve the exact two unmerged PR commit IDs
+      - name: Resolve immutable pair without draft or fixed-PR dependencies
         id: commits
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
-        run: |
-          backend_json="$(gh api repos/abhilashalphonse/acg-trader-backend/pulls/72)"
-          frontend_json="$(gh api repos/abhilashalphonse/acg-trader-frontend/pulls/109)"
-          for json in "$backend_json" "$frontend_json"; do
-            test "$(jq -r '.state' <<<"$json")" = open || { echo "::error::Release PR is not open"; exit 1; }
-            test "$(jq -r '.draft' <<<"$json")" = true || { echo "::error::Release PR must remain draft until acceptance"; exit 1; }
-          done
-          backend_sha="$(jq -r '.head.sha' <<<"$backend_json")"
-          frontend_sha="$(jq -r '.head.sha' <<<"$frontend_json")"
-          [[ "$backend_sha" =~ ^[0-9a-f]{40}$ && "$frontend_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          # The job must attest to its triggering PR commit, never a later branch head.
-          case "${{ github.repository }}" in
-            abhilashalphonse/acg-trader-backend)
-              if [ "${{ github.event_name }}" = pull_request ]; then
-                test "$backend_sha" = "${{ github.event.pull_request.head.sha }}" || { echo "::error::Backend PR moved; rerun"; exit 1; }
-              fi ;;
-            abhilashalphonse/acg-trader-frontend)
-              if [ "${{ github.event_name }}" = pull_request ]; then
-                test "$frontend_sha" = "${{ github.event.pull_request.head.sha }}" || { echo "::error::Frontend PR moved; rerun"; exit 1; }
-              fi ;;
-            *) echo "::error::Unapproved calling repository"; exit 1 ;;
-          esac
-          echo "backend_sha=$backend_sha" >> "$GITHUB_OUTPUT"
-          echo "frontend_sha=$frontend_sha" >> "$GITHUB_OUTPUT"
-          echo "Commit pair: backend $backend_sha / frontend $frontend_sha"
+          PEER_PR: ${{ inputs.peer_pr }}
+        with:
+          github-token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          script: |
+            const repos = ['abhilashalphonse/acg-trader-backend', 'abhilashalphonse/acg-trader-frontend'];
+            const own = context.repo.owner + '/' + context.repo.repo;
+            if (!repos.includes(own)) throw new Error('Unapproved calling repository');
+            const peer = repos.find(r => r !== own);
+            const get = async (repo, path) => (await github.request('GET /repos/' + repo + '/' + path)).data;
+            const pr = context.payload.pull_request;
+            let ownSha = context.sha;
+            let peerNumber = process.env.PEER_PR || '';
+            if (pr) {
+              const fresh = await get(own, 'pulls/' + pr.number);
+              if (fresh.head.repo.full_name !== own || fresh.state !== 'open') throw new Error('Same-repository open PR required');
+              if (fresh.head.sha !== pr.head.sha) throw new Error('Triggering PR moved; rerun');
+              ownSha = pr.head.sha;
+              const markers = [...(fresh.body || '').matchAll(/^ACG-ACCEPTANCE-PEER-PR:\s*(\d+)\s*$/gm)];
+              if (markers.length > 1) throw new Error('Only one companion PR marker allowed');
+              peerNumber = markers[0]?.[1] || peerNumber;
+            }
+            if (peerNumber && !/^[1-9]\d*$/.test(peerNumber)) throw new Error('Invalid companion PR number');
+            const peerSource = peerNumber ? 'pulls/' + peerNumber : 'commits/main';
+            const peerData = await get(peer, peerSource);
+            let peerSha = peerData.sha;
+            if (peerNumber) {
+              if (peerData.head.repo.full_name !== peer) throw new Error('Companion fork is not allowed');
+              if (peerData.state === 'open') peerSha = peerData.head.sha;
+              else if (peerData.merged) peerSha = peerData.merge_commit_sha;
+              else throw new Error('Companion PR closed without merging');
+            }
+            for (const sha of [ownSha, peerSha]) if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('Invalid commit SHA');
+            core.setOutput('backend_sha', own === repos[0] ? ownSha : peerSha);
+            core.setOutput('frontend_sha', own === repos[1] ? ownSha : peerSha);
+            core.setOutput('peer_repo', peer);
+            core.setOutput('peer_source', peerSource);
+            core.setOutput('peer_sha', peerSha);
+            core.setOutput('own_sha', ownSha);
+            core.info('Commit pair: ' + own + '@' + ownSha + ' / ' + peer + '@' + peerSha);
 
       - name: Checkout exact backend commit
         uses: actions/checkout@v4
@@ -172,6 +195,68 @@ jobs:
           MONGODB_URI: mongodb://127.0.0.1:27017/acg_pr72_browser_e2e?replicaSet=rs0
           PR72_AUDIT_DATABASE: acg_pr72_browser_e2e
         run: node backend/scripts/pr72-release-readonly-inventory.js --expect-approved
+
+      - name: Checkout immutable policy-preserving recovery baseline
+        uses: actions/checkout@v4
+        with:
+          repository: abhilashalphonse/acg-trader-backend
+          ref: 08acc9c581c557f292d158a93d547df279d1e99c
+          path: recovery
+          token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Rehearse candidate restart and policy-preserving recovery startup
+        env:
+          CI: 'true'
+          PR72_E2E_DISPOSABLE: '1'
+          MONGODB_URI: mongodb://127.0.0.1:27017/acg_pr72_browser_e2e?replicaSet=rs0
+          NODE_ENV: test
+          LOG_LEVEL: warn
+          MARKET_GATEWAY_ENABLED: 'true'
+          MARKET_PROVIDER: twelve-data
+          MARKET_UNIVERSE_MODE: explicit
+          MARKET_SYMBOLS: BTCUSD,EURUSD
+          TRADING_API_ENABLED: 'true'
+          PLATFORM_EVENTS_ENABLED: 'false'
+          NEWS_TRADING_ENFORCEMENT: 'false'
+          WEEKEND_HOLDING_ENFORCEMENT: 'false'
+          TWELVE_DATA_API_KEY: ${{ secrets.ACG_E2E_TWELVE_DATA_API_KEY }}
+          RECOVERY_CHECKOUT: recovery
+          RECOVERY_SHA: 08acc9c581c557f292d158a93d547df279d1e99c
+        run: |
+          for name in frontend backend; do
+            file="${{ runner.temp }}/pr72-$name.pid"
+            if test -f "$file"; then
+              pid="$(cat "$file")"
+              pkill -TERM -P "$pid" 2>/dev/null || true
+              kill "$pid" 2>/dev/null || true
+            fi
+          done
+          sleep 3
+          (cd recovery && npm ci --no-audit)
+          node backend/scripts/policy-recovery-rehearsal.js
+
+      - name: Reject a moved commit pair
+        uses: actions/github-script@v7
+        env:
+          OWN_SHA: ${{ steps.commits.outputs.own_sha }}
+          PEER_REPO: ${{ steps.commits.outputs.peer_repo }}
+          PEER_SOURCE: ${{ steps.commits.outputs.peer_source }}
+          PEER_SHA: ${{ steps.commits.outputs.peer_sha }}
+        with:
+          github-token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          script: |
+            const get = async (repo, path) => (await github.request('GET /repos/' + repo + '/' + path)).data;
+            if (context.payload.pull_request) {
+              const p = await get(context.repo.owner + '/' + context.repo.repo, 'pulls/' + context.payload.pull_request.number);
+              if (p.state !== 'open' || p.head.sha !== process.env.OWN_SHA) throw new Error('Triggering PR moved during acceptance');
+              const oldBody = context.payload.pull_request.body || '';
+              const marker = b => (b.match(/^ACG-ACCEPTANCE-PEER-PR:\s*(\d+)\s*$/m) || [])[1] || '';
+              if (marker(oldBody) !== marker(p.body || '')) throw new Error('Companion selection changed; rerun');
+            }
+            const p = await get(process.env.PEER_REPO, process.env.PEER_SOURCE);
+            const sha = process.env.PEER_SOURCE.startsWith('pulls/') ? (p.state === 'open' ? p.head.sha : p.merged ? p.merge_commit_sha : '') : p.sha;
+            if (sha !== process.env.PEER_SHA) throw new Error('Companion moved during acceptance; rerun');
 
       - name: Publish aggregate-only evidence (never session or screenshots)
         if: always()

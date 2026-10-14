@@ -1,10 +1,19 @@
 # PR72 unattended dual-commit acceptance (CI-only)
 
-The release candidate is the **pair of exact, immutable commit SHAs** on backend
-PR #72 and frontend PR #109. The backend's
-`.github/workflows/pr72-dual-commit-e2e.yml` is also invoked from the
-frontend PR via a reusable workflow. Either head moving invalidates the older
-attestation; rerun and require green checks for both new heads.
+The release candidate is a pair of immutable backend/frontend SHAs. The permanent
+workflow tests the triggering repository's exact commit against companion main.
+For coordinated PRs, put a standalone `ACG-ACCEPTANCE-PEER-PR: N` line in each
+PR description. It selects that companion PR's head while open, or its merge
+commit after merging. Closed-unmerged companion PRs fail. Draft status is irrelevant.
+Without a marker, future PRs use companion main. Manual dispatch accepts an
+optional `peer_pr` number. The frontend caller pins the reviewed reusable workflow
+to an immutable backend commit; update that pin deliberately when tooling changes.
+
+Both selections are checked again after acceptance; moved heads fail. A later
+companion change still requires rerunning both repositories: GitHub does not
+automatically invalidate a green check on the other repository. Verify matching
+evidence immediately before coordinated merges. No path filters suppress this
+required check. Fork PRs fail without exposing secrets.
 
 ## One-time setup (no credentials in chat or Git)
 
@@ -30,7 +39,7 @@ step: do not automatically merge or deploy production from this workflow.
 
 ## Execution contract
 
-1. Resolve the latest SHA on both draft pull requests through GitHub API;
+1. Resolve the triggering commit and selected companion through GitHub API;
    reject moved commits and check out exactly those two commits.
 2. Run a containerized MongoDB **replica set** at localhost in the ephemeral
    GitHub runner, using only `acg_pr72_browser_e2e`. The harness refuses any
@@ -77,3 +86,7 @@ Protect existing open-position margins and the `ACG_LEVERAGE_BY_ASSET_CLASS`
 mapping throughout deployment and rollback. The pre-commercial production
 financial audit remains separate, read-only and private; never publish
 account-level snapshots in this repository.
+
+## Recovery rehearsal
+
+The paired job boots the candidate and immutable policy-compliant baseline `08acc9c581c557f292d158a93d547df279d1e99c` sequentially against the disposable database with a legacy open-position fixture. It uses the production entry command `node src/server.js` and `/health/live`, checks catalog policy and exact stored margin/balance/ledger preservation, and requires graceful shutdown. This validates application recovery startup; CI isolates upstream relay, uses test mode and does not reproduce Railway routing or all production environment settings. Never recover with pre-policy `6115b7c`. Keep exposure paused until private post-deployment guard and runtime health succeed.
