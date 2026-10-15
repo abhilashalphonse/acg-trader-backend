@@ -68,7 +68,7 @@ function compareBaseline(baseline, positions, deals, counters) {
   return { status: 'VERIFIED', positionsChecked: baseline.positions.length };
 }
 
-function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, deals, riskEvents, baseline, now = new Date() }) {
+function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, deals, riskEvents = [], riskSummary = null, baseline, now = new Date() }) {
   const c = zeroCounters();
   const accountById = new Map(accounts.map(a => [String(a._id), a]));
   const margins = new Map();
@@ -87,7 +87,8 @@ function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, d
     if (before == null || after == null || amount == null || !eq(addDecimal(before, amount), after)) c.ledgerMathErrors++;
     if (previous.has(id)) {
       if (!eq(before, previous.get(id))) c.ledgerContinuityErrors++;
-    } else if (!eq(before, a.state?.initialBalance)) {
+    } else if (!(entry.type === 'DEPOSIT' && eq(before, '0') && eq(after, a.state?.initialBalance))) {
+      // Provisioning writes the initial funding as a deposit from zero.
       c.ledgerOpeningBalanceErrors++;
     }
     if (entry.currency !== a.currency) c.ledgerCurrencyErrors++;
@@ -134,7 +135,8 @@ function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, d
     openByOrder.set(key, (openByOrder.get(key) || 0) + 1);
   }
   c.duplicateOpenExecutions = [...openByOrder.values()].filter(n => n > 1).length;
-  for (const r of riskEvents) {
+  if (riskSummary != null) c.staleChallengeRiskEvents = Number(riskSummary.staleReceived || 0);
+  else for (const r of riskEvents) {
     if (r.state === 'RECEIVED' && nowMs - new Date(r.createdAt).getTime() > STUCK_MS) c.staleChallengeRiskEvents++;
   }
   const marginBaseline = compareBaseline(baseline, positions, deals, c);
@@ -153,7 +155,7 @@ function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, d
       ledgerEntries: ledgers.length,
       orders: orders.length,
       deals: deals.length,
-      riskEvents: riskEvents.length,
+      riskEvents: riskSummary == null ? riskEvents.length : Number(riskSummary.total || 0),
       riskSequenceLagAccounts,
       orderStatuses,
     },
@@ -221,9 +223,15 @@ async function main() {
           { status: 1, createdAt: 1, receivedAt: 1, updatedAt: 1, expiresAt: 1 }, session);
         const deals = await readBounded(db, 'deals',
           { orderId: 1, positionId: 1, executedAt: 1, type: 1, volume: 1 }, session);
-        const riskEvents = await readBounded(db, 'accountriskevents',
-          { state: 1, createdAt: 1 }, session);
-        return evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, deals, riskEvents, baseline });
+        // Risk history already exceeds 885k rows. Aggregate on the server;
+        // never load it into application memory or hit the 200k row limit.
+        const riskCollection = db.collection('accountriskevents');
+        const riskTotal = await riskCollection.countDocuments({}, { session, maxTimeMS: 40000 });
+        const riskStale = await riskCollection.countDocuments(
+          { state: 'RECEIVED', createdAt: { $lt: new Date(Date.now() - STUCK_MS) } },
+          { session, maxTimeMS: 40000 });
+        return evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, deals,
+          riskSummary: { total: riskTotal, staleReceived: riskStale }, baseline });
       }, { readConcern: { level: 'snapshot' }, readPreference: 'primary', maxCommitTimeMS: 10000 });
     } finally {
       await session.endSession();
