@@ -5,6 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const { rateLimit } = require('express-rate-limit');
+const { createRailwayRateLimitIdentity } = require('./shared/http/rate-limit-identity');
 const pinoHttp = require('pino-http');
 
 const { env } = require('./config/env');
@@ -35,6 +36,9 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
 
   if (env.trustProxy) app.set('trust proxy', 1);
   app.disable('x-powered-by');
+  const rateLimitIdentityOptions = env.rateLimitIdentity === 'railway-real-ip'
+    ? { keyGenerator: createRailwayRateLimitIdentity(env.rateLimitTrustedProxyCidrs) }
+    : {};
 
   app.use(pinoHttp({
     logger,
@@ -59,13 +63,13 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   app.use('/health', createHealthRouter({ marketRuntime, tradingRuntime }));
   // Realtime valuation uses WebSocket. Keep a generous REST safety ceiling so
   // normal authenticated trading is not exhausted by users sharing a NAT IP.
-  app.use('/v1', rateLimit({ windowMs: 15 * 60 * 1000, limit: 5000, standardHeaders: true, legacyHeaders: false }));
+  app.use('/v1', rateLimit({ ...rateLimitIdentityOptions, windowMs: 15 * 60 * 1000, limit: 5000, standardHeaders: true, legacyHeaders: false }));
 
   app.get('/v1', (_req, res) => {
     res.json({ service: 'acg-trader-backend', apiVersion: 'v1', status: 'multi_tenant_execution_platform', market: marketRuntime.health(), trading: tradingRuntime.health() });
   });
 
-  app.use(['/v1/auth/login', '/v1/auth/federated/exchange'], rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
+  app.use(['/v1/auth/login', '/v1/auth/federated/exchange'], rateLimit({ ...rateLimitIdentityOptions, windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
   app.use('/v1/auth', createAuthRouter(authService));
   app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
