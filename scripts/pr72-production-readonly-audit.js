@@ -34,7 +34,7 @@ function zeroCounters() {
 }
 function compareBaseline(baseline, positions, deals, counters) {
   if (!baseline || !Array.isArray(baseline.positions) || !baseline.capturedAt || !Number.isFinite(Date.parse(baseline.capturedAt))) {
-    return { status: 'UNVERIFIED', positionsChecked: 0 };
+    return { status: 'UNVERIFIABLE', positionsChecked: 0 };
   }
   const current = new Map(positions.map(p => [String(p.positionId || p._id), p]));
   const closes = new Map();
@@ -139,7 +139,10 @@ function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, d
   }
   const marginBaseline = compareBaseline(baseline, positions, deals, c);
   const failures = Object.entries(c).filter(([, value]) => value > 0).map(([key]) => key);
-  if (marginBaseline.status !== 'VERIFIED') failures.push('missingPrivateReleaseBaseline');
+  const unverifiable = marginBaseline.status === 'UNVERIFIABLE' ? ['historicalPositionMarginPreservation'] : [];
+  const financialReconciliationStatus = failures.length ? 'FAILED' : 'PASSED';
+  const historicalMarginStatus = marginBaseline.status === 'UNVERIFIABLE' ? 'UNVERIFIABLE'
+    : (c.baselineMarginViolations || c.baselineUnexplainedVolumeChanges ? 'FAILED' : 'PASSED');
   return {
     schema: 'acg-production-financial-audit/v1',
     auditedAt: now.toISOString(),
@@ -158,9 +161,17 @@ function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, d
     baseline: marginBaseline,
     dataConsistency: 'single-mongodb-snapshot',
     auditReadOnly: true,
-    outstandingIndependentGates: ['firebaseDeployedCommit', 'freshMarketAndFxQuotes', 'authenticatedProductionCustomerValuation', 'railwayProviderAndRateLimitWarnings'],
-    financialInventoryPassed: failures.length === 0,
+    gates: {
+      currentFinancialReconciliation: financialReconciliationStatus,
+      historicalPositionMarginPreservation: historicalMarginStatus,
+      firebaseDeployedCommit: 'BLOCKED',
+      liveMarketAndFxValuation: 'BLOCKED',
+      authenticatedProductionCustomerWorkflow: 'BLOCKED',
+      operationalWarnings: 'BLOCKED',
+    },
+    financialInventoryPassed: failures.length === 0 && unverifiable.length === 0,
     failedChecks: failures,
+    unverifiableChecks: unverifiable,
   };
 }
 
@@ -187,7 +198,7 @@ async function main() {
     // Explicitly reject admin/readWrite credentials even if mistakenly supplied.
     const auth = await client.db('admin').command({ connectionStatus: 1 });
     const roles = auth?.authInfo?.authenticatedUserRoles || [];
-    if (roles.length < 1 || roles.some(role => role.role !== 'read' || role.db !== 'acg_trader')) {
+    if (roles.length !== 1 || roles.some(role => role.role !== 'read' || role.db !== 'acg_trader')) {
       throw new Error('AUDIT_CREDENTIAL_NOT_STRICT_READONLY');
     }
     const session = client.startSession();
