@@ -33,15 +33,16 @@ secrets**, never repository source, chat, screenshots or PR descriptions:
 - ACG_PROD_AUDIT_READONLY_MONGODB_URI: a dedicated Atlas user with the *only*
   assigned role 'read' on 'acg_trader'. The script refuses credentials with
   admin, readWrite, or other roles, even if supplied.
-- ACG_PROD_RELEASE_BASELINE_JSON: private snapshot of positions from the
+- ACG_PROD_RELEASE_BASELINE_JSON: **optional** authentic private snapshot of positions from the
   approved pre-release point; capturedAt must be an ISO time and each entry
   needs its immutable positionId, openVolume and margin. Example format:
   '{"capturedAt":"2026-10-14T00:00:00Z","positions":[{"positionId":"REPLACE_WITH_PRIVATE_ID","openVolume":"1","margin":"50"}]}'.
   The example values are placeholders, **not an actual baseline**.
   **The previously reported two open positions are not sufficient to
   reconstruct this data.** Never synthesize it from the current DB and claim
-  preservation since pre-rollout. With no authentic baseline the audit fails
-  its baseline-coverage gate, though it can still report current consistency.
+  preservation since pre-rollout. With no authentic baseline, the historical
+  margin-preservation gate is **UNVERIFIABLE** while current financial
+  reconciliation still runs and reports its own PASS/FAIL.
 - ACG_PROD_AUDIT_ENCRYPTION_KEY: a randomly generated 32-byte key expressed as
   64 hex characters. Store privately and separately from archived artifacts.
 
@@ -100,12 +101,16 @@ Before enabling:
 1. GitHub PR review + all tests pass. Keep production deployment separately
    approved (backend main automatically deploys to Railway).
 2. Configure restricted MongoDB user + GitHub environment secrets securely.
-3. Confirm accurate baseline and encrypted report recovery process.
+3. Verify baseline authenticity if available; otherwise record historical
+   preservation as UNVERIFIABLE. Prove encrypted report recovery.
 4. Manually dispatch once, download/decrypt/report on a trusted machine.
 5. Classify the exact ledger/risk/order exceptions before treating the
    scheduled audit as an unattended financial gate.
 
 Once enabled, check readiness runs every five minutes and inventory hourly.
 The inventory schedule can be reduced to daily after stabilization by review.
+The job prints PASS/FAIL/BLOCKED/UNVERIFIABLE rather than laundering missing
+historical evidence into an aggregate green status. A status of UNVERIFIABLE
+remains a nonzero CI exit until historical proof is obtained.
 GitHub Actions schedule execution is best-effort; use Railway/provider alerting
 for time-critical operational signals.
