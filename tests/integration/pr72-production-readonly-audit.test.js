@@ -30,7 +30,7 @@ test('coherent snapshot passes finance-only invariants', () => {
   const r = evaluateSnapshot(fixture());
   assert.equal(r.financialInventoryPassed, true);
   assert.equal(r.exceptions.missingLedgerAccounts, 0);
-  assert.equal(r.outstandingIndependentGates.length, 4);
+  assert.equal(r.gates.firebaseDeployedCommit, 'BLOCKED');
 });
 test('accounts without any ledger are explicitly flagged', () => {
   const f = fixture(); f.ledgers = [];
@@ -77,8 +77,10 @@ test('baseline expects proportional margin release backed by close deals', () =>
 test('release baseline absence blocks a fully green financial audit', () => {
   const f = fixture(); f.baseline = null;
   const r = evaluateSnapshot(f);
-  assert.equal(r.baseline.status, 'UNVERIFIED');
-  assert.ok(r.failedChecks.includes('missingPrivateReleaseBaseline'));
+  assert.equal(r.baseline.status, 'UNVERIFIABLE');
+  assert.equal(r.gates.currentFinancialReconciliation, 'PASSED');
+  assert.equal(r.gates.historicalPositionMarginPreservation, 'UNVERIFIABLE');
+  assert.ok(r.unverifiableChecks.includes('historicalPositionMarginPreservation'));
 });
 test('duplicate opening executions and stale risk replay are visible', () => {
   const f = fixture();
@@ -107,4 +109,13 @@ test('momentary risk sequence lag is informational, aged unresolved is an except
   f.accounts[0].riskProcessingState = 'RISK_UNRESOLVED';
   f.accounts[0].riskUnresolvedSince = '2026-10-15T11:00:00Z';
   assert.equal(evaluateSnapshot(f).exceptions.unresolvedRiskAccounts, 1);
+});
+
+test('baseline violations fail historical check without misclassifying unrecoverable evidence', () => {
+  const f = fixture();
+  f.baseline.positions = [{ positionId: 'position-1', openVolume: '1', margin: '20' }];
+  const r = evaluateSnapshot(f);
+  assert.equal(r.gates.historicalPositionMarginPreservation, 'FAILED');
+  assert.equal(r.gates.currentFinancialReconciliation, 'FAILED');
+  assert.deepEqual(r.unverifiableChecks, []);
 });
