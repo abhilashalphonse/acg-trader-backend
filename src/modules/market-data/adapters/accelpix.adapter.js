@@ -636,6 +636,7 @@ class AccelpixAdapter extends EventEmitter {
     // aggregation. Fetch the current NSE date independently on latest pages.
     // Never manufacture missing OHLC: recover it only from provider bars.
     let recoveredCurrentFiveMinuteBars = null;
+    let currentDayMinuteBars = [];
     if (cursor == null) {
       const currentDate = ymdInIst(endMs);
       const sessionOpenMs = nseSessionOpenUtcMs(endMs);
@@ -650,6 +651,7 @@ class AccelpixAdapter extends EventEmitter {
           .filter(bar => bar && bar.openTimeMs >= sessionOpenMs
             && bar.openTimeMs < sessionOpenMs + 375 * 60_000)
           .sort((a, b) => a.openTimeMs - b.openTimeMs);
+        currentDayMinuteBars = liveMinuteBars;
         if (liveMinuteBars.length) {
           if (intraday) sourceBars = mergeBarsByOpenTime(sourceBars, liveMinuteBars);
           else {
@@ -669,11 +671,11 @@ class AccelpixAdapter extends EventEmitter {
       // resolution when it covers substantially more of the elapsed session.
       // Never translate a 5m bar into fake 1m candles.
       if (timeframe !== '1m' && sessionElapsedMinutes >= 15) {
-        const currentMinuteBars = sourceBars.filter(bar =>
-          intraday && bar.openTimeMs >= sessionOpenMs
-          && bar.openTimeMs < sessionOpenMs + 375 * 60_000);
-        const missingMinuteCoverage = !intraday
-          || currentMinuteBars.length < Math.floor(sessionElapsedMinutes * 0.8);
+        const currentMinuteBars = intraday
+          ? sourceBars.filter(bar => bar.openTimeMs >= sessionOpenMs
+            && bar.openTimeMs < sessionOpenMs + 375 * 60_000)
+          : currentDayMinuteBars;
+        const missingMinuteCoverage = currentMinuteBars.length < Math.floor(sessionElapsedMinutes * 0.8);
         if (missingMinuteCoverage) {
           try {
             const fiveRows = await this.#fetchHistoryArray(
@@ -730,7 +732,7 @@ class AccelpixAdapter extends EventEmitter {
           currentBars,
         );
       } else {
-        const minuteBars = sourceBars.filter(bar =>
+        const minuteBars = currentDayMinuteBars.filter(bar =>
           bar.openTimeMs >= sessionOpenMs && bar.openTimeMs < endOfSessionMs);
         const nativeBuckets = new Set(recoveredCurrentFiveMinuteBars.map(bar =>
           nseIntradayBucketOpenTimeMs(bar.openTimeMs, '5m')));
@@ -740,8 +742,8 @@ class AccelpixAdapter extends EventEmitter {
           [...recoveredCurrentFiveMinuteBars, ...remainingMinutes]
             .sort((a, b) => a.openTimeMs - b.openTimeMs));
         if (currentDay) {
-          bars = mergeBarsByOpenTime(bars, [currentDay]);
-          if (timeframe === '1w') bars = aggregateWeeklyEodBars(bars);
+          sourceBars = mergeBarsByOpenTime(sourceBars, [currentDay]);
+          bars = timeframe === '1w' ? aggregateWeeklyEodBars(sourceBars) : sourceBars;
         }
       }
     }
