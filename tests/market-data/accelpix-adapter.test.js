@@ -289,6 +289,7 @@ test('latest intraday history overlays the current NSE session even when the lon
     apiKey: 'secret',
     fetchImpl,
     clientFactory: () => fakeClient(),
+    now: () => Date.parse('2026-10-01T03:47:00.000Z'),
   });
 
   const bars = await adapter.fetchHistorical({
@@ -329,6 +330,7 @@ test('latest D1 history builds today from current-session minute aggregation whe
     apiKey: 'secret',
     fetchImpl,
     clientFactory: () => fakeClient(),
+    now: () => Date.parse('2026-10-01T04:31:00.000Z'),
   });
 
   const bars = await adapter.fetchHistorical({
