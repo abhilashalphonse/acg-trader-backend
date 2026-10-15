@@ -6,7 +6,7 @@ const { ACG_INDIA_PILOT_CATALOG } = require('../../src/modules/instruments/india
 function fixture() {
   const account = {
     _id: 'acct', currency: 'USD',
-    state: { initialBalance: '100', balance: '110', usedMargin: '30' },
+    state: { initialBalance: '100', balance: '110', floatingPnl: '0', equity: '110', usedMargin: '30', freeMargin: '80' },
     riskProcessingState: 'RESOLVED', riskSequence: 2, lastEvaluatedRiskSequence: 2,
   };
   return {
@@ -90,4 +90,21 @@ test('duplicate opening executions and stale risk replay are visible', () => {
   const r = evaluateSnapshot(f);
   assert.equal(r.exceptions.duplicateOpenExecutions, 1);
   assert.equal(r.exceptions.staleChallengeRiskEvents, 1);
+});
+
+test('saved equity and free margin must remain arithmetically consistent', () => {
+  const f = fixture();
+  f.accounts[0].state.equity = '109';
+  const r = evaluateSnapshot(f);
+  assert.equal(r.exceptions.savedEquityInconsistencies, 1);
+  assert.equal(r.exceptions.savedFreeMarginInconsistencies, 1);
+});
+test('momentary risk sequence lag is informational, aged unresolved is an exception', () => {
+  const f = fixture();
+  f.accounts[0].riskSequence = 3;
+  assert.equal(evaluateSnapshot(f).financialInventoryPassed, true);
+  assert.equal(evaluateSnapshot(f).counts.riskSequenceLagAccounts, 1);
+  f.accounts[0].riskProcessingState = 'RISK_UNRESOLVED';
+  f.accounts[0].riskUnresolvedSince = '2026-10-15T11:00:00Z';
+  assert.equal(evaluateSnapshot(f).exceptions.unresolvedRiskAccounts, 1);
 });
