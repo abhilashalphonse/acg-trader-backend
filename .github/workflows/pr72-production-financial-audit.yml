@@ -41,8 +41,8 @@ jobs:
           PR72_AUDIT_ENCRYPTION_KEY: ${{ secrets.ACG_PROD_AUDIT_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
-          if [[ -z "$MONGODB_URI" || -z "$PR72_RELEASE_BASELINE_JSON" || -z "$PR72_AUDIT_ENCRYPTION_KEY" ]]; then
-            echo "::error::Protected production-audit secrets or private release baseline are missing."
+          if [[ -z "$MONGODB_URI" || -z "$PR72_AUDIT_ENCRYPTION_KEY" ]]; then
+            echo "::error::Dedicated read-only MongoDB URI or audit report encryption key is missing."
             exit 2
           fi
           set +e
@@ -56,7 +56,13 @@ jobs:
               "$RUNNER_TEMP/financial-audit.json" \
               "$RUNNER_TEMP/financial-audit.encrypted.json"
           fi
-          echo "ACG private read-only audit: $([[ $exit_code -eq 0 ]] && echo PASS || echo FAIL)."
+          case "$exit_code" in
+            0) status=PASSED ;;
+            1) status=FAILED ;;
+            3) status=UNVERIFIABLE ;;
+            *) status=BLOCKED ;;
+          esac
+          echo "ACG private read-only audit: $status. See encrypted aggregate report if present."
           exit "$exit_code"
 
       - name: Archive encrypted report only
