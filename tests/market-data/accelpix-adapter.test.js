@@ -289,6 +289,7 @@ test('latest intraday history overlays the current NSE session even when the lon
     apiKey: 'secret',
     fetchImpl,
     clientFactory: () => fakeClient(),
+    now: () => Date.parse('2026-10-01T03:47:00.000Z'),
   });
 
   const bars = await adapter.fetchHistorical({
@@ -329,6 +330,7 @@ test('latest D1 history builds today from current-session minute aggregation whe
     apiKey: 'secret',
     fetchImpl,
     clientFactory: () => fakeClient(),
+    now: () => Date.parse('2026-10-01T04:31:00.000Z'),
   });
 
   const bars = await adapter.fetchHistorical({
@@ -344,4 +346,125 @@ test('latest D1 history builds today from current-session minute aggregation whe
   assert.equal(today.low, 1169);
   assert.equal(today.close, 1174);
   assert.equal(today.providerVolume, 300);
+});
+
+
+test('NSE history recovers a full October 15 session from independent native 5m bars', async () => {
+  const nowMs = Date.parse('2026-10-15T08:45:00.000Z'); // 14:15 IST
+  const calls = [];
+  const fixture = (minute, duration, day = 15) => {
+    const iso = new Date(Date.UTC(2026, 9, day, 9, 15 + minute)).toISOString().slice(0, 19);
+    return { tkr: 'TCS', td: iso, op: 100 + minute / 5,
+      hp: 101 + minute / 5, lp: 99 + minute / 5,
+      cp: 100.5 + minute / 5, vol: duration };
+  };
+  const fetchImpl = async url => {
+    const parts = new URL(String(url)).pathname.split('/').filter(Boolean);
+    const resolution = parts.at(-1);
+    calls.push(resolution);
+    return {
+      ok: true, status: 200,
+      async json() {
+        if (resolution === '5') {
+          return Array.from({ length: 60 }, (_, index) => fixture(index * 5, 100));
+        }
+        if (parts.at(-3) === parts.at(-2)) {
+          // Provider responds with only the last minute, not this morning.
+          return [fixture(299, 1)];
+        }
+        return [fixture(350, 5, 14)];
+      },
+    };
+  };
+  const adapter = new AccelpixAdapter({
+    apiKey: 'secret', fetchImpl, now: () => nowMs,
+    clientFactory: () => fakeClient(), logger: { warn() {} },
+  });
+  const bars = await adapter.fetchHistorical({
+    providerSymbol: 'TCS', timeframe: '15m', limit: 160,
+  });
+  const start = Date.parse('2026-10-15T03:45:00.000Z');
+  const today = bars.filter(bar => bar.openTimeMs >= start);
+  assert.equal(calls.length, 3);
+  assert.equal(calls.at(-1), '5');
+  assert.equal(today.length, 20); // 09:15 through 14:15 IST
+  assert.equal(today[0].openTimeMs, start);
+  assert.equal(today.at(-1).openTimeMs, Date.parse('2026-10-15T08:30:00.000Z'));
+  assert.ok(today.every((bar, index) => index === 0
+    || bar.openTimeMs - today[index - 1].openTimeMs === 15 * 60_000));
+  assert.equal(today[0].providerVolume, 300);
+  assert.equal(today.at(-1).providerVolume, 300);
+});
+
+test('native 5m recovery never invents missing 1m candles', async () => {
+  const calls = [];
+  const fetchImpl = async url => {
+    const parts = new URL(String(url)).pathname.split('/').filter(Boolean);
+    const resolution = parts.at(-1);
+    calls.push(resolution);
+    return {
+      ok: true, status: 200,
+      async json() {
+        if (parts.at(-3) === parts.at(-2)) {
+          return [{ td: '2026-10-15T14:14:00', op: 100, hp: 101, lp: 99, cp: 100.5, vol: 10 }];
+        }
+        return [];
+      },
+    };
+  };
+  const adapter = new AccelpixAdapter({
+    apiKey: 'secret', fetchImpl, now: () => Date.parse('2026-10-15T08:45:00.000Z'),
+    clientFactory: () => fakeClient(),
+  });
+  const bars = await adapter.fetchHistorical({
+    providerSymbol: 'TCS', timeframe: '1m', limit: 160,
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(bars.length, 1);
+  assert.equal(bars[0].openTimeMs, Date.parse('2026-10-15T08:44:00.000Z'));
+});
+
+test('weekly NSE current-day recovery does not double count a prior day', async () => {
+  const fetchImpl = async url => {
+    const parts = new URL(String(url)).pathname.split('/').filter(Boolean);
+    const resolution = parts.at(-1);
+    return {
+      ok: true, status: 200,
+      async json() {
+        if (resolution === '5') {
+          return Array.from({ length: 60 }, (_, index) => ({
+            td: new Date(Date.UTC(2026, 9, 15, 9, 15 + index * 5)).toISOString().slice(0, 19),
+            op: 120, hp: 130, lp: 110, cp: 125, vol: 10,
+          }));
+        }
+        if (resolution === '1') return [];
+        return [
+          { td: '2026-10-14T00:00:00', op: 100, hp: 110, lp: 90, cp: 105, vol: 200 },
+        ];
+      },
+    };
+  };
+  const adapter = new AccelpixAdapter({
+    apiKey: 'secret', fetchImpl, now: () => Date.parse('2026-10-15T08:45:00.000Z'),
+    clientFactory: () => fakeClient(), logger: { warn() {} },
+  });
+  const daily = await adapter.fetchHistorical({ providerSymbol: 'TCS', timeframe: '1d', limit: 20 });
+  const weekly = await adapter.fetchHistorical({ providerSymbol: 'TCS', timeframe: '1w', limit: 20 });
+  assert.equal(daily.length, 2);
+  assert.equal(daily.at(-1).openTimeMs, Date.parse('2026-10-15T00:00:00.000Z'));
+  assert.equal(daily.at(-1).providerVolume, 600);
+  assert.equal(weekly.length, 1);
+  assert.equal(weekly[0].openTimeMs, Date.parse('2026-10-12T00:00:00.000Z'));
+  assert.equal(weekly[0].open, 100);
+  assert.equal(weekly[0].high, 130);
+  assert.equal(weekly[0].providerVolume, 800);
+});
+
+test('NSE wall-clock dates are stable across US and European DST transitions', () => {
+  for (const date of ['2026-03-27', '2026-03-30', '2026-10-15', '2026-10-26']) {
+    assert.equal(
+      parseAccelpixIntradayTimeMs(date + ' 09:15:00'),
+      Date.parse(date + 'T03:45:00.000Z'),
+    );
+  }
 });

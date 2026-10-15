@@ -333,3 +333,85 @@ test('history preserves a higher-timeframe candle that spans the Sunday reopen',
     restore();
   }
 });
+
+
+test('NSE history keeps provider OHLC and fills only verified completed local gaps', async () => {
+  const missing = Date.parse('2026-10-15T07:00:00.000Z');
+  const overlap = Date.parse('2026-10-15T08:30:00.000Z');
+  const prior = Date.parse('2026-10-14T08:30:00.000Z');
+  const localRows = [
+    {
+      symbol: 'TCS', timeframe: '15m', openTime: new Date(missing),
+      open: '100', high: '104', low: '99', close: '103',
+      providerVolume: '100', tickCount: 5, complete: true,
+      synthetic: false, source: 'LIVE', provider: 'accelpix',
+    },
+    {
+      symbol: 'TCS', timeframe: '15m', openTime: new Date(overlap),
+      open: '999', high: '1000', low: '998', close: '999',
+      complete: true, synthetic: false, provider: 'accelpix',
+    },
+    {
+      symbol: 'TCS', timeframe: '15m', openTime: new Date(missing + 15 * 60_000),
+      open: '100', high: '101', low: '99', close: '100.5',
+      complete: false, synthetic: false, provider: 'accelpix',
+    },
+  ];
+  const restore = stubLocalRows(localRows);
+  const history = new MarketHistoryService({
+    adapter: {
+      supportsHistory() { return true; },
+      async fetchHistorical() {
+        return [
+          { openTimeMs: prior, open: 90, high: 95, low: 89, close: 92, providerVolume: 25 },
+          { openTimeMs: overlap, open: 105, high: 108, low: 104, close: 107, providerVolume: 50 },
+        ];
+      },
+    },
+    instrumentRegistry: {
+      provider() { return 'accelpix'; },
+      providerSymbol() { return 'TCS'; },
+    },
+    historyCache: new ProviderHistoryCache(),
+    logger: { warn() {} },
+  });
+  try {
+    const bars = await history.getCandles({ symbol: 'TCS', timeframe: '15m', limit: 20 });
+    assert.deepEqual(bars.map(bar => bar.openTimeMs), [prior, missing, overlap]);
+    assert.equal(bars[1].close, 103);
+    assert.equal(bars[1].complete, true);
+    assert.equal(bars[2].close, 107); // Provider beats local for matching time.
+  } finally {
+    restore();
+  }
+});
+
+test('NSE history does not import synthetic or foreign-provider local candles', async () => {
+  const start = Date.parse('2026-10-15T07:00:00.000Z');
+  const restore = stubLocalRows([
+    { openTime: new Date(start), open: '100', high: '101', low: '99',
+      close: '100', provider: 'twelve-data', complete: true, synthetic: false },
+    { openTime: new Date(start + 900_000), open: '100', high: '101', low: '99',
+      close: '100', provider: 'accelpix', complete: true, synthetic: true },
+  ]);
+  const service = new MarketHistoryService({
+    adapter: {
+      supportsHistory() { return true; },
+      async fetchHistorical() {
+        return [{ openTimeMs: start + 1800_000, open: 100, high: 101, low: 99, close: 100.5 }];
+      },
+    },
+    instrumentRegistry: {
+      provider() { return 'accelpix'; },
+      providerSymbol() { return 'TCS'; },
+    },
+    logger: { warn() {} },
+  });
+  try {
+    const bars = await service.getCandles({ symbol: 'TCS', timeframe: '15m', limit: 20 });
+    assert.equal(bars.length, 1);
+    assert.equal(bars[0].openTimeMs, start + 1800_000);
+  } finally {
+    restore();
+  }
+});

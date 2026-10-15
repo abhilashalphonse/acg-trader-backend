@@ -181,9 +181,34 @@ class MarketHistoryService {
           },
         });
         if (providerBars.length) {
-          const hasMore = providerBars.length > safeLimit
-            || (safeLimit === 1000 && providerBars.length === safeLimit);
-          const selected = providerBars.slice(-safeLimit);
+          // A partially populated Accelpix historical response must not hide
+          // already persisted, completed NSE live bars from the same series.
+          // Provider OHLC remains authoritative on overlaps; only genuine
+          // missing open-time buckets are supplied from our local store.
+          let combinedBars = providerBars;
+          if (provider === 'accelpix' && cursor == null && filteredLocalRows.length) {
+            const byTime = new Map(providerBars.map(bar => [Number(bar.openTimeMs), bar]));
+            for (const local of filteredLocalRows) {
+              const openTimeMs = Number(local.openTimeMs);
+              if (byTime.has(openTimeMs) || local.provider !== 'accelpix'
+                || local.complete !== true || local.synthetic === true) continue;
+              const values = [local.open, local.high, local.low, local.close].map(Number);
+              if (!values.every(value => Number.isFinite(value) && value > 0)
+                || values[1] < Math.max(values[0], values[3])
+                || values[2] > Math.min(values[0], values[3])) continue;
+              byTime.set(openTimeMs, {
+                openTimeMs,
+                open: values[0], high: values[1],
+                low: values[2], close: values[3],
+                providerVolume: local.providerVolume == null ? null : Number(local.providerVolume),
+                snapshotComplete: true,
+              });
+            }
+            combinedBars = [...byTime.values()].sort((left, right) => left.openTimeMs - right.openTimeMs);
+          }
+          const hasMore = combinedBars.length > safeLimit
+            || (safeLimit === 1000 && combinedBars.length === safeLimit);
+          const selected = combinedBars.slice(-safeLimit);
           const candles = this.#serializeProviderBars(
             canonical,
             timeframe,

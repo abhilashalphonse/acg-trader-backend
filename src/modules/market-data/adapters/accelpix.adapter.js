@@ -266,6 +266,7 @@ class AccelpixAdapter extends EventEmitter {
     logger = null,
     clientFactory = null,
     fetchImpl = globalThis.fetch,
+    now = Date.now,
   }) {
     super();
     this.apiKey = apiKey;
@@ -282,6 +283,7 @@ class AccelpixAdapter extends EventEmitter {
       logger: this.logger,
     }));
     this.fetchImpl = fetchImpl;
+    this.now = now;
 
     this.client = null;
     this.stopping = false;
@@ -587,7 +589,7 @@ class AccelpixAdapter extends EventEmitter {
     const cursor = Number.isFinite(Number(beforeMs)) && Number(beforeMs) > 0
       ? Math.trunc(Number(beforeMs))
       : null;
-    const endMs = cursor == null ? Date.now() : cursor - 1;
+    const endMs = cursor == null ? this.now() : cursor - 1;
 
     let startMs;
     let start;
@@ -630,46 +632,121 @@ class AccelpixAdapter extends EventEmitter {
       .filter(bar => cursor == null || bar.openTimeMs < cursor)
       .sort((a, b) => a.openTimeMs - b.openTimeMs);
 
-    // Accelpix documents current-day minute history as live tick aggregation,
-    // but large historical ranges can be served from a historical cache before
-    // the current session has been folded in. Always request the current NSE
-    // trading date separately on the latest page and overlay it. This guarantees
-    // that today's bars are present from 09:15 IST onward instead of ending at
-    // the previous trading day.
+    // Multi-day Accelpix historical responses may lag today's live tick
+    // aggregation. Fetch the current NSE date independently on latest pages.
+    // Never manufacture missing OHLC: recover it only from provider bars.
+    let recoveredCurrentFiveMinuteBars = null;
+    let currentDayMinuteBars = [];
     if (cursor == null) {
+      const currentDate = ymdInIst(endMs);
+      const sessionOpenMs = nseSessionOpenUtcMs(endMs);
+      const sessionElapsedMinutes = Math.max(0, Math.min(375,
+        Math.floor((endMs - sessionOpenMs) / 60_000)));
       try {
-        const currentDate = ymdInIst(endMs);
         const liveRows = await this.#fetchHistoryArray(
           `/api/fda/rest/${encodeURIComponent(providerSymbol)}/${currentDate}/${currentDate}/1`,
         );
         const liveMinuteBars = liveRows
           .map(row => mapHistoryRow(row, '1m'))
-          .filter(Boolean)
+          .filter(bar => bar && bar.openTimeMs >= sessionOpenMs
+            && bar.openTimeMs < sessionOpenMs + 375 * 60_000)
           .sort((a, b) => a.openTimeMs - b.openTimeMs);
-
+        currentDayMinuteBars = liveMinuteBars;
         if (liveMinuteBars.length) {
-          if (intraday) {
-            sourceBars = mergeBarsByOpenTime(sourceBars, liveMinuteBars);
-          } else {
+          if (intraday) sourceBars = mergeBarsByOpenTime(sourceBars, liveMinuteBars);
+          else {
             const currentDay = aggregateCurrentNseDailyBar(liveMinuteBars);
             if (currentDay) sourceBars = mergeBarsByOpenTime(sourceBars, [currentDay]);
           }
         }
       } catch (error) {
-        // Do not make the whole chart unavailable when only the current-session
-        // overlay fails. The websocket candle remains available as a fallback.
         this.logger?.warn?.(
           { err: error, providerSymbol, timeframe },
-          'Accelpix current-day candle overlay failed',
+          'Accelpix current-day minute history request failed',
         );
+      }
+
+      // An empty/short 1m response is not proof that the NSE session contained
+      // no trades. For 5m+ and D1/W1, use an independent native 5m provider
+      // resolution when it covers substantially more of the elapsed session.
+      // Never translate a 5m bar into fake 1m candles.
+      if (timeframe !== '1m' && sessionElapsedMinutes >= 15) {
+        const currentMinuteBars = intraday
+          ? sourceBars.filter(bar => bar.openTimeMs >= sessionOpenMs
+            && bar.openTimeMs < sessionOpenMs + 375 * 60_000)
+          : currentDayMinuteBars;
+        const missingMinuteCoverage = currentMinuteBars.length < Math.floor(sessionElapsedMinutes * 0.8);
+        if (missingMinuteCoverage) {
+          try {
+            const fiveRows = await this.#fetchHistoryArray(
+              `/api/fda/rest/${encodeURIComponent(providerSymbol)}/${currentDate}/${currentDate}/5`,
+            );
+            const fiveBars = fiveRows
+              .map(row => mapHistoryRow(row, '1m'))
+              .filter(bar => bar && bar.openTimeMs >= sessionOpenMs
+                && bar.openTimeMs < sessionOpenMs + 375 * 60_000)
+              .sort((a, b) => a.openTimeMs - b.openTimeMs);
+            const coveredMinuteBuckets = new Set(currentMinuteBars.map(bar =>
+              nseIntradayBucketOpenTimeMs(bar.openTimeMs, '5m')));
+            if (fiveBars.length >= Math.max(2, Math.ceil(sessionElapsedMinutes / 5 * 0.6))
+              && (fiveBars.length > coveredMinuteBuckets.size
+                || currentMinuteBars.length < fiveBars.length * 3)) {
+              recoveredCurrentFiveMinuteBars = fiveBars;
+              this.logger?.warn?.({
+                providerSymbol, timeframe, sessionDate: currentDate,
+                minuteBars: currentMinuteBars.length, fiveMinuteBars: fiveBars.length,
+              }, 'Accelpix recovered incomplete NSE current-session history from native 5m bars');
+            }
+          } catch (error) {
+            this.logger?.warn?.(
+              { err: error, providerSymbol, timeframe, sessionDate: currentDate },
+              'Accelpix native 5m current-session recovery failed',
+            );
+          }
+        }
       }
     }
 
-    const bars = intraday
+    let bars = intraday
       ? aggregateNseIntradayBars(sourceBars, timeframe)
       : timeframe === '1w'
         ? aggregateWeeklyEodBars(sourceBars)
         : sourceBars;
+
+    if (recoveredCurrentFiveMinuteBars?.length) {
+      // Replace the incomplete current session only. Previous trading days
+      // remain sourced from their normal high-resolution historical candles.
+      const sessionOpenMs = nseSessionOpenUtcMs(endMs);
+      const endOfSessionMs = sessionOpenMs + 375 * 60_000;
+      if (intraday) {
+        const nativeBuckets = new Set(recoveredCurrentFiveMinuteBars.map(bar =>
+          nseIntradayBucketOpenTimeMs(bar.openTimeMs, '5m')));
+        const supplementalMinuteBars = sourceBars.filter(bar =>
+          bar.openTimeMs >= sessionOpenMs && bar.openTimeMs < endOfSessionMs
+          && !nativeBuckets.has(nseIntradayBucketOpenTimeMs(bar.openTimeMs, '5m')));
+        const currentBars = aggregateNseIntradayBars(
+          [...recoveredCurrentFiveMinuteBars, ...supplementalMinuteBars]
+            .sort((a, b) => a.openTimeMs - b.openTimeMs), timeframe);
+        bars = mergeBarsByOpenTime(
+          bars.filter(bar => bar.openTimeMs < sessionOpenMs),
+          currentBars,
+        );
+      } else {
+        const minuteBars = currentDayMinuteBars.filter(bar =>
+          bar.openTimeMs >= sessionOpenMs && bar.openTimeMs < endOfSessionMs);
+        const nativeBuckets = new Set(recoveredCurrentFiveMinuteBars.map(bar =>
+          nseIntradayBucketOpenTimeMs(bar.openTimeMs, '5m')));
+        const remainingMinutes = minuteBars.filter(bar =>
+          !nativeBuckets.has(nseIntradayBucketOpenTimeMs(bar.openTimeMs, '5m')));
+        const currentDay = aggregateCurrentNseDailyBar(
+          [...recoveredCurrentFiveMinuteBars, ...remainingMinutes]
+            .sort((a, b) => a.openTimeMs - b.openTimeMs));
+        if (currentDay) {
+          sourceBars = mergeBarsByOpenTime(sourceBars, [currentDay]);
+          bars = timeframe === '1w' ? aggregateWeeklyEodBars(sourceBars) : sourceBars;
+        }
+      }
+    }
 
     return bars.slice(-safeLimit);
   }
