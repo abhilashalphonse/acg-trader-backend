@@ -52,7 +52,13 @@ async function syncIndiaPilotCatalog({ logger } = {}) {
 async function enforceCatalogLeveragePolicy({ logger } = {}) {
   if (!ACG_INSTRUMENT_CATALOG.length) return { matched: 0, modified: 0 };
 
-  const operations = ACG_INSTRUMENT_CATALOG.map(spec => ({
+  // Include the five pre-existing NSE chart-only pilot records. They can
+  // exist in production even when INDIA_MARKET_ENABLED is false, so their
+  // leverage cannot depend on optional India catalog synchronization.
+  // This only corrects catalog leverage: no execution enabling, position
+  // repricing, account/ledger writes, or upserts.
+  const policyCatalog = [...ACG_INSTRUMENT_CATALOG, ...ACG_INDIA_PILOT_CATALOG];
+  const operations = policyCatalog.map(spec => ({
     updateOne: {
       filter: { symbol: spec.symbol },
       update: { $set: { defaultLeverage: spec.defaultLeverage } },
