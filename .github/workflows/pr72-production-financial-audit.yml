@@ -1,0 +1,75 @@
+name: ACG production financial audit (read-only, encrypted)
+
+on:
+  schedule:
+    - cron: '13 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-readonly-financial-audit
+  cancel-in-progress: false
+
+jobs:
+  financial-audit:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production-audit
+    timeout-minutes: 15
+    steps:
+      - name: Check out approved main
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install frozen dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run snapshot-consistent financial audit with no public data output
+        shell: bash
+        env:
+          PR72_READONLY_RELEASE_AUDIT: '1'
+          PR72_AUDIT_DATABASE: acg_trader
+          MONGODB_URI: ${{ secrets.ACG_PROD_AUDIT_READONLY_MONGODB_URI }}
+          PR72_RELEASE_BASELINE_JSON: ${{ secrets.ACG_PROD_RELEASE_BASELINE_JSON }}
+          PR72_AUDIT_ENCRYPTION_KEY: ${{ secrets.ACG_PROD_AUDIT_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$MONGODB_URI" || -z "$PR72_RELEASE_BASELINE_JSON" || -z "$PR72_AUDIT_ENCRYPTION_KEY" ]]; then
+            echo "::error::Protected production-audit secrets or private release baseline are missing."
+            exit 2
+          fi
+          set +e
+          node scripts/pr72-release-readonly-inventory.js --expect-approved --comprehensive \
+            --json-output "$RUNNER_TEMP/financial-audit.json" \
+            > "$RUNNER_TEMP/audit.stdout" 2> "$RUNNER_TEMP/audit.stderr"
+          exit_code=$?
+          set -e
+          if [[ -f "$RUNNER_TEMP/financial-audit.json" ]]; then
+            node scripts/pr72-encrypt-audit-report.js \
+              "$RUNNER_TEMP/financial-audit.json" \
+              "$RUNNER_TEMP/financial-audit.encrypted.json"
+          fi
+          echo "ACG private read-only audit: $([[ $exit_code -eq 0 ]] && echo PASS || echo FAIL)."
+          exit "$exit_code"
+
+      - name: Archive encrypted report only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acg-production-audit-encrypted-${{ github.run_id }}
+          path: ${{ runner.temp }}/financial-audit.encrypted.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Scrub runner-local plaintext
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/financial-audit.json" "$RUNNER_TEMP/audit.stdout" "$RUNNER_TEMP/audit.stderr"
