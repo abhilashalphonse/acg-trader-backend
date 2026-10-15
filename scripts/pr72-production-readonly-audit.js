@@ -161,6 +161,8 @@ function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, d
     baseline: marginBaseline,
     dataConsistency: 'single-mongodb-snapshot',
     auditReadOnly: true,
+    provenance: { auditCodeCommit: process.env.GITHUB_SHA || null, railwayLiveCommit: null, firebaseServedCommit: null },
+    overallStatus: failures.length ? 'FAILED' : (unverifiable.length ? 'UNVERIFIABLE' : 'PASSED'),
     gates: {
       currentFinancialReconciliation: financialReconciliationStatus,
       historicalPositionMarginPreservation: historicalMarginStatus,
@@ -236,7 +238,8 @@ async function main() {
   } else {
     console.log('PR72_COMPREHENSIVE_READONLY_AUDIT', JSON.stringify(report));
   }
-  if (!report.financialInventoryPassed) process.exitCode = 1;
+  if (report.overallStatus === 'FAILED') process.exitCode = 1;
+  else if (report.overallStatus === 'UNVERIFIABLE') process.exitCode = 3;
 }
 if (require.main === module) {
   main().catch(error => {
