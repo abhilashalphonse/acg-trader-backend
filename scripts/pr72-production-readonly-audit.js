@@ -174,6 +174,12 @@ async function main() {
   let report;
   try {
     await client.connect();
+    // Explicitly reject admin/readWrite credentials even if mistakenly supplied.
+    const auth = await client.db('admin').command({ connectionStatus: 1 });
+    const roles = auth?.authInfo?.authenticatedUserRoles || [];
+    if (roles.length < 1 || roles.some(role => role.role !== 'read' || role.db !== 'acg_trader')) {
+      throw new Error('AUDIT_CREDENTIAL_NOT_STRICT_READONLY');
+    }
     const session = client.startSession();
     try {
       report = await session.withTransaction(async () => {
