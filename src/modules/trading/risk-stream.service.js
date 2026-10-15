@@ -150,6 +150,18 @@ class RiskStreamService {
       const account = await this.accountModel.findById(String(accountId)).session(session);
       if (!account) return null;
       const expected = Number(account.lastEvaluatedRiskSequence || 0) + 1;
+      // During a rolling deployment two live generations may read the same
+      // durable event. If another generation committed it first, acknowledge
+      // the duplicate only when the journal already records a terminal state.
+      // Never advance a sequence or overwrite the original risk evidence.
+      if (Number(sequence) < expected) {
+        const previouslyCompleted = await this.eventModel.findOne({
+          accountId: String(accountId), sequence: Number(sequence),
+        }).session(session);
+        if (previouslyCompleted && ['EVALUATED', 'BREACHED', 'IGNORED'].includes(previouslyCompleted.state)) {
+          return previouslyCompleted;
+        }
+      }
       if (Number(sequence) !== expected) {
         account.riskProcessingState = 'RISK_UNRESOLVED';
         account.riskUnresolvedReason = 'OUT_OF_ORDER_RISK_COMPLETION';
