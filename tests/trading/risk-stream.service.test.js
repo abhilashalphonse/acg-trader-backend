@@ -167,3 +167,34 @@ test('missing durable sequence marks account RISK_UNRESOLVED instead of skipping
   assert.equal(account.riskProcessingState, 'RISK_UNRESOLVED');
   assert.equal(account.riskUnresolvedReason, 'RISK_SEQUENCE_GAP');
 });
+
+
+test('already committed event replay is idempotent during deployment handover', async () => {
+  const { service, account, events } = createFixture();
+  account.riskDayKey = '2026-09-26';
+  account.riskSequence = 1;
+  account.lastEvaluatedRiskSequence = 1;
+  const committed = {
+    accountId: String(account._id), sequence: 1, state: 'EVALUATED',
+    result: { breached: false },
+  };
+  events.push(committed);
+  const result = await service.complete(String(account._id), 1, {
+    state: 'BREACHED', result: { breached: true },
+  });
+  assert.equal(result, committed);
+  assert.equal(committed.state, 'EVALUATED');
+  assert.equal(account.lastEvaluatedRiskSequence, 1);
+  assert.equal(account.riskProcessingState, 'RESOLVED');
+});
+
+test('out-of-order replay with unprocessed journal entry is not acknowledged', async () => {
+  const { service, account, events } = createFixture();
+  account.riskDayKey = '2026-09-26';
+  account.riskSequence = 2;
+  account.lastEvaluatedRiskSequence = 2;
+  events.push({ accountId: String(account._id), sequence: 1, state: 'RECEIVED' });
+  await assert.rejects(() => service.complete(String(account._id), 1), {
+    code: 'RISK_SEQUENCE_OUT_OF_ORDER',
+  });
+});
