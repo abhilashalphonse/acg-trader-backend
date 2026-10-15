@@ -137,3 +137,77 @@ test('startup replay drains already durable received events', async () => {
 
   assert.equal(completed, true);
 });
+
+
+test('breach drains subsequent durable valuations in sequence without second breach', async () => {
+  const bus = new EventEmitter();
+  let status = 'ACTIVE';
+  let cursor = 0;
+  let breachCalls = 0;
+  const completed = [];
+  const pending = [
+    { sequence: 1, type: 'VALUATION', state: 'RECEIVED', context: context({ equity: '94000' }) },
+    { sequence: 2, type: 'VALUATION', state: 'RECEIVED', context: context({ equity: '93000' }) },
+    { sequence: 3, type: 'VALUATION', state: 'RECEIVED', context: context({ equity: '97000' }) },
+  ];
+  const engine = new ChallengeRiskEngine({
+    eventBus: bus,
+    riskStreamService: {
+      async pendingAccountIds() { return ['account-a']; },
+      async getNext() {
+        return {
+          account: { status, tradingEnabled: status === 'ACTIVE' },
+          event: pending[cursor] || null,
+        };
+      },
+      async complete(id, sequence, options) {
+        assert.equal(id, 'account-a');
+        assert.equal(sequence, cursor + 1);
+        completed.push({ sequence, ...options });
+        cursor++;
+      },
+    },
+    accountControlService: {
+      async breach() { breachCalls++; status = 'BREACHED'; },
+    },
+  });
+  await engine.start();
+  await new Promise(resolve => setImmediate(resolve));
+  await engine.stop();
+  assert.equal(breachCalls, 1);
+  assert.deepEqual(completed.map(x => x.state), ['BREACHED', 'IGNORED', 'IGNORED']);
+  assert.equal(cursor, pending.length);
+});
+
+test('startup replay drains preexisting received valuations on breached accounts', async () => {
+  let cursor = 0;
+  let attemptedBreach = false;
+  const processed = [];
+  const engine = new ChallengeRiskEngine({
+    eventBus: new EventEmitter(),
+    riskStreamService: {
+      async pendingAccountIds() { return ['account-b']; },
+      async getNext() {
+        return {
+          account: { status: 'BREACHED', tradingEnabled: false },
+          event: cursor < 2
+            ? { sequence: cursor + 8, type: 'VALUATION', state: 'RECEIVED', context: context({ equity: '91000' }) }
+            : null,
+        };
+      },
+      async complete(id, sequence, outcome) {
+        assert.equal(id, 'account-b');
+        processed.push({ sequence, ...outcome });
+        cursor++;
+      },
+    },
+    accountControlService: { async breach() { attemptedBreach = true; } },
+  });
+  await engine.start();
+  await new Promise(resolve => setImmediate(resolve));
+  await engine.stop();
+  assert.equal(attemptedBreach, false);
+  assert.equal(processed.length, 2);
+  assert.deepEqual(processed.map(x => x.state), ['IGNORED', 'IGNORED']);
+  assert.deepEqual(processed.map(x => x.result.reason), ['ACCOUNT_ALREADY_BREACHED', 'ACCOUNT_ALREADY_BREACHED']);
+});
