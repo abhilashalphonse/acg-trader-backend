@@ -19,7 +19,10 @@ function fixture() {
         symbol: x.symbol, assetClass: 'EQUITY', defaultLeverage: 10, executionEnabled: false,
       })),
     ],
-    ledgers: [{ accountId: 'acct', amount: '10', balanceBefore: '100', balanceAfter: '110', currency: 'USD' }],
+    ledgers: [
+      { accountId: 'acct', type: 'DEPOSIT', amount: '100', balanceBefore: '0', balanceAfter: '100', currency: 'USD' },
+      { accountId: 'acct', type: 'ADJUSTMENT', amount: '10', balanceBefore: '100', balanceAfter: '110', currency: 'USD' },
+    ],
     orders: [],
     deals: [],
     riskEvents: [],
@@ -41,6 +44,7 @@ test('accounts without any ledger are explicitly flagged', () => {
 test('full ledger history detects intermediate continuity despite correct latest balance', () => {
   const f = fixture();
   f.ledgers = [
+    { accountId: 'acct', type: 'DEPOSIT', amount: '100', balanceBefore: '0', balanceAfter: '100', currency: 'USD' },
     { accountId: 'acct', amount: '5', balanceBefore: '100', balanceAfter: '105', currency: 'USD' },
     { accountId: 'acct', amount: '5', balanceBefore: '104', balanceAfter: '110', currency: 'USD' },
   ];
@@ -118,4 +122,19 @@ test('baseline violations fail historical check without misclassifying unrecover
   assert.equal(r.gates.historicalPositionMarginPreservation, 'FAILED');
   assert.equal(r.gates.currentFinancialReconciliation, 'FAILED');
   assert.deepEqual(r.unverifiableChecks, []);
+});
+
+test('production bootstrap ledger starts at zero and funding deposit matches initial balance', () => {
+  const f = fixture();
+  const ok = evaluateSnapshot(f);
+  assert.equal(ok.exceptions.ledgerOpeningBalanceErrors, 0);
+  f.ledgers[0].balanceBefore = '1';
+  assert.equal(evaluateSnapshot(f).exceptions.ledgerOpeningBalanceErrors, 1);
+});
+test('risk history can be server-aggregated independently of full document row limits', () => {
+  const f = fixture();
+  f.riskSummary = { total: 885180, staleReceived: 11 };
+  const r = evaluateSnapshot(f);
+  assert.equal(r.counts.riskEvents, 885180);
+  assert.equal(r.exceptions.staleChallengeRiskEvents, 11);
 });
