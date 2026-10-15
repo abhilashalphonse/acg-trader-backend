@@ -86,6 +86,17 @@ class ChallengeRiskEngine {
         continue;
       }
 
+      // Breached accounts cannot resume trading. Historical valuations still
+      // occupy durable sequence slots and must be acknowledged in order;
+      // otherwise startup replay leaves a permanent RECEIVED backlog.
+      if (String(next.account.status || '').toUpperCase() === 'BREACHED' && event.type === 'VALUATION') {
+        await this.riskStreamService.complete(accountId, event.sequence, {
+          state: 'IGNORED',
+          result: { type: 'VALUATION', reason: 'ACCOUNT_ALREADY_BREACHED' },
+        });
+        continue;
+      }
+
       if (event.type !== 'VALUATION') {
         await this.riskStreamService.complete(accountId, event.sequence, {
           state: 'EVALUATED',
@@ -115,7 +126,9 @@ class ChallengeRiskEngine {
         state: 'BREACHED',
         result: outcome,
       });
-      return;
+      // Continue consuming following durable sequence slots. New valuations
+      // for the now-breached account are ignored, never re-breached.
+      continue;
     }
   }
 }
