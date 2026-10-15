@@ -73,7 +73,7 @@ function nseEquity({ symbol, name, providerSymbol = symbol }) {
     maxVolume: '10000',
     volumeStep: '1',
 
-    defaultLeverage: 100,
+    defaultLeverage: 10,
     marginRate: null,
     commissionPerLot: '0',
     commissionPerLotPerSide: '0',

@@ -6,7 +6,26 @@
 // New instruments are intentionally inserted with execution disabled. Operators
 // can enable execution only after validating the provider feed and product terms.
 
-const ACG_STANDARD_LEVERAGE = 100;
+// Asset-class ceilings for ACG's simulated CFD product catalog. An account's
+// lower leverage and any stricter instrument margin rate still apply.
+const ACG_LEVERAGE_BY_ASSET_CLASS = Object.freeze({
+  FOREX: 100,
+  METAL: 50,
+  ENERGY: 50,
+  OTHER: 50, // Catalog OTHER currently contains agricultural/industrial commodities.
+  INDEX: 20,
+  EQUITY: 10,
+  CRYPTO: 2,
+});
+const ACG_STANDARD_LEVERAGE = ACG_LEVERAGE_BY_ASSET_CLASS.FOREX;
+
+function leverageForAssetClass(assetClass) {
+  const result = ACG_LEVERAGE_BY_ASSET_CLASS[assetClass];
+  if (!Number.isFinite(result) || result <= 0) {
+    throw new Error('Missing ACG leverage policy for instrument class: ' + assetClass);
+  }
+  return result;
+}
 
 const FX_TIGHT_POINTS = Object.freeze({ EURUSD: 2, USDJPY: 2, GBPUSD: 3, AUDUSD: 3, USDCHF: 3, USDCAD: 3, NZDUSD: 4, EURGBP: 4, EURJPY: 4, GBPJPY: 6 });
 const FX_EXOTIC_CURRENCIES = new Set(['CNH', 'CZK', 'DKK', 'HKD', 'HUF', 'MXN', 'NOK', 'PLN', 'SEK', 'SGD', 'TRY', 'ZAR']);
@@ -120,26 +139,26 @@ const FOREX_PAIRS = Object.freeze([
 ]);
 
 const COMMODITIES = Object.freeze([
-  Object.freeze({ symbol: "XAUUSD", providerSymbol: "XAU/USD", name: "Gold Spot / US Dollar", assetClass: "METAL", baseCurrency: "XAU", quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "100", defaultLeverage: 100, fixedPoints: "30" }),
-  Object.freeze({ symbol: "XAGUSD", providerSymbol: "XAG/USD", name: "Silver Spot / US Dollar", assetClass: "METAL", baseCurrency: "XAG", quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.01", contractSize: "5000", defaultLeverage: 100, fixedPoints: "30" }),
+  Object.freeze({ symbol: "XAUUSD", providerSymbol: "XAU/USD", name: "Gold Spot / US Dollar", assetClass: "METAL", baseCurrency: "XAU", quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "100", defaultLeverage: 50, fixedPoints: "30" }),
+  Object.freeze({ symbol: "XAGUSD", providerSymbol: "XAG/USD", name: "Silver Spot / US Dollar", assetClass: "METAL", baseCurrency: "XAG", quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.01", contractSize: "5000", defaultLeverage: 50, fixedPoints: "30" }),
   Object.freeze({ symbol: "XPTUSD", providerSymbol: "XPT/USD", name: "Platinum Spot / US Dollar", assetClass: "METAL", baseCurrency: "XPT", quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "100", defaultLeverage: 50, fixedPoints: "30" }),
   Object.freeze({ symbol: "XPDUSD", providerSymbol: "XPD/USD", name: "Palladium Spot / US Dollar", assetClass: "METAL", baseCurrency: "XPD", quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "100", defaultLeverage: 50, fixedPoints: "30" }),
-  Object.freeze({ symbol: "WTIUSD", providerSymbol: "WTI/USD", name: "Crude Oil WTI Spot", assetClass: "ENERGY", baseCurrency: "WTI", quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.01", contractSize: "1000", defaultLeverage: 20, fixedPoints: "20" }),
-  Object.freeze({ symbol: "XBRUSD", providerSymbol: "XBR/USD", name: "Brent Spot / US Dollar", assetClass: "ENERGY", baseCurrency: "XBR", quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.01", contractSize: "1000", defaultLeverage: 20, fixedPoints: "20" }),
-  Object.freeze({ symbol: "NGASUSD", providerSymbol: "NG/USD", name: "Natural Gas", assetClass: "ENERGY", baseCurrency: "NG", quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.01", contractSize: "10000", defaultLeverage: 20, fixedPoints: "20" }),
-  Object.freeze({ symbol: "COPPER", providerSymbol: "HG1", name: "Copper", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 4, tickSize: "0.0001", pipSize: "0.0001", contractSize: "1", defaultLeverage: 20, fixedPoints: "10" }),
-  Object.freeze({ symbol: "CORN", providerSymbol: "ZC1", name: "Corn", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "WHEAT", providerSymbol: "ZW1", name: "Wheat", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "SOYBEAN", providerSymbol: "ZS1", name: "Soybeans", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "SUGAR", providerSymbol: "SB1", name: "Sugar", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 4, tickSize: "0.0001", pipSize: "0.0001", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "COFFEE", providerSymbol: "KC1", name: "Coffee", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "COCOA", providerSymbol: "CC1", name: "Cocoa", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "COTTON", providerSymbol: "CT1", name: "Cotton", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "CATTLE", providerSymbol: "LE1", name: "Live Cattle", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.001", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "HOGS", providerSymbol: "HE1", name: "Lean Hogs", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.001", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "GASOLINE", providerSymbol: "RB1", name: "Gasoline", assetClass: "ENERGY", baseCurrency: null, quoteCurrency: "USD", digits: 4, tickSize: "0.0001", pipSize: "0.0001", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "HEATOIL", providerSymbol: "HO1", name: "Heating Oil", assetClass: "ENERGY", baseCurrency: null, quoteCurrency: "USD", digits: 4, tickSize: "0.0001", pipSize: "0.0001", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
-  Object.freeze({ symbol: "ALUMINUM", providerSymbol: "ALI1", name: "Aluminum", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 10, fixedPoints: "10" }),
+  Object.freeze({ symbol: "WTIUSD", providerSymbol: "WTI/USD", name: "Crude Oil WTI Spot", assetClass: "ENERGY", baseCurrency: "WTI", quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.01", contractSize: "1000", defaultLeverage: 50, fixedPoints: "20" }),
+  Object.freeze({ symbol: "XBRUSD", providerSymbol: "XBR/USD", name: "Brent Spot / US Dollar", assetClass: "ENERGY", baseCurrency: "XBR", quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.01", contractSize: "1000", defaultLeverage: 50, fixedPoints: "20" }),
+  Object.freeze({ symbol: "NGASUSD", providerSymbol: "NG/USD", name: "Natural Gas", assetClass: "ENERGY", baseCurrency: "NG", quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.01", contractSize: "10000", defaultLeverage: 50, fixedPoints: "20" }),
+  Object.freeze({ symbol: "COPPER", providerSymbol: "HG1", name: "Copper", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 4, tickSize: "0.0001", pipSize: "0.0001", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "CORN", providerSymbol: "ZC1", name: "Corn", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "WHEAT", providerSymbol: "ZW1", name: "Wheat", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "SOYBEAN", providerSymbol: "ZS1", name: "Soybeans", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "SUGAR", providerSymbol: "SB1", name: "Sugar", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 4, tickSize: "0.0001", pipSize: "0.0001", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "COFFEE", providerSymbol: "KC1", name: "Coffee", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "COCOA", providerSymbol: "CC1", name: "Cocoa", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "COTTON", providerSymbol: "CT1", name: "Cotton", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "CATTLE", providerSymbol: "LE1", name: "Live Cattle", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.001", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "HOGS", providerSymbol: "HE1", name: "Lean Hogs", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 3, tickSize: "0.001", pipSize: "0.001", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "GASOLINE", providerSymbol: "RB1", name: "Gasoline", assetClass: "ENERGY", baseCurrency: null, quoteCurrency: "USD", digits: 4, tickSize: "0.0001", pipSize: "0.0001", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "HEATOIL", providerSymbol: "HO1", name: "Heating Oil", assetClass: "ENERGY", baseCurrency: null, quoteCurrency: "USD", digits: 4, tickSize: "0.0001", pipSize: "0.0001", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
+  Object.freeze({ symbol: "ALUMINUM", providerSymbol: "ALI1", name: "Aluminum", assetClass: "OTHER", baseCurrency: null, quoteCurrency: "USD", digits: 2, tickSize: "0.01", pipSize: "0.01", contractSize: "1", defaultLeverage: 50, fixedPoints: "10" }),
 ]);
 
 const INDICES = Object.freeze([
@@ -457,7 +476,7 @@ function cryptoSpreadProfile(pair) {
 function baseSpec({
   symbol, displaySymbol, name, assetClass, baseCurrency = null, quoteCurrency = 'USD',
   digits, tickSize, pipSize, contractSize, minVolume = '0.01', maxVolume = '100',
-  volumeStep = '0.01', defaultLeverage = 100, marginRate = null,
+  volumeStep = '0.01', marginRate = null,
   commissionPerLotPerSide = '0', commissionRate = '0', spreadProfile = null,
   fixedPoints = '10', tradingSessions = [],
   timezone = 'UTC', providerSymbol, softQuoteAgeMs = 10000, maxQuoteAgeMs = 30000,
@@ -467,7 +486,7 @@ function baseSpec({
     symbol, displaySymbol, name, assetClass, baseCurrency, quoteCurrency,
     pnlCurrency: quoteCurrency, marginCurrency: quoteCurrency,
     digits, tickSize, pipSize, contractSize, minVolume, maxVolume, volumeStep,
-    defaultLeverage: ACG_STANDARD_LEVERAGE, marginRate,
+    defaultLeverage: leverageForAssetClass(assetClass), marginRate,
     commissionPerLot: commissionPerLotPerSide,
     commissionPerLotPerSide,
     commissionRate,
@@ -504,7 +523,6 @@ function commoditySpec(spec) {
     name: spec.name, assetClass: spec.assetClass, baseCurrency: spec.baseCurrency,
     quoteCurrency: spec.quoteCurrency, digits: spec.digits, tickSize: spec.tickSize,
     pipSize: spec.pipSize, contractSize: spec.contractSize,
-    defaultLeverage: spec.defaultLeverage,
     commissionPerLotPerSide: spec.assetClass === 'METAL' ? '2.5' : '0',
     spreadProfile: commoditySpreadProfile(spec),
     providerSymbol: spec.providerSymbol, tradingSessions: FX_WEEK,
@@ -533,7 +551,7 @@ function equitySpec(symbol) {
     assetClass: 'EQUITY', quoteCurrency: 'USD', digits: 2,
     tickSize: '0.01', pipSize: '0.01', contractSize: '1',
     minVolume: '0.01', maxVolume: '10000', volumeStep: '0.01',
-    defaultLeverage: 5,
+    defaultLeverage: 10,
     spreadProfile: equitySpreadProfile(),
     tradingSessions: US_EQUITY_SESSION, timezone: 'America/New_York',
     providerSymbol: symbol,
@@ -589,5 +607,5 @@ function validateCatalog(catalog) {
 module.exports = {
   ACG_INSTRUMENT_CATALOG, FX_WEEK, US_EQUITY_SESSION,
   FOREX_PAIRS, COMMODITIES, INDICES, US_EQUITIES, CRYPTO_PAIRS,
-  ACG_STANDARD_LEVERAGE,
+  ACG_STANDARD_LEVERAGE, ACG_LEVERAGE_BY_ASSET_CLASS, leverageForAssetClass,
 };

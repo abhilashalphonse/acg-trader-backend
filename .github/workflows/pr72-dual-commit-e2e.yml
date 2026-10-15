@@ -1,0 +1,279 @@
+name: Paired release acceptance
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      peer_pr:
+        description: 'Optional companion PR number; otherwise companion main'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      peer_pr:
+        type: string
+        default: ''
+    secrets:
+      ACG_E2E_REPO_READ_TOKEN:
+        required: true
+      ACG_E2E_TWELVE_DATA_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr72-dual-commit-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dual-commit-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Require protected unattended acceptance credentials
+        env:
+          REPO_TOKEN: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          PROVIDER_KEY: ${{ secrets.ACG_E2E_TWELVE_DATA_API_KEY }}
+        run: |
+          if [ -z "$REPO_TOKEN" ] || [ -z "$PROVIDER_KEY" ]; then
+            echo "::error::BLOCKED: Configure ACG_E2E_REPO_READ_TOKEN (cross-repo read) and ACG_E2E_TWELVE_DATA_API_KEY as protected CI secrets in both repositories."
+            exit 1
+          fi
+
+      - name: Resolve immutable pair without draft or fixed-PR dependencies
+        id: commits
+        uses: actions/github-script@v7
+        env:
+          PEER_PR: ${{ inputs.peer_pr }}
+        with:
+          github-token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          script: |
+            const repos = ['abhilashalphonse/acg-trader-backend', 'abhilashalphonse/acg-trader-frontend'];
+            const own = context.repo.owner + '/' + context.repo.repo;
+            if (!repos.includes(own)) throw new Error('Unapproved calling repository');
+            const peer = repos.find(r => r !== own);
+            const get = async (repo, path) => (await github.request('GET /repos/' + repo + '/' + path)).data;
+            const pr = context.payload.pull_request;
+            let ownSha = context.sha;
+            let peerNumber = process.env.PEER_PR || '';
+            if (pr) {
+              const fresh = await get(own, 'pulls/' + pr.number);
+              if (fresh.head.repo.full_name !== own || fresh.state !== 'open') throw new Error('Same-repository open PR required');
+              if (fresh.head.sha !== pr.head.sha) throw new Error('Triggering PR moved; rerun');
+              ownSha = pr.head.sha;
+              const markers = [...(fresh.body || '').matchAll(/^ACG-ACCEPTANCE-PEER-PR:\s*(\d+)\s*$/gm)];
+              if (markers.length > 1) throw new Error('Only one companion PR marker allowed');
+              peerNumber = markers[0]?.[1] || peerNumber;
+            }
+            if (peerNumber && !/^[1-9]\d*$/.test(peerNumber)) throw new Error('Invalid companion PR number');
+            const peerSource = peerNumber ? 'pulls/' + peerNumber : 'commits/main';
+            const peerData = await get(peer, peerSource);
+            let peerSha = peerData.sha;
+            if (peerNumber) {
+              if (peerData.head.repo.full_name !== peer) throw new Error('Companion fork is not allowed');
+              if (peerData.state === 'open') peerSha = peerData.head.sha;
+              else if (peerData.merged) peerSha = peerData.merge_commit_sha;
+              else throw new Error('Companion PR closed without merging');
+            }
+            for (const sha of [ownSha, peerSha]) if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('Invalid commit SHA');
+            core.setOutput('backend_sha', own === repos[0] ? ownSha : peerSha);
+            core.setOutput('frontend_sha', own === repos[1] ? ownSha : peerSha);
+            core.setOutput('peer_repo', peer);
+            core.setOutput('peer_source', peerSource);
+            core.setOutput('peer_sha', peerSha);
+            core.setOutput('own_sha', ownSha);
+            core.info('Commit pair: ' + own + '@' + ownSha + ' / ' + peer + '@' + peerSha);
+
+      - name: Checkout exact backend commit
+        uses: actions/checkout@v4
+        with:
+          repository: abhilashalphonse/acg-trader-backend
+          ref: ${{ steps.commits.outputs.backend_sha }}
+          path: backend
+          token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Checkout exact frontend commit
+        uses: actions/checkout@v4
+        with:
+          repository: abhilashalphonse/acg-trader-frontend
+          ref: ${{ steps.commits.outputs.frontend_sha }}
+          path: frontend
+          token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Validate checked-out commits
+        shell: bash
+        run: |
+          test "$(git -C backend rev-parse HEAD)" = "${{ steps.commits.outputs.backend_sha }}"
+          test "$(git -C frontend rev-parse HEAD)" = "${{ steps.commits.outputs.frontend_sha }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install exact dependency locks and system Chrome browser controller
+        run: |
+          (cd backend && npm ci --no-audit)
+          (cd frontend && npm ci --no-audit && npm install --no-save --no-audit --no-fund playwright@1.56.1)
+          command -v google-chrome || command -v google-chrome-stable
+
+      - name: Provision disposable MongoDB replica-set container
+        run: |
+          docker run -d --rm --name pr72-e2e-mongo \
+            -p 127.0.0.1:27017:27017 mongo:7 \
+            mongod --replSet rs0 --bind_ip_all --ipv6
+          for i in $(seq 1 35); do
+            if docker exec pr72-e2e-mongo mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' | grep -qx 1; then break; fi
+            sleep 1
+          done
+          docker exec pr72-e2e-mongo mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' | grep -qx 1
+
+      - name: Boot real backend + provider gateway on the isolated replica set
+        env:
+          CI: 'true'
+          PR72_E2E_DISPOSABLE: '1'
+          MONGODB_URI: mongodb://127.0.0.1:27017/acg_pr72_browser_e2e?replicaSet=rs0
+          NODE_ENV: test
+          LOG_LEVEL: warn
+          MARKET_GATEWAY_ENABLED: 'true'
+          MARKET_PROVIDER: twelve-data
+          MARKET_UNIVERSE_MODE: explicit
+          MARKET_SYMBOLS: BTCUSD,EURUSD
+          MARKET_CLOSED_CANDLE_RECONCILIATION_ENABLED: 'false'
+          TRADING_API_ENABLED: 'true'
+          PLATFORM_EVENTS_ENABLED: 'false'
+          TRADING_PERMISSION_SHADOW_ENABLED: 'false'
+          NEWS_TRADING_ENFORCEMENT: 'false'
+          WEEKEND_HOLDING_ENFORCEMENT: 'false'
+          WEEKEND_WORKER_ENABLED: 'false'
+          CORS_ORIGINS: http://127.0.0.1:5174
+          TWELVE_DATA_API_KEY: ${{ secrets.ACG_E2E_TWELVE_DATA_API_KEY }}
+          PR72_E2E_PRIVATE_DATA: ${{ runner.temp }}/pr72-private-fixtures.json
+        run: |
+          (cd backend && node scripts/pr72-ci-e2e-harness.js > "${{ runner.temp }}/pr72-backend.log" 2>&1) &
+          echo $! > "${{ runner.temp }}/pr72-backend.pid"
+          for i in $(seq 1 80); do
+            if curl -fsS http://127.0.0.1:4000/health/live >/dev/null 2>&1 && test -s "${{ runner.temp }}/pr72-private-fixtures.json"; then
+              echo "Isolated backend and auth fixtures ready"; exit 0
+            fi
+            if ! kill -0 "$(cat "${{ runner.temp }}/pr72-backend.pid")" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          echo "::error::Isolated backend failed health/fixture startup; check private runner log, not production."
+          grep -E 'PR72_E2E_HARNESS_ERROR|ACG Trader backend failed|Error:' "${{ runner.temp }}/pr72-backend.log" | head -8 || true
+          exit 1
+
+      - name: Boot exact frontend commit with real API and WebSocket endpoints
+        env:
+          VITE_ACG_TRADER_API_BASE: http://127.0.0.1:4000
+          VITE_ACG_TRADER_WS_URL: ws://127.0.0.1:4000/v1/ws
+          VITE_ACG_TRADER_TENANT: acg-pr72-ci
+          VITE_ACG_EXECUTION_V4_ENABLED: 'true'
+        run: |
+          (cd frontend && npm run dev -- --host 127.0.0.1 --port 5174 > "${{ runner.temp }}/pr72-frontend.log" 2>&1) &
+          echo $! > "${{ runner.temp }}/pr72-frontend.pid"
+          curl --fail --retry 40 --retry-delay 1 --retry-connrefused \
+            http://127.0.0.1:5174/ >/dev/null
+
+      - name: Exercise fresh native + federated Playwright sessions and actual provider prices
+        env:
+          CI: 'true'
+          PR72_E2E_DISPOSABLE: '1'
+          PR72_E2E_PRIVATE_DATA: ${{ runner.temp }}/pr72-private-fixtures.json
+          PR72_E2E_REPORT: ${{ runner.temp }}/pr72-e2e-result.json
+          PR72_BACKEND_SHA: ${{ steps.commits.outputs.backend_sha }}
+          PR72_FRONTEND_SHA: ${{ steps.commits.outputs.frontend_sha }}
+        run: node frontend/tests/ui/pr72-release-browser.mjs
+
+      - name: Read-only financial and rollback guard on disposable database
+        env:
+          PR72_READONLY_RELEASE_AUDIT: '1'
+          PR72_E2E_DISPOSABLE: '1'
+          MONGODB_URI: mongodb://127.0.0.1:27017/acg_pr72_browser_e2e?replicaSet=rs0
+          PR72_AUDIT_DATABASE: acg_pr72_browser_e2e
+        run: node backend/scripts/pr72-release-readonly-inventory.js --expect-approved
+
+      - name: Checkout immutable policy-preserving recovery baseline
+        uses: actions/checkout@v4
+        with:
+          repository: abhilashalphonse/acg-trader-backend
+          ref: 08acc9c581c557f292d158a93d547df279d1e99c
+          path: recovery
+          token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Rehearse candidate restart and policy-preserving recovery startup
+        env:
+          CI: 'true'
+          PR72_E2E_DISPOSABLE: '1'
+          MONGODB_URI: mongodb://127.0.0.1:27017/acg_pr72_browser_e2e?replicaSet=rs0
+          NODE_ENV: test
+          LOG_LEVEL: warn
+          MARKET_GATEWAY_ENABLED: 'true'
+          MARKET_PROVIDER: twelve-data
+          MARKET_UNIVERSE_MODE: explicit
+          MARKET_SYMBOLS: BTCUSD,EURUSD
+          TRADING_API_ENABLED: 'true'
+          PLATFORM_EVENTS_ENABLED: 'false'
+          NEWS_TRADING_ENFORCEMENT: 'false'
+          WEEKEND_HOLDING_ENFORCEMENT: 'false'
+          TWELVE_DATA_API_KEY: ${{ secrets.ACG_E2E_TWELVE_DATA_API_KEY }}
+          RECOVERY_CHECKOUT: recovery
+          RECOVERY_SHA: 08acc9c581c557f292d158a93d547df279d1e99c
+        run: |
+          for name in frontend backend; do
+            file="${{ runner.temp }}/pr72-$name.pid"
+            if test -f "$file"; then
+              pid="$(cat "$file")"
+              pkill -TERM -P "$pid" 2>/dev/null || true
+              kill "$pid" 2>/dev/null || true
+            fi
+          done
+          sleep 3
+          (cd recovery && npm ci --no-audit)
+          node backend/scripts/policy-recovery-rehearsal.js
+
+      - name: Reject a moved commit pair
+        uses: actions/github-script@v7
+        env:
+          OWN_SHA: ${{ steps.commits.outputs.own_sha }}
+          PEER_REPO: ${{ steps.commits.outputs.peer_repo }}
+          PEER_SOURCE: ${{ steps.commits.outputs.peer_source }}
+          PEER_SHA: ${{ steps.commits.outputs.peer_sha }}
+        with:
+          github-token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
+          script: |
+            const get = async (repo, path) => (await github.request('GET /repos/' + repo + '/' + path)).data;
+            if (context.payload.pull_request) {
+              const p = await get(context.repo.owner + '/' + context.repo.repo, 'pulls/' + context.payload.pull_request.number);
+              if (p.state !== 'open' || p.head.sha !== process.env.OWN_SHA) throw new Error('Triggering PR moved during acceptance');
+              const oldBody = context.payload.pull_request.body || '';
+              const marker = b => (b.match(/^ACG-ACCEPTANCE-PEER-PR:\s*(\d+)\s*$/m) || [])[1] || '';
+              if (marker(oldBody) !== marker(p.body || '')) throw new Error('Companion selection changed; rerun');
+            }
+            const p = await get(process.env.PEER_REPO, process.env.PEER_SOURCE);
+            const sha = process.env.PEER_SOURCE.startsWith('pulls/') ? (p.state === 'open' ? p.head.sha : p.merged ? p.merge_commit_sha : '') : p.sha;
+            if (sha !== process.env.PEER_SHA) throw new Error('Companion moved during acceptance; rerun');
+
+      - name: Publish aggregate-only evidence (never session or screenshots)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr72-dual-commit-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/pr72-e2e-result.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop disposable servers and delete MongoDB container
+        if: always()
+        run: |
+          for name in frontend backend; do
+            file="${{ runner.temp }}/pr72-$name.pid"
+            if test -f "$file"; then kill "$(cat "$file")" 2>/dev/null || true; fi
+          done
+          docker rm -f pr72-e2e-mongo 2>/dev/null || true
+          rm -f "${{ runner.temp }}/pr72-private-fixtures.json"
+          echo 'Disposable account database and ephemeral browser secrets cleaned up.'

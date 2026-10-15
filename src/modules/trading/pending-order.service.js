@@ -57,7 +57,6 @@ const PERMANENT_TRIGGER_REJECTIONS = new Set([
   'INVALID_PROTECTION_PRICE',
   'INVALID_LEVERAGE',
   'INSUFFICIENT_MARGIN',
-  'ACCOUNT_CURRENCY_CONVERSION_UNAVAILABLE',
   'MAX_OPEN_POSITIONS',
   'MAX_SYMBOL_POSITIONS',
   'MAX_TOTAL_VOLUME_REACHED',
@@ -336,6 +335,9 @@ class PendingOrderService {
             nowMs: executionNowMs,
           });
         } catch (error) {
+          // Missing/stale FX quotes are transient. Let the transaction abort and
+          // the engine log the failure; keep the order active for a later tick.
+          // That retry reloads status/expiry and rechecks the trigger and margin.
           if (!PERMANENT_TRIGGER_REJECTIONS.has(error?.code)) throw error;
           order.status = 'REJECTED';
           order.rejectCode = error.code || 'PENDING_EXECUTION_REJECTED';

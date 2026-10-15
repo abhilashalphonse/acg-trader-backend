@@ -355,15 +355,19 @@ function decimalOrNull(value) {
 function calculateRequiredMargin({ account, instrument, volume, fillPrice, currencyConverter = null, nowMs = Date.now() }) {
   const notional = multiplyDecimal(multiplyDecimal(fillPrice, instrument.contractSize), volume);
   const marginCurrency = String(instrument.marginCurrency || instrument.quoteCurrency || '').toUpperCase();
-  let rawMargin;
-  if (instrument.marginRate != null && compareDecimal(instrument.marginRate, '0') > 0) rawMargin = multiplyDecimal(notional, instrument.marginRate);
-  else {
-    const accountLeverage = Number(account.leverage);
-    const instrumentLeverage = Number(instrument.defaultLeverage);
-    const effectiveLeverage = Math.min(accountLeverage, instrumentLeverage);
-    if (!Number.isFinite(effectiveLeverage) || effectiveLeverage <= 0) throw new AppError('No valid leverage is configured for margin calculation', { statusCode: 409, code: 'INVALID_LEVERAGE' });
-    rawMargin = divideDecimal(notional, String(effectiveLeverage), { scale: 12, rounding: ROUNDING.HALF_UP });
+  const accountLeverage = Number(account.leverage);
+  const instrumentLeverage = Number(instrument.defaultLeverage);
+  const effectiveLeverage = Math.min(accountLeverage, instrumentLeverage);
+  if (!Number.isFinite(effectiveLeverage) || effectiveLeverage <= 0) {
+    throw new AppError('No valid leverage is configured for margin calculation', { statusCode: 409, code: 'INVALID_LEVERAGE' });
   }
+  // A marginRate may require *more* collateral, never less than the account /
+  // instrument leverage ceiling. Otherwise a stale 1%-rate can silently
+  // override the 50%-margin policy for a 2x crypto instrument.
+  const leverageMargin = divideDecimal(notional, String(effectiveLeverage), { scale: 12, rounding: ROUNDING.HALF_UP });
+  const rateMargin = instrument.marginRate != null && compareDecimal(instrument.marginRate, '0') > 0
+    ? multiplyDecimal(notional, instrument.marginRate) : null;
+  const rawMargin = rateMargin != null && compareDecimal(rateMargin, leverageMargin) > 0 ? rateMargin : leverageMargin;
   return convertCurrency(rawMargin, marginCurrency, account.currency, currencyConverter, nowMs);
 }
 
