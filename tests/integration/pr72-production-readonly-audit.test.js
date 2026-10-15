@@ -138,3 +138,12 @@ test('risk history can be server-aggregated independently of full document row l
   assert.equal(r.counts.riskEvents, 885180);
   assert.equal(r.exceptions.staleChallengeRiskEvents, 11);
 });
+
+test('database ledger projection preserves the opening deposit discriminator', () => {
+  const { LEDGER_PROJECTION } = require('../../scripts/pr72-production-readonly-audit');
+  const f = fixture();
+  f.ledgers = f.ledgers.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => LEDGER_PROJECTION[key])));
+  assert.equal(evaluateSnapshot(f).exceptions.ledgerOpeningBalanceErrors, 0);
+  f.ledgers[0].type = 'ADJUSTMENT';
+  assert.equal(evaluateSnapshot(f).exceptions.ledgerOpeningBalanceErrors, 1);
+});

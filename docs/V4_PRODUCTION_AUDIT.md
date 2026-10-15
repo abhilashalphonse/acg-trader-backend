@@ -19,8 +19,10 @@ changes production data, leverage, customer accounts, orders or risk policy.
   execution flags, transient and expired orders, repeated open deals, risk
   event backlog and baseline position volume/margin conservation.
 
-The comprehensive audit is limited to 200,000 records **per collection** and
-aborts rather than silently skipping a larger inventory. The initial
+The comprehensive audit is limited to 200,000 loaded records per collection and
+aborts rather than silently skipping a larger inventory. Risk-event history is
+counted server-side within the same snapshot, so its 885,000+ rows are not
+loaded into memory or subject to that document-loading limit. The initial
 read-only release guard stays available for disposable CI as before:
 only the explicit additional '--comprehensive' flag selects this audit.
 

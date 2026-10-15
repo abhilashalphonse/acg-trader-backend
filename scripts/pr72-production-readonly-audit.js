@@ -10,6 +10,7 @@ const { ACG_LEVERAGE_BY_ASSET_CLASS } = require('../src/modules/instruments/inst
 const { ACG_INDIA_PILOT_CATALOG } = require('../src/modules/instruments/india-pilot-catalog');
 
 const MAX_AUDIT_ROWS = 200000;
+const LEDGER_PROJECTION = Object.freeze({ accountId: 1, type: 1, amount: 1, balanceBefore: 1, balanceAfter: 1, currency: 1, createdAt: 1 });
 const STUCK_MS = 10 * 60 * 1000;
 const PENDING_EXPIRY_GRACE_MS = 2 * 60 * 1000;
 const MARGIN_ROUNDING_TOLERANCE = '0.02';
@@ -217,7 +218,7 @@ async function main() {
         const instruments = await readBounded(db, 'instruments',
           { symbol: 1, assetClass: 1, defaultLeverage: 1, executionEnabled: 1 }, session);
         const ledgers = await readBounded(db, 'accountledgers',
-          { accountId: 1, amount: 1, balanceBefore: 1, balanceAfter: 1, currency: 1, createdAt: 1 }, session,
+          LEDGER_PROJECTION, session,
           { accountId: 1, createdAt: 1, _id: 1 });
         const orders = await readBounded(db, 'orders',
           { status: 1, createdAt: 1, receivedAt: 1, updatedAt: 1, expiresAt: 1 }, session);
@@ -255,4 +256,4 @@ if (require.main === module) {
     process.exitCode = 2;
   });
 }
-module.exports = { evaluateSnapshot, main };
+module.exports = { evaluateSnapshot, main, LEDGER_PROJECTION };
