@@ -24,6 +24,7 @@ function zeroCounters() {
   return {
     missingLedgerAccounts: 0, ledgerMathErrors: 0, ledgerContinuityErrors: 0,
     ledgerOpeningBalanceErrors: 0, ledgerCurrencyErrors: 0, ledgerBalanceMismatches: 0,
+    savedEquityInconsistencies: 0, savedFreeMarginInconsistencies: 0,
     orphanLedgerEntries: 0, marginMismatches: 0, negativePositionMargins: 0,
     catalogPolicyViolations: 0, missingNsePilotInstruments: 0, enabledNsePilotInstruments: 0,
     stuckTransientOrders: 0, expiredActiveOrders: 0, duplicateOpenExecutions: 0,
@@ -92,12 +93,20 @@ function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, d
     if (entry.currency !== a.currency) c.ledgerCurrencyErrors++;
     previous.set(id, after);
   }
+  let riskSequenceLagAccounts = 0;
   for (const a of accounts) {
     const id = String(a._id);
     if (!previous.has(id)) c.missingLedgerAccounts++;
     else if (!eq(previous.get(id), a.state?.balance)) c.ledgerBalanceMismatches++;
     if (!eq(a.state?.usedMargin, margins.get(id) || '0')) c.marginMismatches++;
-    if (a.riskProcessingState === 'RISK_UNRESOLVED' || Number(a.riskSequence || 0) > Number(a.lastEvaluatedRiskSequence || 0)) c.unresolvedRiskAccounts++;
+    if (a.state?.equity != null && a.state?.floatingPnl != null && a.state?.balance != null
+      && !eq(a.state.equity, addDecimal(a.state.balance, a.state.floatingPnl))) c.savedEquityInconsistencies++;
+    if (a.state?.freeMargin != null && a.state?.equity != null && a.state?.usedMargin != null
+      && !eq(a.state.freeMargin, subtractDecimal(a.state.equity, a.state.usedMargin))) c.savedFreeMarginInconsistencies++;
+    if (Number(a.riskSequence || 0) > Number(a.lastEvaluatedRiskSequence || 0)) riskSequenceLagAccounts++;
+    const riskUnresolvedAt = a.riskUnresolvedSince ? new Date(a.riskUnresolvedSince).getTime() : NaN;
+    if (a.riskProcessingState === 'RISK_UNRESOLVED' && Number.isFinite(riskUnresolvedAt)
+      && now.getTime() - riskUnresolvedAt > STUCK_MS) c.unresolvedRiskAccounts++;
   }
   const bySymbol = new Map(instruments.map(i => [i.symbol, i]));
   for (const i of instruments) {
@@ -142,6 +151,7 @@ function evaluateSnapshot({ accounts, positions, instruments, ledgers, orders, d
       orders: orders.length,
       deals: deals.length,
       riskEvents: riskEvents.length,
+      riskSequenceLagAccounts,
       orderStatuses,
     },
     exceptions: c,
@@ -186,7 +196,7 @@ async function main() {
         const db = client.db('acg_trader');
         // Serial commands are mandatory within a MongoDB transaction.
         const accounts = await readBounded(db, 'tradingaccounts',
-          { _id: 1, currency: 1, state: 1, riskProcessingState: 1, riskSequence: 1, lastEvaluatedRiskSequence: 1 }, session);
+          { _id: 1, currency: 1, state: 1, riskProcessingState: 1, riskUnresolvedSince: 1, riskSequence: 1, lastEvaluatedRiskSequence: 1 }, session);
         const positions = await readBounded(db, 'positions',
           { _id: 1, positionId: 1, accountId: 1, status: 1, openVolume: 1, margin: 1 }, session);
         const instruments = await readBounded(db, 'instruments',
