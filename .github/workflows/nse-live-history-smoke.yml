@@ -34,7 +34,7 @@ jobs:
             const candles = (data.candles || []).filter(bar =>
               Number(bar.openTimeMs) >= start && Number(bar.openTimeMs) < finish)
               .sort((left, right) => Number(left.openTimeMs) - Number(right.openTimeMs));
-            const stepMs = timeframe === '15m' ? 900000 : 60000;
+            const stepMs = timeframe === '15m' ? 900000 : timeframe === '5m' ? 300000 : 60000;
             const gaps = candles.slice(1)
               .map((bar, index) => (Number(bar.openTimeMs) - Number(candles[index].openTimeMs)) / stepMs)
               .filter(gap => gap > 1);
@@ -64,8 +64,18 @@ jobs:
             }
           }
           (async () => {
-            for (const symbol of symbols) await probe(symbol, '15m');
-            for (const symbol of ['TCS', 'RELIANCE']) await probe(symbol, '1m');
+            const errors = [];
+            for (const symbol of symbols) {
+              try { await probe(symbol, '15m'); }
+              catch (error) { errors.push(error.message); console.error(error.message); }
+            }
+            for (const timeframe of ['5m', '1m']) {
+              for (const symbol of ['TCS', 'RELIANCE']) {
+                try { await probe(symbol, timeframe); }
+                catch (error) { errors.push(error.message); console.error(error.message); }
+              }
+            }
+            if (errors.length) throw Error(errors.length + ' live candle parity checks failed');
           })().catch(error => {
             console.error(error.message);
             process.exitCode = 1;
