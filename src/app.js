@@ -21,6 +21,8 @@ const { createIdentityRouter } = require('./modules/identity/identity.routes');
 const { createAccountGrantRouter } = require('./modules/identity/account-grant.routes');
 const { AccountGrantManagementService } = require('./modules/identity/account-grant-management.service');
 const { IdentityService } = require('./modules/identity/identity.service');
+const { PersonalDemoService } = require('./modules/identity/personal-demo.service');
+const { verifyProviderEmail } = require('./modules/identity/personal-email-verifier');
 const { SupabaseTokenVerifier } = require('./modules/identity/supabase-token-verifier');
 const { createInternalAuthRouter } = require('./modules/auth/internal-auth.routes');
 const { createOperationsRouter } = require('./modules/operations/operations.routes');
@@ -31,6 +33,13 @@ const { notFoundHandler, errorHandler } = require('./shared/http/error-middlewar
 function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   const app = express();
   const { authService } = authRuntime;
+  const personalDemoService = env.identity.personalDemoEnabled
+    ? new PersonalDemoService({ accountControlService: tradingRuntime.accountControlService })
+    : null;
+  if (personalDemoService) {
+    authService.personalDemoEnabled = true;
+    authService.personalNamespaceValidator = tenantId => personalDemoService.isPersonalNamespace(tenantId);
+  }
   const supabaseIdentityService = env.identity.bootstrapEnabled
     ? new IdentityService({ verifier: new SupabaseTokenVerifier({ projectRef: env.identity.supabaseProjectRef }) })
     : null;
@@ -73,8 +82,16 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
     res.json({ service: 'acg-trader-backend', apiVersion: 'v1', status: 'multi_tenant_execution_platform', market: marketRuntime.health(), trading: tradingRuntime.health() });
   });
 
-  app.use(['/v1/auth/login', '/v1/auth/federated/exchange', '/v1/auth/supabase/exchange'], rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
-  app.use('/v1/auth', createAuthRouter(authService, { identityService: supabaseIdentityService }));
+  app.use(['/v1/auth/login', '/v1/auth/federated/exchange', '/v1/auth/personal/demo'], rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
+  app.use('/v1/auth', createAuthRouter(authService, {
+    identityService: supabaseIdentityService,
+    personalDemoService,
+    verifyPersonalEmail: token => verifyProviderEmail(token, {
+      identityService: supabaseIdentityService,
+      projectRef: env.identity.supabaseProjectRef,
+      publishableKey: env.identity.supabasePublicApiKey,
+    }),
+  }));
   if (env.identity.bootstrapEnabled) {
     app.use('/v1/identity/bootstrap', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }));
     app.use('/v1/identity', createIdentityRouter(supabaseIdentityService));

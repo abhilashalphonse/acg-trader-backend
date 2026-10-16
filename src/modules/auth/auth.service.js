@@ -29,6 +29,8 @@ class AuthService {
     userModel = User,
     loginIdentityModel = LoginIdentity,
     supabaseTradingSessionsEnabled = false,
+    personalDemoEnabled = false,
+    personalNamespaceValidator = null,
     accountAccessGrantModel = AccountAccessGrant,
     sessionTtlSeconds = 3600,
     accessTokenTtlSeconds = 900,
@@ -51,6 +53,8 @@ class AuthService {
       userModel,
       loginIdentityModel,
       supabaseTradingSessionsEnabled,
+      personalDemoEnabled,
+      personalNamespaceValidator,
       accountAccessGrantModel,
       sessionTtlSeconds,
       accessTokenTtlSeconds,
@@ -115,13 +119,26 @@ class AuthService {
       })).sort((a, b) => a.name.localeCompare(b.name)) };
   }
 
-  async createSupabaseTraderSession({ tenantId, userId, loginIdentityId }) {
+  // The PERSONAL path never accepts a tenant identifier from the browser.
+  // The provisioning service supplies the first-party internal namespace.
+  async createPersonalDemoSession({ tenantId, userId, loginIdentityId }) {
+    if (!this.personalDemoEnabled || !this.personalNamespaceValidator ||
+        !(await this.personalNamespaceValidator(tenantId))) throw invalidTraderSession();
+    return this.createSupabaseTraderSession({ tenantId, userId, loginIdentityId, personal: true });
+  }
+
+  async createSupabaseTraderSession({ tenantId, userId, loginIdentityId, personal = false }) {
     if (![tenantId, userId, loginIdentityId].every(value => mongoose.isValidObjectId(value))) {
       throw new AppError('Invalid identity session context', { statusCode: 400, code: 'IDENTITY_CONTEXT_INVALID' });
     }
+    // Partner authentication remains native/password or federated. Supabase
+    // cannot be used to exchange into an arbitrary broker/prop account.
+    if (!personal || !this.personalDemoEnabled || !this.personalNamespaceValidator ||
+        !(await this.personalNamespaceValidator(tenantId))) throw invalidTraderSession();
     const sessionSeed = {
       tenantId: String(tenantId), userId: String(userId), loginIdentityId: String(loginIdentityId),
       authMethod: 'SUPABASE', accountIds: [], selectedAccountId: null,
+      metadata: { accountSource: 'ACG_TRADER_PERSONAL_V1' },
     };
     const context = await this.#resolveSupabaseSessionContext(sessionSeed);
     if (!context.accountIds.length) {
@@ -131,7 +148,10 @@ class AuthService {
   }
 
   async #resolveSupabaseSessionContext(session) {
-    if (!this.supabaseTradingSessionsEnabled) throw invalidTraderSession();
+    if (!this.supabaseTradingSessionsEnabled || !this.personalDemoEnabled ||
+        !this.personalNamespaceValidator ||
+        session?.metadata?.accountSource !== 'ACG_TRADER_PERSONAL_V1' ||
+        !(await this.personalNamespaceValidator(session.tenantId))) throw invalidTraderSession();
     const tenantId = String(session.tenantId || '');
     const userId = String(session.userId || '');
     const identityId = String(session.loginIdentityId || '');
