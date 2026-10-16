@@ -32,6 +32,18 @@ function createAuthRouter(authService, { identityService = null } = {}) {
   });
 
   if (env.identity.tradingSessionsEnabled && identityService) {
+    router.get('/supabase/organizations', async (req, res) => {
+      const authorization = String(req.headers.authorization || '').trim();
+      const match = /^Bearer\s+(.+)$/i.exec(authorization);
+      if (!match || match[1].length > 16384) throw new AppError('Supabase identity token is required', {
+        statusCode: 401, code: 'IDENTITY_TOKEN_REQUIRED',
+      });
+      const verifiedIdentity = await identityService.resolve(match[1]);
+      const result = await authService.listSupabaseTenantContexts(verifiedIdentity);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(result);
+    });
+
     router.post('/supabase/exchange', async (req, res) => {
       const authorization = String(req.headers.authorization || '');
       const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());

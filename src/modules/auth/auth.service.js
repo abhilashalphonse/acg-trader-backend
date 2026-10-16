@@ -67,6 +67,54 @@ class AuthService {
 
   // A verified Supabase identity is exchanged for a session in ONE explicitly
   // requested tenant. Organization membership alone never authorizes trading.
+
+  // Context discovery must never use email, membership roles or historic
+  // session account IDs. The selected tenant is still checked again on exchange.
+  async listSupabaseTenantContexts({ userId, loginIdentityId }) {
+    if (![userId, loginIdentityId].every(mongoose.isValidObjectId) || !this.supabaseTradingSessionsEnabled) {
+      throw invalidTraderSession();
+    }
+    const now = this.now();
+    const [user, identity] = await Promise.all([
+      this.userModel.findOne({ _id: userId, status: 'ACTIVE' }).select('_id').lean(),
+      this.loginIdentityModel.findOne({
+        _id: loginIdentityId, userId, status: 'ACTIVE', provider: 'SUPABASE',
+      }).select('_id').lean(),
+    ]);
+    if (!user || !identity) throw invalidTraderSession();
+    const grants = await this.accountAccessGrantModel.find({
+      userId, status: 'ACTIVE', revokedAt: null, permissions: 'TRADE',
+      $or: [{ expiresAt: null }, { expiresAt: mongoose.trusted({ $gt: now }) }],
+    }).select('tenantId accountId').lean();
+    if (!grants.length) return { organizations: [] };
+    const tenantIds = uniqueIds(grants.map(grant => grant.tenantId));
+    const accountIds = uniqueIds(grants.map(grant => grant.accountId));
+    const [tenants, accounts] = await Promise.all([
+      this.tenantModel.find({
+        _id: mongoose.trusted({ $in: tenantIds }), status: 'ACTIVE', authModes: 'SUPABASE',
+      }).select('_id name').lean(),
+      this.accountModel.find({
+        _id: mongoose.trusted({ $in: accountIds }),
+        status: mongoose.trusted({ $nin: ['DISABLED', 'CLOSED'] }),
+      }).select('_id tenantId').lean(),
+    ]);
+    const accountTenantById = new Map(accounts.map(account => [String(account._id), String(account.tenantId)]));
+    const grantedByTenant = new Map();
+    for (const grant of grants) {
+      const tenantId = String(grant.tenantId);
+      const accountId = String(grant.accountId);
+      if (accountTenantById.get(accountId) !== tenantId) continue;
+      if (!grantedByTenant.has(tenantId)) grantedByTenant.set(tenantId, new Set());
+      grantedByTenant.get(tenantId).add(accountId);
+    }
+    return { organizations: tenants.filter(tenant => grantedByTenant.get(String(tenant._id))?.size)
+      .map(tenant => ({
+        id: String(tenant._id),
+        name: String(tenant.name),
+        accountCount: grantedByTenant.get(String(tenant._id)).size,
+      })).sort((a, b) => a.name.localeCompare(b.name)) };
+  }
+
   async createSupabaseTraderSession({ tenantId, userId, loginIdentityId }) {
     if (![tenantId, userId, loginIdentityId].every(value => mongoose.isValidObjectId(value))) {
       throw new AppError('Invalid identity session context', { statusCode: 400, code: 'IDENTITY_CONTEXT_INVALID' });
