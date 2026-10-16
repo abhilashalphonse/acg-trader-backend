@@ -17,6 +17,9 @@ const { createTradingRouter } = require('./modules/trading/trading.routes');
 const { createAccountControlRouter } = require('./modules/trading/account-control.routes');
 const { createAccountLedgerRouter } = require('./modules/accounts/account-ledger.routes');
 const { createAuthRouter } = require('./modules/auth/auth.routes');
+const { createIdentityRouter } = require('./modules/identity/identity.routes');
+const { IdentityService } = require('./modules/identity/identity.service');
+const { SupabaseTokenVerifier } = require('./modules/identity/supabase-token-verifier');
 const { createInternalAuthRouter } = require('./modules/auth/internal-auth.routes');
 const { createOperationsRouter } = require('./modules/operations/operations.routes');
 const { TraderProfileService } = require('./modules/profile/trader-profile.service');
@@ -67,6 +70,11 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
 
   app.use(['/v1/auth/login', '/v1/auth/federated/exchange'], rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
   app.use('/v1/auth', createAuthRouter(authService));
+  if (env.identity.bootstrapEnabled) {
+    const verifier = new SupabaseTokenVerifier({ projectRef: env.identity.supabaseProjectRef });
+    app.use('/v1/identity/bootstrap', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }));
+    app.use('/v1/identity', createIdentityRouter(new IdentityService({ verifier })));
+  }
   app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
   app.use('/v1/instruments', createInstrumentRouter({ identityService }));
