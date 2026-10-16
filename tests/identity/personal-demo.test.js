@@ -14,7 +14,7 @@ function query(row){return {lean:async()=>row};}
 function fixture() {
  const state={namespace:null, account:null, grant:null, opening:null, provisionCount:0, ledgerCount:0, grantedWriteFails:false};
  const tenantModel={
-   async findOneAndUpdate(filter,patch) {
+   findOneAndUpdate(filter,patch) {
      if (!state.namespace) state.namespace={_id:TENANT,...patch.$setOnInsert};
      return query(state.namespace);
    },
@@ -23,7 +23,7 @@ function fixture() {
  const accountModel={findOne:()=>query(state.account)};
  const ledgerModel={findOne:()=>query(state.opening)};
  const grantModel={
-   async findOneAndUpdate(filter,patch) {
+   findOneAndUpdate(filter,patch) {
      if(state.grantedWriteFails) throw new Error('grant write failed');
      if(!state.grant)state.grant={...filter,...patch.$setOnInsert};
      return query(state.grant);
