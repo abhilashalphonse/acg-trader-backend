@@ -37,8 +37,11 @@ function fixture() {
     async create(record) { state.session = { _id: new mongoose.Types.ObjectId(), revokedAt: null, ...record }; return state.session; },
     findOne(query) { return { lean: async () => {
       const record = state.session;
-      if (!record || query.revokedAt !== null ||
-        !(query.$or || []).some(entry => Object.entries(entry).every(([key, value]) => record[key] === value))) return null;
+      if (!record || query.revokedAt !== null) return null;
+      const matching = query.refreshTokenHash
+        ? record.refreshTokenHash === query.refreshTokenHash
+        : (query.$or || []).some(entry => Object.entries(entry).every(([key, value]) => record[key] === value));
+      if (!matching) return null;
       return { ...record };
     } }; },
     async updateOne() { return { modifiedCount: 1 }; },

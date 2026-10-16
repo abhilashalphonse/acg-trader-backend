@@ -18,7 +18,7 @@ test('existing Supabase WebSocket loses revoked account subscriptions without re
     runtime: { eventBus, health: () => ({}), symbols: [], timeframes: [] },
     tradingRuntime: { valuationEngine: {} },
     path: '/v1/ws', corsOrigins: [], pingIntervalMs: 10_000, maxBufferBytes: 1_000_000,
-    logger: { error() {}, warn() {} },
+    logger: { error() {}, warn() {}, debug() {} },
     authService: { async authenticateSessionToken() {
       authChecks++;
       return { tenantId, sessionId: 'session-1', authMethod: 'SUPABASE',
@@ -66,7 +66,7 @@ test('disabled Supabase session closes existing live socket', async () => {
     server, runtime: { eventBus, health: () => ({}), symbols: [], timeframes: [] },
     tradingRuntime: { valuationEngine: {} }, path: '/v1/ws', corsOrigins: [],
     pingIntervalMs: 10_000, maxBufferBytes: 1_000_000,
-    logger: { warn() {}, error() {} },
+    logger: { warn() {}, error() {}, debug() {} },
     authService: { async authenticateSessionToken() {
       if (disabled) throw Object.assign(new Error('Revoked'), { code: 'AUTH_INVALID' });
       return { tenantId: '64b000000000000000000001', authMethod: 'SUPABASE', accountIds: [],
