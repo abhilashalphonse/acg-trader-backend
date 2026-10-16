@@ -7,7 +7,7 @@ const { AuthService, hashToken } = require('../../src/modules/auth/auth.service'
 const { IdentityService } = require('../../src/modules/identity/identity.service');
 const { requireAccountGrant } = require('../../src/modules/auth/auth.middleware');
 
-const TENANT_A = '64b000000000000000000001';
+const TENANT_A = '64b000000000000000000001'; // internal ACG Trader namespace
 const TENANT_B = '64b000000000000000000002';
 const USER = '64b000000000000000000003';
 const IDENTITY = '64b000000000000000000004';
@@ -51,15 +51,18 @@ function fixture() {
       return { ...state.session };
     },
   };
-  const auth = new AuthService({ supabaseTradingSessionsEnabled: true, userModel, loginIdentityModel: identityModel,
+  const auth = new AuthService({
+    supabaseTradingSessionsEnabled: true, personalDemoEnabled: true,
+    personalNamespaceValidator: async tenantId => tenantId === TENANT_A && state.tenantActive && state.supabaseModeAllowed,
+    userModel, loginIdentityModel: identityModel,
     tenantModel, accountAccessGrantModel: grantModel, accountModel, sessionModel,
     now: () => new Date(NOW) });
   return { auth, state };
 }
 
-test('exchange issues one tenant-scoped trading session from explicit TRADE grants', async () => {
+test('personal exchange issues only first-party scoped demo session from explicit TRADE grant', async () => {
   const { auth } = fixture();
-  const created = await auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
+  const created = await auth.createPersonalDemoSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
   assert.equal(created.session.tenantId, TENANT_A);
   assert.equal(created.session.authMethod, 'SUPABASE');
   assert.equal(created.session.userId, USER);
@@ -72,17 +75,17 @@ test('exchange issues one tenant-scoped trading session from explicit TRADE gran
   assert.throws(() => requireAccountGrant(principal, ACCOUNT_B), e => e.code === 'ACCOUNT_ACCESS_FORBIDDEN');
 });
 
-test('tenant membership, email and VIEW-only access never authorize trading', async () => {
+test('partner-tenant identifier and VIEW-only access never authorize personal trading', async () => {
   const { auth } = fixture();
-  await assert.rejects(auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_B }),
-    e => e.code === 'ACCOUNT_ACCESS_FORBIDDEN');
-  await assert.rejects(auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: 'invalid' }),
-    e => e.code === 'IDENTITY_CONTEXT_INVALID');
+  await assert.rejects(auth.createPersonalDemoSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_B }),
+    e => e.code === 'TRADER_SESSION_INVALID');
+  await assert.rejects(auth.createPersonalDemoSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: 'invalid' }),
+    e => e.code === 'TRADER_SESSION_INVALID');
 });
 
 test('revoking a grant takes effect on the next HTTP auth, listing and refresh without logout', async () => {
   const { auth, state } = fixture();
-  const created = await auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
+  const created = await auth.createPersonalDemoSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
   state.grants[0].status = 'REVOKED';
   const principal = await auth.authenticateSessionToken(created.accessToken);
   assert.deepEqual(principal.accountIds, []);
@@ -99,7 +102,7 @@ test('disabling user, identity, tenant or account denies sessions immediately', 
   for (const key of ['userActive', 'identityActive', 'tenantActive', 'accountAActive']) {
     await t.test(key, async () => {
       const { auth, state } = fixture();
-      const created = await auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
+      const created = await auth.createPersonalDemoSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
       state[key] = false;
       if (key === 'accountAActive') {
         const principal = await auth.authenticateSessionToken(created.accessToken);
@@ -122,17 +125,17 @@ test('identity exchange never implicitly creates or merges a Supabase person', a
 
 test('disabling Supabase session feature invalidates already issued sessions without affecting legacy paths', async () => {
   const { auth } = fixture();
-  const created = await auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
+  const created = await auth.createPersonalDemoSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
   auth.supabaseTradingSessionsEnabled = false;
   await assert.rejects(auth.authenticateSessionToken(created.accessToken), e => e.code === 'TRADER_SESSION_INVALID');
   await assert.rejects(auth.refreshSession({ refreshToken: created.refreshToken }), e => e.code === 'TRADER_SESSION_INVALID');
-  await assert.rejects(auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A }),
+  await assert.rejects(auth.createPersonalDemoSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A }),
     e => e.code === 'TRADER_SESSION_INVALID');
 });
 
 test('tenant must explicitly enable Supabase authentication in its authModes', async () => {
   const { auth, state } = fixture();
   state.supabaseModeAllowed = false;
-  await assert.rejects(auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A }),
+  await assert.rejects(auth.createPersonalDemoSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A }),
     e => e.code === 'TRADER_SESSION_INVALID');
 });
