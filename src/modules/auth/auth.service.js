@@ -166,7 +166,7 @@ class AuthService {
     if (!user || !tenant || !identity) throw invalidTraderSession();
 
     const grants = await this.accountAccessGrantModel.find({
-      tenantId, userId, status: 'ACTIVE', revokedAt: null, permissions: 'TRADE',
+      tenantId, userId, source: 'PERSONAL', status: 'ACTIVE', revokedAt: null, permissions: 'TRADE',
       $or: [{ expiresAt: null }, { expiresAt: mongoose.trusted({ $gt: now }) }],
     }).select('accountId').lean();
     const requestedIds = uniqueIds(grants.map(grant => grant.accountId));
@@ -174,6 +174,10 @@ class AuthService {
     const rows = await this.accountModel.find({
       _id: mongoose.trusted({ $in: requestedIds }),
       tenantId,
+      userId,
+      accountType: 'DEMO',
+      'metadata.product': 'DEFAULT_DEMO_V1',
+      'metadata.ownership': 'ACG_TRADER_PERSONAL_V1',
       status: mongoose.trusted({ $nin: ['DISABLED', 'CLOSED'] }),
     }).select('_id tenantId').lean();
     const granted = new Set(rows.filter(row => String(row.tenantId) === tenantId).map(row => String(row._id)));

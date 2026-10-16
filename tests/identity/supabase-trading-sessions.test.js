@@ -17,18 +17,21 @@ const NOW = new Date('2026-10-16T15:00:00.000Z');
 
 function fixture() {
   const state = { userActive: true, identityActive: true, tenantActive: true, supabaseModeAllowed: true, grants: [
-    { userId: USER, tenantId: TENANT_A, accountId: ACCOUNT_A, permissions: ['TRADE'], status: 'ACTIVE', revokedAt: null, expiresAt: null },
-    { userId: USER, tenantId: TENANT_B, accountId: ACCOUNT_B, permissions: ['VIEW'], status: 'ACTIVE', revokedAt: null, expiresAt: null },
+    { userId: USER, tenantId: TENANT_A, accountId: ACCOUNT_A, permissions: ['TRADE'], source: 'PERSONAL', status: 'ACTIVE', revokedAt: null, expiresAt: null },
+    { userId: USER, tenantId: TENANT_B, accountId: ACCOUNT_B, permissions: ['VIEW'], source: 'PARTNER', status: 'ACTIVE', revokedAt: null, expiresAt: null },
   ], accountAActive: true, session: null };
   const queryResult = value => ({ select() { return { lean: async () => value }; }, lean: async () => value });
   const userModel = { findOne: q => queryResult(q._id === USER && state.userActive ? { _id: USER } : null) };
   const identityModel = { findOne: q => queryResult(q.userId === USER && q._id === IDENTITY && state.identityActive ? { _id: IDENTITY, userId: USER } : null) };
   const tenantModel = { findOne: q => queryResult(state.tenantActive && state.supabaseModeAllowed && q.authModes === 'SUPABASE' && [TENANT_A, TENANT_B].includes(q._id) ? { _id: q._id } : null) };
   const grantModel = { find: q => queryResult(state.grants.filter(g =>
-    g.tenantId === q.tenantId && g.userId === q.userId && g.status === 'ACTIVE' &&
+    g.tenantId === q.tenantId && g.userId === q.userId && g.source === q.source && g.status === 'ACTIVE' &&
     g.revokedAt == null && g.permissions.includes('TRADE') &&
     (!g.expiresAt || g.expiresAt > NOW)).map(g => ({ accountId: g.accountId }))) };
   const accountModel = { find: q => queryResult([ACCOUNT_A, ACCOUNT_B].filter(id =>
+    q.userId === USER && q.accountType === 'DEMO' &&
+    q['metadata.product'] === 'DEFAULT_DEMO_V1' &&
+    q['metadata.ownership'] === 'ACG_TRADER_PERSONAL_V1' &&
     q._id.$in.map(String).includes(id) &&
     (id === ACCOUNT_A ? q.tenantId === TENANT_A : q.tenantId === TENANT_B) &&
     (id !== ACCOUNT_A || state.accountAActive)
