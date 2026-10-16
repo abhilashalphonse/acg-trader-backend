@@ -31,7 +31,7 @@ const { notFoundHandler, errorHandler } = require('./shared/http/error-middlewar
 function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   const app = express();
   const { authService } = authRuntime;
-  const identityService = env.identity.bootstrapEnabled
+  const supabaseIdentityService = env.identity.bootstrapEnabled
     ? new IdentityService({ verifier: new SupabaseTokenVerifier({ projectRef: env.identity.supabaseProjectRef }) })
     : null;
   const identityService = createInstrumentIdentityService({
@@ -74,10 +74,10 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   });
 
   app.use(['/v1/auth/login', '/v1/auth/federated/exchange', '/v1/auth/supabase/exchange', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
-  app.use('/v1/auth', createAuthRouter(authService, { identityService }));
+  app.use('/v1/auth', createAuthRouter(authService, { identityService: supabaseIdentityService }));
   if (env.identity.bootstrapEnabled) {
     app.use('/v1/identity/bootstrap', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }));
-    app.use('/v1/identity', createIdentityRouter(identityService));
+    app.use('/v1/identity', createIdentityRouter(supabaseIdentityService));
   }
   app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
