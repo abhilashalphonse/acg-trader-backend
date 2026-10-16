@@ -9,6 +9,9 @@ Existing native account/password sessions and ACG Funded federation are unchange
 - `SUPABASE_IDENTITY_BOOTSTRAP_ENABLED=false` by default; requires `SUPABASE_PROJECT_REF`.
 - `SUPABASE_TRADING_SESSIONS_ENABLED=false` by default; requires bootstrap enabled.
 - Both switches must be explicitly enabled before these new endpoints appear.
+- Setting `SUPABASE_TRADING_SESSIONS_ENABLED=false` also rejects **existing**
+  SUPABASE-origin sessions during HTTP authorization/refresh and on the next
+  WebSocket grant check. Native and federated sessions are not affected.
 - Existing ACG Trader refresh cookies and opaque access tokens are reused.
 - Signed Supabase JWTs are accepted **only** to exchange a verified global identity for an ACG Trader session; they are never treated as trading permissions.
 

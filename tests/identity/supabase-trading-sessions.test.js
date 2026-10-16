@@ -51,7 +51,7 @@ function fixture() {
       return { ...state.session };
     },
   };
-  const auth = new AuthService({ userModel, loginIdentityModel: identityModel,
+  const auth = new AuthService({ supabaseTradingSessionsEnabled: true, userModel, loginIdentityModel: identityModel,
     tenantModel, accountAccessGrantModel: grantModel, accountModel, sessionModel,
     now: () => new Date(NOW) });
   return { auth, state };
@@ -118,4 +118,14 @@ test('identity exchange never implicitly creates or merges a Supabase person', a
     identityModel: model, userModel: users });
   assert.deepEqual(await service.resolve('known'), { userId: USER, loginIdentityId: IDENTITY });
   await assert.rejects(service.resolve('unknown'), e => e.code === 'IDENTITY_DISABLED');
+});
+
+test('disabling Supabase session feature invalidates already issued sessions without affecting legacy paths', async () => {
+  const { auth } = fixture();
+  const created = await auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A });
+  auth.supabaseTradingSessionsEnabled = false;
+  await assert.rejects(auth.authenticateSessionToken(created.accessToken), e => e.code === 'TRADER_SESSION_INVALID');
+  await assert.rejects(auth.refreshSession({ refreshToken: created.refreshToken }), e => e.code === 'TRADER_SESSION_INVALID');
+  await assert.rejects(auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A }),
+    e => e.code === 'TRADER_SESSION_INVALID');
 });

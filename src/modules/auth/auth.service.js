@@ -28,6 +28,7 @@ class AuthService {
     federationTicketModel = FederationTicket,
     userModel = User,
     loginIdentityModel = LoginIdentity,
+    supabaseTradingSessionsEnabled = false,
     accountAccessGrantModel = AccountAccessGrant,
     sessionTtlSeconds = 3600,
     accessTokenTtlSeconds = 900,
@@ -49,6 +50,7 @@ class AuthService {
       federationTicketModel,
       userModel,
       loginIdentityModel,
+      supabaseTradingSessionsEnabled,
       accountAccessGrantModel,
       sessionTtlSeconds,
       accessTokenTtlSeconds,
@@ -81,6 +83,7 @@ class AuthService {
   }
 
   async #resolveSupabaseSessionContext(session) {
+    if (!this.supabaseTradingSessionsEnabled) throw invalidTraderSession();
     const tenantId = String(session.tenantId || '');
     const userId = String(session.userId || '');
     const identityId = String(session.loginIdentityId || '');

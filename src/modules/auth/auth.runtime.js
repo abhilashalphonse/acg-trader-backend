@@ -5,6 +5,7 @@ const { AuthService } = require('./auth.service');
 
 function createAuthRuntime() {
   const authService = new AuthService({
+    supabaseTradingSessionsEnabled: env.identity.tradingSessionsEnabled,
     sessionTtlSeconds: env.auth.sessionTtlSeconds,
     accessTokenTtlSeconds: env.auth.accessTokenTtlSeconds,
     accessTokenGraceSeconds: env.auth.accessTokenGraceSeconds,
