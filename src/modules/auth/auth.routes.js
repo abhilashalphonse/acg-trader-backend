@@ -14,8 +14,9 @@ const loginSchema = z.object({
   password: z.string().min(1).max(256),
 }).strict();
 const exchangeSchema = z.object({ ticket: z.string().trim().min(16).max(512) }).strict();
+const supabaseExchangeSchema = z.object({ tenantId: z.string().regex(/^[0-9a-f]{24}$/i) }).strict();
 
-function createAuthRouter(authService) {
+function createAuthRouter(authService, { identityService = null } = {}) {
   const router = express.Router();
 
   router.post('/login', async (req, res) => {
@@ -29,6 +30,22 @@ function createAuthRouter(authService) {
     issueRefreshCookie(res, result.refreshToken);
     res.json(publicAuthResponse(result));
   });
+
+  if (env.identity.tradingSessionsEnabled && identityService) {
+    router.post('/supabase/exchange', async (req, res) => {
+      const authorization = String(req.headers.authorization || '');
+      const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+      if (!match || match[1].length > 16384) throw new AppError('Supabase identity token is required', {
+        statusCode: 401, code: 'IDENTITY_TOKEN_REQUIRED',
+      });
+      const { tenantId } = parse(supabaseExchangeSchema, req.body);
+      const verifiedIdentity = await identityService.resolve(match[1]);
+      const result = await authService.createSupabaseTraderSession({ tenantId, ...verifiedIdentity });
+      issueRefreshCookie(res, result.refreshToken);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(publicAuthResponse(result));
+    });
+  }
 
   router.post('/refresh', async (req, res) => {
     requireRefreshIntent(req);

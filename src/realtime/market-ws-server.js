@@ -7,6 +7,9 @@ const { TraderStateService } = require('./trader-state.service');
 const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024;
 const MAX_SYNC_BUFFER_EVENTS = 1000;
 const AUTH_REVALIDATE_MS = 60_000;
+// Poll global-user grants on every replica; MongoDB is authoritative. Existing
+// ACG Funded sessions continue using their original revalidation cadence.
+const SUPABASE_GRANT_POLL_MS = 2_000;
 
 function createMarketWebSocketServer({ server, runtime, tradingRuntime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, quoteCoalesceMs = 250, valuationCoalesceMs = 250, logger, traderStateService: suppliedStateService = null }) {
   if (!tradingRuntime?.valuationEngine) throw new Error('tradingRuntime with valuationEngine is required');
@@ -138,6 +141,11 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
   });
 
   async function handleClientMessage(socket, message) {
+    // Do not authorize new account subscriptions against stale grants.
+    if (socket.traderPrincipal?.authMethod === 'SUPABASE') {
+      await refreshSupabaseSocketPrincipal(socket);
+      if (socket.readyState !== WebSocket.OPEN) return;
+    }
     const action = String(message?.action || '').toLowerCase();
     if (action === 'ping') { send(socket, 'pong', { clientTimestamp: message?.timestamp ?? null }); return; }
     if (action === 'status') {
@@ -227,6 +235,28 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
           }
         }
       }
+    }
+  }
+
+  async function refreshSupabaseSocketPrincipal(socket) {
+    if (socket.traderPrincipal?.authMethod !== 'SUPABASE') return;
+    if (socket.globalGrantRefresh) return socket.globalGrantRefresh;
+    const pending = (async () => {
+      const principal = await authService.authenticateSessionToken(socket.traderAccessToken);
+      if (socket.readyState !== WebSocket.OPEN) return;
+      socket.traderPrincipal = principal;
+      await reconcileSocketAccountGrants(socket, principal);
+    })();
+    socket.globalGrantRefresh = pending;
+    try {
+      await pending;
+    } catch (error) {
+      logger?.warn?.({ err: error, sessionId: socket.traderPrincipal?.sessionId },
+        'Supabase trader WebSocket grants unavailable, closing to fail closed');
+      socket.close(4003, 'Trading access expired or revoked');
+      throw error;
+    } finally {
+      if (socket.globalGrantRefresh === pending) socket.globalGrantRefresh = null;
     }
   }
 
@@ -407,7 +437,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
           state.valuationTimers,
           typeof coalesceKey === 'function' ? coalesceKey(payload, accountId) : accountId,
           coalesceMs,
-          () => send(socket, type, payload, { lossy: true }),
+          () => state.accounts.has(accountId) && send(socket, type, payload, { lossy: true }),
         );
         continue;
       }
@@ -496,7 +526,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     for (const socket of wss.clients) {
       if (socket.isAlive === false) { socket.terminate(); continue; }
       if (new Date(socket.traderPrincipal.expiresAt).getTime() <= Date.now()) { socket.close(4001, 'Trading session expired'); continue; }
-      if (Date.now() - socket.lastAuthCheckAt >= AUTH_REVALIDATE_MS) {
+      if (socket.traderPrincipal.authMethod !== 'SUPABASE' && Date.now() - socket.lastAuthCheckAt >= AUTH_REVALIDATE_MS) {
         socket.lastAuthCheckAt = Date.now();
         void authService.authenticateSessionToken(socket.traderAccessToken).then(principal => {
           socket.traderPrincipal = principal;
@@ -511,6 +541,18 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     }
   }, pingIntervalMs);
   heartbeatTimer.unref?.();
+
+  // The connected socket may outlive a partner's decision to revoke access.
+  // Resolve the current persisted grant set on EVERY replica, not just the
+  // replica that processed the administrative change. Do not infer grants from
+  // cached subscription state. Bounded by polling interval + database latency.
+  const supabaseGrantTimer = setInterval(() => {
+    for (const socket of wss.clients) {
+      if (socket.readyState !== WebSocket.OPEN || socket.traderPrincipal?.authMethod !== 'SUPABASE') continue;
+      void refreshSupabaseSocketPrincipal(socket).catch(() => {});
+    }
+  }, SUPABASE_GRANT_POLL_MS);
+  supabaseGrantTimer.unref?.();
 
   return {
     health() {
@@ -562,6 +604,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
       clearTimeout(resyncTimer);
       pendingResyncSockets.clear();
       clearInterval(heartbeatTimer);
+      clearInterval(supabaseGrantTimer);
       server.off('upgrade', upgradeHandler);
       runtime.eventBus.off('market.quote', broadcastQuote);
       runtime.eventBus.off('market.tick', broadcastTick);

@@ -11,6 +11,9 @@ const { TraderCredential } = require('./trader-credential.model');
 const { ServiceApiKey } = require('./service-api-key.model');
 const { TraderSession } = require('./trader-session.model');
 const { FederationTicket } = require('./federation-ticket.model');
+const { User } = require('../identity/user.model');
+const { LoginIdentity } = require('../identity/login-identity.model');
+const { AccountAccessGrant } = require('../identity/account-access-grant.model');
 
 const scryptAsync = promisify(crypto.scrypt);
 const FEDERATED_ACCOUNT_STATUSES = Object.freeze(['ACTIVE', 'BREACHED']);
@@ -23,6 +26,9 @@ class AuthService {
     serviceApiKeyModel = ServiceApiKey,
     sessionModel = TraderSession,
     federationTicketModel = FederationTicket,
+    userModel = User,
+    loginIdentityModel = LoginIdentity,
+    accountAccessGrantModel = AccountAccessGrant,
     sessionTtlSeconds = 3600,
     accessTokenTtlSeconds = 900,
     accessTokenGraceSeconds = 45,
@@ -41,6 +47,9 @@ class AuthService {
       serviceApiKeyModel,
       sessionModel,
       federationTicketModel,
+      userModel,
+      loginIdentityModel,
+      accountAccessGrantModel,
       sessionTtlSeconds,
       accessTokenTtlSeconds,
       accessTokenGraceSeconds,
@@ -52,6 +61,54 @@ class AuthService {
       lockoutSeconds,
       now,
     });
+  }
+
+  // A verified Supabase identity is exchanged for a session in ONE explicitly
+  // requested tenant. Organization membership alone never authorizes trading.
+  async createSupabaseTraderSession({ tenantId, userId, loginIdentityId }) {
+    if (![tenantId, userId, loginIdentityId].every(value => mongoose.isValidObjectId(value))) {
+      throw new AppError('Invalid identity session context', { statusCode: 400, code: 'IDENTITY_CONTEXT_INVALID' });
+    }
+    const sessionSeed = {
+      tenantId: String(tenantId), userId: String(userId), loginIdentityId: String(loginIdentityId),
+      authMethod: 'SUPABASE', accountIds: [], selectedAccountId: null,
+    };
+    const context = await this.#resolveSupabaseSessionContext(sessionSeed);
+    if (!context.accountIds.length) {
+      throw new AppError('No trading accounts granted in this organization', { statusCode: 403, code: 'ACCOUNT_ACCESS_FORBIDDEN' });
+    }
+    return this.#createSession({ ...sessionSeed, accountIds: context.accountIds, selectedAccountId: context.selectedAccountId });
+  }
+
+  async #resolveSupabaseSessionContext(session) {
+    const tenantId = String(session.tenantId || '');
+    const userId = String(session.userId || '');
+    const identityId = String(session.loginIdentityId || '');
+    if (![tenantId, userId, identityId].every(mongoose.isValidObjectId)) throw invalidTraderSession();
+
+    const now = this.now();
+    const [user, tenant, identity] = await Promise.all([
+      this.userModel.findOne({ _id: userId, status: 'ACTIVE' }).select('_id').lean(),
+      this.tenantModel.findOne({ _id: tenantId, status: 'ACTIVE' }).select('_id').lean(),
+      this.loginIdentityModel.findOne({ _id: identityId, userId, provider: 'SUPABASE', status: 'ACTIVE' }).select('_id').lean(),
+    ]);
+    if (!user || !tenant || !identity) throw invalidTraderSession();
+
+    const grants = await this.accountAccessGrantModel.find({
+      tenantId, userId, status: 'ACTIVE', revokedAt: null, permissions: 'TRADE',
+      $or: [{ expiresAt: null }, { expiresAt: mongoose.trusted({ $gt: now }) }],
+    }).select('accountId').lean();
+    const requestedIds = uniqueIds(grants.map(grant => grant.accountId));
+    if (!requestedIds.length) return { accountIds: [], selectedAccountId: null };
+    const rows = await this.accountModel.find({
+      _id: mongoose.trusted({ $in: requestedIds }),
+      tenantId,
+      status: mongoose.trusted({ $nin: ['DISABLED', 'CLOSED'] }),
+    }).select('_id tenantId').lean();
+    const granted = new Set(rows.filter(row => String(row.tenantId) === tenantId).map(row => String(row._id)));
+    const accountIds = requestedIds.filter(id => granted.has(id));
+    const preferred = String(session.selectedAccountId || '');
+    return { accountIds, selectedAccountId: accountIds.includes(preferred) ? preferred : accountIds[0] || null };
   }
 
   async loginNative({ tenant, login, password }) {
@@ -452,7 +509,7 @@ class AuthService {
     return { clientId: record.clientId, apiKey, scopes: [...record.scopes] };
   }
 
-  async #createSession({ tenantId, authMethod, ownerExternalRef, ownerExternalRefs = [], accountIds, selectedAccountId = null, credentialId = null, metadata = {} }) {
+  async #createSession({ tenantId, authMethod, ownerExternalRef, ownerExternalRefs = [], accountIds, selectedAccountId = null, credentialId = null, userId = null, loginIdentityId = null, metadata = {} }) {
     const now = this.now();
     const absoluteExpiresAt = new Date(now.getTime() + this.refreshSessionTtlSeconds * 1000);
     const credentials = this.#nextCredentials(absoluteExpiresAt);
@@ -462,8 +519,10 @@ class AuthService {
       tokenHash: hashToken(credentials.accessToken),
       refreshTokenHash: hashToken(credentials.refreshToken),
       authMethod,
+      userId,
+      loginIdentityId,
       ownerExternalRef,
-      ownerExternalRefs: uniqueIds([ownerExternalRef, ...ownerExternalRefs]),
+      ownerExternalRefs: authMethod === 'SUPABASE' ? [] : uniqueIds([ownerExternalRef, ...ownerExternalRefs]),
       accountIds: ids,
       selectedAccountId: selectedAccountId ? String(selectedAccountId) : ids[0] || null,
       credentialId,
@@ -477,6 +536,7 @@ class AuthService {
   }
 
   async #resolveSessionContext(session) {
+    if (session?.authMethod === 'SUPABASE') return this.#resolveSupabaseSessionContext(session);
     const seedIds = uniqueIds(session?.accountIds);
     if (String(session?.authMethod || '').toUpperCase() !== 'FEDERATED') {
       const selected = seedIds.includes(String(session?.selectedAccountId || ''))
@@ -596,6 +656,7 @@ function sessionPrincipal(session, accessExpiresAt, idleExpiresAt = null, contex
     accountIds,
     selectedAccountId,
     authMethod: session.authMethod,
+    userId: session.authMethod === 'SUPABASE' ? String(session.userId) : null,
     expiresAt: new Date(accessExpiresAt).toISOString(),
     refreshExpiresAt: session.expiresAt ? new Date(session.expiresAt).toISOString() : null,
     idleExpiresAt: idleExpiresAt ? new Date(idleExpiresAt).toISOString() : session.idleExpiresAt ? new Date(session.idleExpiresAt).toISOString() : null,
@@ -618,6 +679,7 @@ function authResponse(session, credentials, principal = null) {
       accountIds: resolved.accountIds,
       selectedAccountId: resolved.selectedAccountId,
       authMethod: session.authMethod,
+      userId: session.authMethod === 'SUPABASE' ? String(session.userId) : null,
     },
   };
 }

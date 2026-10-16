@@ -14,6 +14,16 @@ class IdentityService {
     Object.assign(this, { verifier, userModel, identityModel });
   }
 
+  // A session exchange never creates a new user or links an identity implicitly.
+  async resolve(token) {
+    const { issuer, subject } = await this.verifier.verify(token);
+    const identity = await this.identityModel.findOne({ provider: 'SUPABASE', issuer, subject, status: 'ACTIVE' }).lean();
+    if (!identity) throw identityDenied();
+    const user = await this.userModel.findOne({ _id: identity.userId, status: 'ACTIVE' }).lean();
+    if (!user) throw identityDenied();
+    return { userId: String(user._id), loginIdentityId: String(identity._id) };
+  }
+
   async bootstrap(token) {
     const { issuer, subject } = await this.verifier.verify(token);
     const candidateId = new mongoose.Types.ObjectId(crypto.createHash('sha256').update(`SUPABASE\0${issuer}\0${subject}`).digest('hex').slice(0, 24));

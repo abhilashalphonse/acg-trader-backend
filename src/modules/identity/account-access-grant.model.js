@@ -13,6 +13,7 @@ const accountAccessGrantSchema = new Schema({
   expiresAt: { type: Date, default: null },
   revokedAt: { type: Date, default: null },
   source: { type: String, enum: ['PERSONAL', 'PARTNER'], required: true },
+  updatedByClientId: { type: String, default: null, maxlength: 128 },
 }, { timestamps: true, optimisticConcurrency: true });
 
 accountAccessGrantSchema.index({ tenantId: 1, accountId: 1, userId: 1 }, { unique: true });

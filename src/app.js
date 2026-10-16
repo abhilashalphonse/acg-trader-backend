@@ -18,6 +18,8 @@ const { createAccountControlRouter } = require('./modules/trading/account-contro
 const { createAccountLedgerRouter } = require('./modules/accounts/account-ledger.routes');
 const { createAuthRouter } = require('./modules/auth/auth.routes');
 const { createIdentityRouter } = require('./modules/identity/identity.routes');
+const { createAccountGrantRouter } = require('./modules/identity/account-grant.routes');
+const { AccountGrantManagementService } = require('./modules/identity/account-grant-management.service');
 const { IdentityService } = require('./modules/identity/identity.service');
 const { SupabaseTokenVerifier } = require('./modules/identity/supabase-token-verifier');
 const { createInternalAuthRouter } = require('./modules/auth/internal-auth.routes');
@@ -29,6 +31,9 @@ const { notFoundHandler, errorHandler } = require('./shared/http/error-middlewar
 function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   const app = express();
   const { authService } = authRuntime;
+  const identityService = env.identity.bootstrapEnabled
+    ? new IdentityService({ verifier: new SupabaseTokenVerifier({ projectRef: env.identity.supabaseProjectRef }) })
+    : null;
   const identityService = createInstrumentIdentityService({
     apiKey: env.twelveData.apiKey,
     apiBase: env.twelveData.apiBase,
@@ -68,15 +73,19 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
     res.json({ service: 'acg-trader-backend', apiVersion: 'v1', status: 'multi_tenant_execution_platform', market: marketRuntime.health(), trading: tradingRuntime.health() });
   });
 
-  app.use(['/v1/auth/login', '/v1/auth/federated/exchange'], rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
-  app.use('/v1/auth', createAuthRouter(authService));
+  app.use(['/v1/auth/login', '/v1/auth/federated/exchange', '/v1/auth/supabase/exchange', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
+  app.use('/v1/auth', createAuthRouter(authService, { identityService }));
   if (env.identity.bootstrapEnabled) {
-    const verifier = new SupabaseTokenVerifier({ projectRef: env.identity.supabaseProjectRef });
     app.use('/v1/identity/bootstrap', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }));
-    app.use('/v1/identity', createIdentityRouter(new IdentityService({ verifier })));
+    app.use('/v1/identity', createIdentityRouter(identityService));
   }
   app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
+  if (env.identity.tradingSessionsEnabled) {
+    app.use('/v1/internal/identity', createAccountGrantRouter({
+      authService, managementService: new AccountGrantManagementService(),
+    }));
+  }
   app.use('/v1/instruments', createInstrumentRouter({ identityService }));
   app.use('/v1/market', createMarketRouter(marketRuntime, authService));
   app.use('/v1/internal/operations', createOperationsRouter(tradingRuntime, authService));
