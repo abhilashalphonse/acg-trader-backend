@@ -10,7 +10,7 @@ const tenantSchema = new Schema({
   status: { type: String, enum: ['ACTIVE', 'DISABLED'], default: 'ACTIVE', index: true },
   branding: { type: Schema.Types.Mixed, default: {} },
   allowedOrigins: [{ type: String, trim: true }],
-  authModes: [{ type: String, enum: ['PASSWORD', 'FEDERATED'] }],
+  authModes: [{ type: String, enum: ['PASSWORD', 'FEDERATED', 'SUPABASE'] }],
   features: { type: Schema.Types.Mixed, default: {} },
   metadata: { type: Schema.Types.Mixed, default: {} },
 }, {

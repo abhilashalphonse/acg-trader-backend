@@ -92,7 +92,7 @@ class AuthService {
     const now = this.now();
     const [user, tenant, identity] = await Promise.all([
       this.userModel.findOne({ _id: userId, status: 'ACTIVE' }).select('_id').lean(),
-      this.tenantModel.findOne({ _id: tenantId, status: 'ACTIVE' }).select('_id').lean(),
+      this.tenantModel.findOne({ _id: tenantId, status: 'ACTIVE', authModes: 'SUPABASE' }).select('_id').lean(),
       this.loginIdentityModel.findOne({ _id: identityId, userId, provider: 'SUPABASE', status: 'ACTIVE' }).select('_id').lean(),
     ]);
     if (!user || !tenant || !identity) throw invalidTraderSession();

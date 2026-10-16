@@ -16,14 +16,14 @@ const ACCOUNT_B = '64b000000000000000000011';
 const NOW = new Date('2026-10-16T15:00:00.000Z');
 
 function fixture() {
-  const state = { userActive: true, identityActive: true, tenantActive: true, grants: [
+  const state = { userActive: true, identityActive: true, tenantActive: true, supabaseModeAllowed: true, grants: [
     { userId: USER, tenantId: TENANT_A, accountId: ACCOUNT_A, permissions: ['TRADE'], status: 'ACTIVE', revokedAt: null, expiresAt: null },
     { userId: USER, tenantId: TENANT_B, accountId: ACCOUNT_B, permissions: ['VIEW'], status: 'ACTIVE', revokedAt: null, expiresAt: null },
   ], accountAActive: true, session: null };
   const queryResult = value => ({ select() { return { lean: async () => value }; }, lean: async () => value });
   const userModel = { findOne: q => queryResult(q._id === USER && state.userActive ? { _id: USER } : null) };
   const identityModel = { findOne: q => queryResult(q.userId === USER && q._id === IDENTITY && state.identityActive ? { _id: IDENTITY, userId: USER } : null) };
-  const tenantModel = { findOne: q => queryResult(state.tenantActive && [TENANT_A, TENANT_B].includes(q._id) ? { _id: q._id } : null) };
+  const tenantModel = { findOne: q => queryResult(state.tenantActive && state.supabaseModeAllowed && q.authModes === 'SUPABASE' && [TENANT_A, TENANT_B].includes(q._id) ? { _id: q._id } : null) };
   const grantModel = { find: q => queryResult(state.grants.filter(g =>
     g.tenantId === q.tenantId && g.userId === q.userId && g.status === 'ACTIVE' &&
     g.revokedAt == null && g.permissions.includes('TRADE') &&
@@ -126,6 +126,13 @@ test('disabling Supabase session feature invalidates already issued sessions wit
   auth.supabaseTradingSessionsEnabled = false;
   await assert.rejects(auth.authenticateSessionToken(created.accessToken), e => e.code === 'TRADER_SESSION_INVALID');
   await assert.rejects(auth.refreshSession({ refreshToken: created.refreshToken }), e => e.code === 'TRADER_SESSION_INVALID');
+  await assert.rejects(auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A }),
+    e => e.code === 'TRADER_SESSION_INVALID');
+});
+
+test('tenant must explicitly enable Supabase authentication in its authModes', async () => {
+  const { auth, state } = fixture();
+  state.supabaseModeAllowed = false;
   await assert.rejects(auth.createSupabaseTraderSession({ userId: USER, loginIdentityId: IDENTITY, tenantId: TENANT_A }),
     e => e.code === 'TRADER_SESSION_INVALID');
 });

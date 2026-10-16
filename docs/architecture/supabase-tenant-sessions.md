@@ -12,6 +12,9 @@ Existing native account/password sessions and ACG Funded federation are unchange
 - Setting `SUPABASE_TRADING_SESSIONS_ENABLED=false` also rejects **existing**
   SUPABASE-origin sessions during HTTP authorization/refresh and on the next
   WebSocket grant check. Native and federated sessions are not affected.
+- Each tenant must explicitly include `SUPABASE` in its `authModes` to permit
+  global-identity sessions. Existing tenants retain PASSWORD/FEDERATED defaults;
+  no tenant opts into Supabase login through this migration alone.
 - Existing ACG Trader refresh cookies and opaque access tokens are reused.
 - Signed Supabase JWTs are accepted **only** to exchange a verified global identity for an ACG Trader session; they are never treated as trading permissions.
 
