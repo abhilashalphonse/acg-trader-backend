@@ -10,7 +10,9 @@ const traderSessionSchema = new Schema({
   previousTokenHash: { type: String, default: null, index: true },
   previousAccessExpiresAt: { type: Date, default: null },
   refreshTokenHash: { type: String, unique: true, sparse: true, index: true },
-  authMethod: { type: String, enum: ['PASSWORD', 'FEDERATED'], required: true, immutable: true },
+  authMethod: { type: String, enum: ['PASSWORD', 'FEDERATED', 'SUPABASE'], required: true, immutable: true },
+  userId: { type: Schema.Types.ObjectId, ref: 'User', default: null, immutable: true, index: true },
+  loginIdentityId: { type: Schema.Types.ObjectId, ref: 'LoginIdentity', default: null, immutable: true },
   ownerExternalRef: { type: String, default: null, immutable: true, index: true },
   ownerExternalRefs: [{ type: String, immutable: true }],
   accountIds: [{ type: Schema.Types.ObjectId, ref: 'TradingAccount', required: true }],
@@ -29,6 +31,7 @@ const traderSessionSchema = new Schema({
 
 traderSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 traderSessionSchema.index({ tenantId: 1, ownerExternalRef: 1, revokedAt: 1 });
+traderSessionSchema.index({ userId: 1, tenantId: 1, revokedAt: 1 });
 
 const TraderSession = mongoose.models.TraderSession || mongoose.model('TraderSession', traderSessionSchema);
 

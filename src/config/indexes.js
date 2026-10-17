@@ -5,6 +5,10 @@ const { AccountLifecycleEvent } = require('../modules/accounts/account-lifecycle
 const { Instrument } = require('../modules/instruments/instrument.model');
 const { Candle } = require('../modules/market-data/candle.model');
 const { Tenant } = require('../modules/tenancy/tenant.model');
+const { User } = require('../modules/identity/user.model');
+const { LoginIdentity } = require('../modules/identity/login-identity.model');
+const { OrganizationMembership } = require('../modules/identity/organization-membership.model');
+const { AccountAccessGrant } = require('../modules/identity/account-access-grant.model');
 const { TraderCredential } = require('../modules/auth/trader-credential.model');
 const { ServiceApiKey } = require('../modules/auth/service-api-key.model');
 const { TraderSession } = require('../modules/auth/trader-session.model');
@@ -33,6 +37,10 @@ const CRITICAL_MODELS = Object.freeze([
   Instrument,
   Candle,
   Tenant,
+  User,
+  LoginIdentity,
+  OrganizationMembership,
+  AccountAccessGrant,
   TraderCredential,
   ServiceApiKey,
   TraderSession,

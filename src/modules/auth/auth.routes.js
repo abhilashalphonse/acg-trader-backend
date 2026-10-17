@@ -15,7 +15,7 @@ const loginSchema = z.object({
 }).strict();
 const exchangeSchema = z.object({ ticket: z.string().trim().min(16).max(512) }).strict();
 
-function createAuthRouter(authService) {
+function createAuthRouter(authService, { identityService = null, personalDemoService = null, verifyPersonalEmail = null } = {}) {
   const router = express.Router();
 
   router.post('/login', async (req, res) => {
@@ -29,6 +29,34 @@ function createAuthRouter(authService) {
     issueRefreshCookie(res, result.refreshToken);
     res.json(publicAuthResponse(result));
   });
+
+  // No client-selected tenant ID here. Native Connect Prop retains its
+  // separate login route. Personal session bootstrap is server-owned.
+  if (env.identity.tradingSessionsEnabled && env.identity.personalDemoEnabled
+      && identityService && personalDemoService && verifyPersonalEmail) {
+    router.post('/personal/demo', async (req, res) => {
+      if (req.body && (typeof req.body !== 'object' || Array.isArray(req.body) ||
+          Object.keys(req.body).length)) {
+        throw new AppError('Personal demo request takes no account or tenant parameters', {
+          statusCode: 400, code: 'INVALID_PERSONAL_DEMO_REQUEST',
+        });
+      }
+      const match = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || '').trim());
+      if (!match || !match[1] || match[1].length > 16384) {
+        throw new AppError('Supabase identity token is required', {
+          statusCode: 401, code: 'IDENTITY_TOKEN_REQUIRED',
+        });
+      }
+      await verifyPersonalEmail(match[1]);
+      await identityService.bootstrap(match[1]);
+      const identity = await identityService.resolve(match[1]);
+      const personalDemo = await personalDemoService.ensureDemo(identity);
+      const result = await authService.createPersonalDemoSession(personalDemo);
+      issueRefreshCookie(res, result.refreshToken);
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).json({ ...publicAuthResponse(result), personalDemo: personalDemo.account });
+    });
+  }
 
   router.post('/refresh', async (req, res) => {
     requireRefreshIntent(req);

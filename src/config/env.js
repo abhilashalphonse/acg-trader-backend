@@ -40,6 +40,11 @@ const schema = z.object({
   WEEKEND_HOLDING_SCAN_INTERVAL_MS: positiveInt(60000),
   RECONCILIATION_ENABLED: booleanFromEnv.default(true),
   RECONCILIATION_INTERVAL_MS: positiveInt(300000),
+  SUPABASE_IDENTITY_BOOTSTRAP_ENABLED: booleanFromEnv.default(false),
+  SUPABASE_TRADING_SESSIONS_ENABLED: booleanFromEnv.default(false),
+  ACG_PERSONAL_DEMO_ENABLED: booleanFromEnv.default(false),
+  SUPABASE_PUBLIC_API_KEY: z.string().trim().optional(),
+  SUPABASE_PROJECT_REF: z.preprocess(value => value === '' ? undefined : value, z.string().regex(/^[a-z0-9]{20}$/).optional()),
   AUTH_SESSION_TTL_SECONDS: positiveInt(3600),
   AUTH_ACCESS_TOKEN_TTL_SECONDS: positiveInt(900),
   AUTH_ACCESS_TOKEN_GRACE_SECONDS: positiveInt(45),
@@ -101,6 +106,16 @@ if (!parsed.success) {
   throw new Error(`Invalid environment configuration: ${details}`);
 }
 const raw = parsed.data;
+if (raw.SUPABASE_TRADING_SESSIONS_ENABLED && !raw.SUPABASE_IDENTITY_BOOTSTRAP_ENABLED) {
+  throw new Error('Supabase trading sessions require identity bootstrap');
+}
+if (raw.SUPABASE_IDENTITY_BOOTSTRAP_ENABLED && !raw.SUPABASE_PROJECT_REF) {
+  throw new Error('SUPABASE_PROJECT_REF is required when identity bootstrap is enabled');
+}
+if (raw.ACG_PERSONAL_DEMO_ENABLED && (!raw.SUPABASE_TRADING_SESSIONS_ENABLED ||
+    !raw.SUPABASE_PUBLIC_API_KEY?.startsWith('sb_publishable_'))) {
+  throw new Error('ACG_PERSONAL_DEMO_ENABLED requires Supabase session flags and public publishable key');
+}
 const symbols = [...new Set(csv(raw.MARKET_SYMBOLS).map(value => value.replace('/', '').toUpperCase()))];
 const useCatalogUniverse = raw.MARKET_UNIVERSE_MODE === 'catalog';
 const configuredCandleTimeframes = [...new Set(csv(raw.MARKET_CANDLE_TIMEFRAMES).map(value => value.toLowerCase()))]
@@ -184,6 +199,13 @@ const env = Object.freeze({
     weekendScanIntervalMs: raw.WEEKEND_HOLDING_SCAN_INTERVAL_MS,
   }),
   reconciliation: Object.freeze({ enabled: raw.RECONCILIATION_ENABLED, intervalMs: raw.RECONCILIATION_INTERVAL_MS }),
+  identity: Object.freeze({
+    bootstrapEnabled: raw.SUPABASE_IDENTITY_BOOTSTRAP_ENABLED,
+    tradingSessionsEnabled: raw.SUPABASE_TRADING_SESSIONS_ENABLED,
+    supabaseProjectRef: raw.SUPABASE_PROJECT_REF || null,
+    personalDemoEnabled: raw.ACG_PERSONAL_DEMO_ENABLED,
+    supabasePublicApiKey: raw.SUPABASE_PUBLIC_API_KEY || null,
+  }),
   auth: Object.freeze({
     sessionTtlSeconds: raw.AUTH_SESSION_TTL_SECONDS,
     accessTokenTtlSeconds: raw.AUTH_ACCESS_TOKEN_TTL_SECONDS,
