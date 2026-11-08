@@ -144,6 +144,7 @@ if (
 if (
   raw.MARKET_GATEWAY_ENABLED
   && raw.MARKET_PROVIDER === 'multi'
+  && raw.INDIA_MARKET_ENABLED
   && (!raw.ACCELPIX_API_KEY || /^(your_|<)/i.test(raw.ACCELPIX_API_KEY))
 ) throw new Error('ACCELPIX_API_KEY is required when MARKET_PROVIDER=multi');
 if (!raw.MARKET_WS_PATH.startsWith('/')) throw new Error('MARKET_WS_PATH must start with /');

@@ -20,13 +20,14 @@ const { ACG_INDIA_PILOT_CATALOG } = require('../instruments/india-pilot-catalog'
 function createMarketRuntime() {
   const eventBus = new EventEmitter();
   eventBus.setMaxListeners(0);
-  const includeIndiaPilot = env.market.provider === 'multi' && env.instrumentCatalogAutoSeed;
+  const includeIndiaPilot = env.market.indiaEnabled && env.market.provider === 'multi' && env.instrumentCatalogAutoSeed;
   const catalogUniverse = includeIndiaPilot
     ? [...ACG_INSTRUMENT_CATALOG, ...ACG_INDIA_PILOT_CATALOG]
     : ACG_INSTRUMENT_CATALOG;
-  const symbols = env.market.useCatalogUniverse
+  const pausedIndiaSymbols = new Set(ACG_INDIA_PILOT_CATALOG.map(item => item.symbol));
+  const symbols = (env.market.useCatalogUniverse
     ? catalogUniverse.filter(item => item.chartEnabled && item.status === 'ACTIVE').map(item => item.symbol)
-    : env.market.symbols;
+    : env.market.symbols).filter(symbol => env.market.indiaEnabled || !pausedIndiaSymbols.has(symbol));
   const instrumentRegistry = new InstrumentRegistry({ symbols: symbols, defaultMaxQuoteAgeMs: env.market.defaultMaxQuoteAgeMs, logger });
   const quoteStore = new QuoteStore();
   const twelveDataAdapter = new TwelveDataAdapter({ apiKey: env.twelveData.apiKey, wsUrl: env.twelveData.wsUrl, apiBase: env.twelveData.apiBase, heartbeatMs: env.twelveData.heartbeatMs, reconnectMinMs: env.twelveData.reconnectMinMs, reconnectMaxMs: env.twelveData.reconnectMaxMs, httpTimeoutMs: env.twelveData.httpTimeoutMs, subscribeBatchSize: env.twelveData.subscribeBatchSize, logger });
@@ -35,7 +36,8 @@ function createMarketRuntime() {
   const accelpixAdapter = new AccelpixAdapter({ apiKey: env.accelpix.apiKey, host: env.accelpix.host, httpTimeoutMs: env.accelpix.httpTimeoutMs, reconnectMinMs: env.accelpix.reconnectMinMs, reconnectMaxMs: env.accelpix.reconnectMaxMs, maxSymbols: env.accelpix.maxSymbols, logger });
   accelpixAdapter.providerName = 'accelpix';
 
-  const adapter = env.market.provider === 'multi'
+  // Never open the Accelpix transport while the unlicensed India market is paused.
+  const adapter = env.market.provider === 'multi' && env.market.indiaEnabled
     ? new MultiProviderAdapter({ adapters: { 'twelve-data': twelveDataAdapter, accelpix: accelpixAdapter }, logger })
     : twelveDataAdapter;
   const candleEngine = new CandleEngine({ eventBus, timeframes: env.market.candleTimeframes, persistTimeframes: env.market.persistTimeframes, flushIntervalMs: env.market.candleFlushIntervalMs, maxSyntheticGapBars: env.market.maxSyntheticGapBars, instrumentRegistry, logger });
