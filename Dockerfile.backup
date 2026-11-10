@@ -1,0 +1,6 @@
+FROM minio/mc:latest AS minio-client
+FROM mongo:8.0
+COPY --from=minio-client /usr/bin/mc /usr/local/bin/mc
+COPY scripts/backup-and-test-railway-mongo.sh /usr/local/bin/acg-mongo-backup-test
+RUN chmod 0755 /usr/local/bin/acg-mongo-backup-test
+ENTRYPOINT ["/usr/local/bin/acg-mongo-backup-test"]
