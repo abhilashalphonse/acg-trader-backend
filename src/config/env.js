@@ -23,6 +23,9 @@ const schema = z.object({
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
   SHUTDOWN_TIMEOUT_MS: positiveInt(10000),
   MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
+  RAILWAY_MONGODB_URI: z.string().min(1).optional(),
+  ACG_MONGO_RAILWAY_CUTOVER: booleanFromEnv.default(false),
+  ACG_DB_MIGRATION_MAINTENANCE: booleanFromEnv.default(false),
   MONGODB_SERVER_SELECTION_TIMEOUT_MS: positiveInt(5000),
   INSTRUMENT_CATALOG_AUTO_SEED: booleanFromEnv.default(true),
   TRADING_API_ENABLED: booleanFromEnv.default(false),
@@ -166,6 +169,9 @@ if (
   throw new Error('A real ACG_FUNDED_WEBHOOK_URL and ACG_FUNDED_WEBHOOK_SECRET are required when platform events are enabled');
 }
 if (/</.test(raw.MONGODB_URI)) throw new Error('MONGODB_URI still contains an example placeholder');
+if (raw.ACG_MONGO_RAILWAY_CUTOVER && (!raw.RAILWAY_MONGODB_URI || /</.test(raw.RAILWAY_MONGODB_URI))) {
+  throw new Error('RAILWAY_MONGODB_URI is required to enable ACG_MONGO_RAILWAY_CUTOVER');
+}
 
 if (raw.NODE_ENV === 'production') {
   if (raw.TRADING_API_ENABLED !== true) throw new Error('TRADING_API_ENABLED must be true in production');
@@ -181,7 +187,9 @@ const env = Object.freeze({
   trustProxy: raw.TRUST_PROXY,
   corsOrigins: csv(raw.CORS_ORIGINS),
   shutdownTimeoutMs: raw.SHUTDOWN_TIMEOUT_MS,
-  mongoUri: raw.MONGODB_URI,
+  mongoUri: raw.ACG_MONGO_RAILWAY_CUTOVER ? raw.RAILWAY_MONGODB_URI : raw.MONGODB_URI,
+  mongoTarget: raw.ACG_MONGO_RAILWAY_CUTOVER ? 'railway' : 'atlas',
+  dbMigrationMaintenance: raw.ACG_DB_MIGRATION_MAINTENANCE,
   mongoServerSelectionTimeoutMs: raw.MONGODB_SERVER_SELECTION_TIMEOUT_MS,
   instrumentCatalogAutoSeed: raw.INSTRUMENT_CATALOG_AUTO_SEED,
   tradingApiEnabled: raw.TRADING_API_ENABLED,
