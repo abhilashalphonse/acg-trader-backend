@@ -24,9 +24,15 @@ stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 prefix="acg-trader-baselines/${stamp}"
 for db in acg_trader acg_trader_staging; do
   echo "BACKUP_DB_BEGIN ${db}"
-  mongodump --uri="$TARGET_MONGODB_URI" --db="$db" --archive --gzip --numParallelCollections=2 2>/tmp/dump.error |
-      s3 s3 cp - "s3://${BUCKET_NAME}/${prefix}/${db}.archive.gz" --no-progress >/dev/null
-  s3 s3api head-object --bucket "$BUCKET_NAME" --key "${prefix}/${db}.archive.gz" >/dev/null
+  if mongodump --uri="$TARGET_MONGODB_URI" --db="$db" --archive --gzip --numParallelCollections=2 2>/tmp/dump.error |
+      s3 s3 cp - "s3://${BUCKET_NAME}/${prefix}/${db}.archive.gz" --no-progress >/dev/null; then
+    echo "BACKUP_STREAM_OK ${db}"
+  else
+    echo "BACKUP_STREAM_FAILED ${db}"
+    grep -Ei 'error|failed|invalid|cannot|connection|timeout|not authorized|auth' /tmp/dump.error | tail -n 8 | sed -E 's#mongodb(\\+srv)?://[^[:space:]]+#<REDACTED>#g' || true
+    exit 31
+  fi
+  s3 s3api head-object --bucket "$BUCKET_NAME" --key "${prefix}/${db}.archive.gz" >/dev/null || { echo "BACKUP_OBJECT_HEAD_FAILED ${db}"; exit 32; }
   echo "BACKUP_DB_UPLOADED ${db}"
 done
 echo "BACKUP_OBJECTS_UPLOAD_COMPLETE prefix=${prefix}"
