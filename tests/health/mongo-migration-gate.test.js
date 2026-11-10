@@ -13,6 +13,9 @@ test('maintenance healthcheck stays reachable while all trading endpoints return
     const health = await fetch(`http://127.0.0.1:${port}/health/ready`);
     assert.equal(health.status, 200);
     assert.equal((await health.json()).tradingEnabled, false);
+    const live = await fetch(`http://127.0.0.1:${port}/health/live`);
+    assert.equal(live.status, 200);
+    assert.equal((await live.json()).databaseWritesEnabled, false);
     const trading = await fetch(`http://127.0.0.1:${port}/v1/trading/orders`, {method: 'POST'});
     assert.equal(trading.status, 503);
     assert.equal(trading.headers.get('retry-after'), '300');

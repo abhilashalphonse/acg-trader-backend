@@ -5,7 +5,7 @@ const http = require('http');
 function createMaintenanceHandler() {
   return (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (req.url?.split('?')[0] === '/health/ready') {
+    if (['/health/ready', '/health/live'].includes(req.url?.split('?')[0])) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'maintenance', tradingEnabled: false, databaseWritesEnabled: false }));
       return;
