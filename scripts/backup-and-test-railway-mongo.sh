@@ -24,7 +24,7 @@ stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 prefix="acg-trader-baselines/${stamp}"
 for db in acg_trader acg_trader_staging; do
   echo "BACKUP_DB_BEGIN ${db}"
-  if mongodump --uri="$TARGET_MONGODB_URI" --db="$db" --archive --gzip --numParallelCollections=2 2>/tmp/dump.error |
+  if mongodump --uri="$TARGET_MONGODB_URI" --authenticationDatabase=admin --db="$db" --archive --gzip --numParallelCollections=2 2>/tmp/dump.error |
       s3 s3 cp - "s3://${BUCKET_NAME}/${prefix}/${db}.archive.gz" --no-progress >/dev/null; then
     echo "BACKUP_STREAM_OK ${db}"
   else
