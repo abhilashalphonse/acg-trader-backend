@@ -1,0 +1,4 @@
+FROM mongo:8.0
+COPY scripts/migrate-atlas-to-railway.sh /usr/local/bin/acg-mongo-copy
+RUN chmod 0755 /usr/local/bin/acg-mongo-copy
+ENTRYPOINT ["/usr/local/bin/acg-mongo-copy"]
