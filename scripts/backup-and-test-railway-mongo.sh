@@ -14,6 +14,12 @@ export AWS_EC2_METADATA_DISABLED=true
 export AWS_PAGER=""
 aws configure set default.s3.addressing_style virtual
 s3() { aws --endpoint-url="$BUCKET_ENDPOINT" "$@"; }
+echo "ACG_BUCKET_DIAGNOSTIC_START"
+probe_key="acg-backup-probe/$(date -u +%Y%m%dT%H%M%SZ).txt"
+printf 'acg-backup-probe\\n' | s3 s3 cp - "s3://${BUCKET_NAME}/${probe_key}" --no-progress >/dev/null || { echo "BUCKET_WRITE_FAILED"; exit 35; }
+s3 s3api head-object --bucket "$BUCKET_NAME" --key "$probe_key" >/dev/null || { echo "BUCKET_READ_FAILED"; exit 36; }
+echo "ACG_BUCKET_DIAGNOSTIC_OK"
+if [ "${ACG_PROBE_ONLY:-false}" = "true" ]; then echo "ACG_PROBE_FINISHED"; exit 0; fi
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 prefix="acg-trader-baselines/${stamp}"
 for db in acg_trader acg_trader_staging; do
