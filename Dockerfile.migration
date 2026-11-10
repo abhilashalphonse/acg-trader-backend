@@ -1,3 +1,4 @@
 FROM mongo:8.0
+LABEL org.opencontainers.image.description="ACG Railway URI authentication preflight"
 COPY scripts/validate-railway-ha.js /usr/local/bin/acg-mongo-preflight.js
 ENTRYPOINT ["mongosh", "--nodb", "--quiet", "/usr/local/bin/acg-mongo-preflight.js"]
