@@ -1,6 +1,6 @@
 FROM mongo:8.0
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \\
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY scripts/final-sync-atlas-to-railway.sh /usr/local/bin/acg-final-sync
 COPY scripts/final-sync-verify.js /usr/local/bin/acg-final-verify.js
