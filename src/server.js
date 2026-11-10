@@ -5,6 +5,7 @@ const { env } = require('./config/env');
 const { connectDatabase, verifyTransactionSupport, disconnectDatabase } = require('./config/database');
 const { ensureCriticalIndexes } = require('./config/indexes');
 const { logger } = require('./infrastructure/logger/logger');
+const { startMaintenanceServer } = require('./infrastructure/maintenance/maintenance-server');
 const { createApp } = require('./app');
 const { createMarketRuntime } = require('./modules/market-data/market.runtime');
 const { createTradingRuntime } = require('./modules/trading/trading.runtime');
@@ -13,6 +14,9 @@ const { syncInstrumentCatalog, syncIndiaPilotCatalog, provisionCatalogExecution,
 const { runLegacyCandleCleanup } = require('./modules/market-data/legacy-candle-cleanup');
 
 async function start() {
+  if (env.dbMigrationMaintenance) {
+    return startMaintenanceServer({ port: env.port, logger });
+  }
   await connectDatabase();
   if (env.tradingApiEnabled) {
     await verifyTransactionSupport();
