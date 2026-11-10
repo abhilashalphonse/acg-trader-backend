@@ -1,8 +1,11 @@
 FROM mongo:8.0
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
-    && chmod 0755 /usr/local/bin/mc && /usr/local/bin/mc --version \
-    && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+    && curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install -i /usr/local/aws-cli -b /usr/local/bin \
+    && aws --version \
+    && rm -rf /var/lib/apt/lists/* /tmp/aws /tmp/awscliv2.zip
 COPY scripts/backup-and-test-railway-mongo.sh /usr/local/bin/acg-mongo-backup-test
 RUN chmod 0755 /usr/local/bin/acg-mongo-backup-test
 ENTRYPOINT ["/usr/local/bin/acg-mongo-backup-test"]
