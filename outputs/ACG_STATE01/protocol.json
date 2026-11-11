@@ -1,0 +1,56 @@
+{
+  "study": "ACG-STATE-01-v1",
+  "status": "Frozen observational companion; no fitted predictor or trading filter",
+  "frozenAtUTC": "2026-11-11T06:05:26.297966+00:00",
+  "cohortStartUTC": "2026-11-16T00:00:00Z",
+  "acceptanceProtocolSHA256": "d6c8e2761d9720a92dccd78a16134a167da3cc1b413da35f8c5bb9d6a74361d4",
+  "decisionTime": "Original signal confirmation +15 minutes, for accepted and nonaccepted signals, including A already stopped and portfolio-busy signals.",
+  "primaryUniverse": "All parent calendar-eligible signals with complete feature/target windows, timely parent signal, acceptance update and feature capture each within 90 seconds of their own event. Late and missing records reported separately.",
+  "features": {
+    "momentum15": "s*(close_U-close_Uminus15)/preBOS_ATR",
+    "momentum60": "s*(close_U-close_Uminus60)/preBOS_ATR",
+    "agreement": "with_BOS / against_BOS / disagree / zero, using signs of the two normalized momenta",
+    "efficiency60": "absolute 60m net close movement / sum of 12 absolute 5m close movements; zero denominator is missing",
+    "costToATR": "scenario (spread + 2 adverse market slippages + roundtrip commission) / preBOS_ATR. Market-roundtrip reference, not actual realized TP-limit fees.",
+    "descriptive240": "Recorded only if full 49-close window exists; not a primary fitted predictor"
+  },
+  "baseline": [
+    "accepted",
+    "signedDistanceATR",
+    "priorATR",
+    "logPriorATR",
+    "inversePriorATR",
+    "timeSin",
+    "timeCos"
+  ],
+  "challengerAdds": [
+    "agreement category with disagree as reference",
+    "efficiency60"
+  ],
+  "redundancy": "Fixed central/stress cost-to-ATR is a scalar multiple of inversePriorATR. Record for execution diagnostics; omit from added-information test. Acceptance is deterministic given signedDistanceATR but supplies a prespecified threshold basis in both models.",
+  "targets": {
+    "primary": "signed reference open_U to close_(T+120m) / preBOS_ATR, exactly 105 one-minute bars",
+    "secondary": "MFE/MAE and reference +/-1 preBOS ATR first-hit; ambiguous minute is separate. No trading instruction.",
+    "policy": "B net R stays in the parent ledger with its own entry+120m horizon; do not equate it with common-horizon price return."
+  },
+  "analysis": {
+    "status": "Specified algorithm; analysis executor and trained coefficients not yet created",
+    "trainingDecisionStartUTC": "2026-11-16T00:00:00Z",
+    "trainingEndExclusiveUTC": "2026-12-14T00:00:00Z",
+    "trainingRule": "Use only training decisions with matured target ending no later than trainingEnd. Complete four UTC weeks represented.",
+    "evaluationDecisionStartUTC": "2026-12-14T02:00:00Z",
+    "evaluationEndExclusiveUTC": "2027-01-11T00:00:00Z",
+    "evaluationRule": "Two-hour embargo; score target windows ending no later than evaluationEnd. No moving endpoints based on results.",
+    "model": "Two ridge linear regressions, sum of squared training residuals + 1*sum squared coefficients; intercept unpenalized. Training-only numeric centering/scaling; fixed categorical levels.",
+    "minimum": "At least 50 complete timely training and 50 evaluation signals, with four UTC weeks each represented. Otherwise incomplete/inconclusive; these minima do not guarantee power.",
+    "primaryMetric": "Baseline MSE minus challenger MSE on identical evaluation observations; MAE is a guardrail.",
+    "uncertainty": "4000 paired calendar-week bootstrap resamples of evaluation errors; 95% percentile interval. Four evaluation weeks limits precision. Report both chronological evaluation halves without tuning.",
+    "evidentiaryGate": "Positive MSE improvement lower bound, no worse MAE overall, positive MSE difference in both chronological halves. Exploratory predictive support only; no profitability or trading promotion claim.",
+    "secondary": "Accepted-only subgroup and first-hit summaries are descriptive. No threshold search or extra feature models.",
+    "predictionTiming": "Prespecified chronological evaluation on prospectively captured features. Any later reconstruction is labeled offline prediction, not contemporaneously issued forecast.",
+    "historical": "All prior years previously examined; any historical fits are exploratory and separate."
+  },
+  "collection": "Separate append-only feature and label ledgers; no scheduler installed. On-demand chain verifies both packages then runs ACCEPT followed by STATE.",
+  "boundary": "If the parent boundary changes, establish a separately versioned companion before collection. Current first capture checks for existing parent signals only.",
+  "executionEvidence": "Twelve Data proxy prices. No Bybit quotes or observed broker fills are supplied by this companion."
+}

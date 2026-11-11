@@ -1,0 +1,62 @@
+{
+  "version": "ACG-ACCEPT-01-v1",
+  "frozenAtUTC": "2026-11-11T04:21:40.957154+00:00",
+  "status": "Frozen paper research; on-demand recorder; no automation",
+  "strategies": {
+    "signal": "Recovered-protection Strong BOS detector from previous study; strict 2+2 swings, prior Wilder ATR14, penetration >=0.15 ATR, body >=0.8 ATR, directional close location >=0.75.",
+    "A": "Entry at first 5m open after BOS confirmation.",
+    "B": "Third 5m candle after BOS closes >=1 frozen pre-BOS ATR beyond broken level. Enter following 5m open, exactly 15m after A. No additional recross, FVG, or probability-score gate. A prior stop touch during waiting does not veto B: no order exists yet.",
+    "stops": "Original BOS wick plus 0.10 frozen ATR. Distance floor is median range of 12 candles ending with BOS, frozen for both. Stop=max distance from actual modeled fill to anchor or frozen floor. Skip if reference entry is on invalid side of wick.",
+    "targets": "1.5 times actual fill-to-stop distance from actual fill. 120 minutes maximum from each strategy entry. No trailing, break-even, or volatility-based changes.",
+    "risk": "1R is fill-to-stop price distance before commission and exit slippage; costs can make loss >1R. Fixed dollar risk, continuous size, no leverage compounding. No claim of small-account lot-step or margin feasibility."
+  },
+  "calendar": "Retain ACG UTC Sun22:00-Fri22:00. Exclude entire signal-open-to-B-timeout window if overlapping20:45-23:15UTC. Actual Bybit holidays/sessions remain unverified.",
+  "features": "No ATR-regime filter, FVG bonus, HTF filter, stop optimization or threshold changes. Record them only in separately versioned future research, not this test.",
+  "prospectiveBoundary": "Only signals confirmed strictly after frozenAtUTC are eligible. Earlier candles are warm-up only. First-seen rows are immutable. Revisions logged without silently replacing prior evidence.",
+  "paperExecution": "Twelve Data XAU/USD used as reference midpoint proxy, NOT Bybit broker feed. Commission0; fixed synthetic spread0.50USD/oz; adverse market/stop/time-exit slippage0.10USD/oz; target limit capped at1.5R. Entry is historical reference open at scheduled timestamp, not an actual executable fill. No live order capability.",
+  "observation": "Actual first processing time is recorded independently for the signal, 15m acceptance update and entry-price evidence. Each is late above 90 seconds. Processing time is a conservative upper bound on provider response arrival. Timely simulated scheduled opens are still not observed fills.",
+  "positionPolicy": "One simulated position per strategy. Skip entries in the same5m bucket as the previous exit, matching historical benchmark. Log every strong signal, including excluded, busy, rejected and unresolved cases.",
+  "dataGaps": "Do not fill missing prices. Stop outcome resolution at the first missing required1m bar; flag data_gap. Native5m historical fallback is intentionally not used in this prospective journal. This stricter evidence rule is disclosed, not an entry-rule change.",
+  "review": "At least 60 calendar days from actual cohort boundary AND 100 completed hypothetical trades in each central policy. Timely observation coverage and uncertainty must be reported; count threshold alone does not validate an edge.",
+  "normalization": "Primary equal1R planned price risk per trade; also risk-hours, notional-hours, trade count, monthly sampling controls. Any ex-post scaling explicitly diagnostic, never a sizing recommendation.",
+  "frozenCodeDirectory": "C:\\Users\\Abhil\\Documents\\Codex\\2026-11-09\\how\\work\\frozen_bos_v1",
+  "codeHashes": {
+    "test_market_structure.py": "906b9b200efe46494eb7ac834cde7e36efd50b5687a781d37ac50ba77872bb45",
+    "test_fvg.py": "4d8478711a56a25c61a6fa633e72e4e4da1d11eda1a585bb83922c7f2ceee40e",
+    "replay_combined_strategies.py": "0e4a6910f3f97a4c6ab3e5dae7a4f47842d884701c4d177d1bed865ca6256c26",
+    "run_long_xauusd_research.py": "139de485ac7aec9592e341045506b425aaa29f8ab8c734679c28fc2814c515f7",
+    "compare_bos_acceptance_execution.py": "c730bdee3996c96e3f53c29c6e7d297c5d09bde5101a7bef48b3ccc5d8450b50"
+  },
+  "baseline": {
+    "1m": {
+      "path": "C:\\Users\\Abhil\\Documents\\Codex\\2026-11-09\\how\\outputs\\XAUUSD_1m_2026-01-01_to_2026-11-09_ACG_Sessions.json",
+      "sha256": "2161f8b622916589d94e04316319fcacd4504474d810129874a8b3cc9d1e5b54"
+    },
+    "5m": {
+      "path": "C:\\Users\\Abhil\\Documents\\Codex\\2026-11-09\\how\\outputs\\XAUUSD_5m_2026-01-01_to_2026-11-09_ACG_Sessions.json",
+      "sha256": "641022c37db51ce74fc30629d55c2127eba33a1dc81866dc32fada3d8dd07e03"
+    }
+  },
+  "executionCosts": {
+    "spread": 0.5,
+    "slippage": 0.1,
+    "commission": 0.0
+  },
+  "cohortStartUTC": "2026-11-16T00:00:00Z",
+  "originProtocolSHA256": "f57e62f8905448722d7f8c55d2ac0d27650b9b4a525098f1f27585f9f4d89c56",
+  "costScenarios": {
+    "central": {
+      "spread": 0.5,
+      "slippage": 0.1,
+      "commission": 0
+    },
+    "stress": {
+      "spread": 1.0,
+      "slippage": 0.25,
+      "commission": 0.06
+    }
+  },
+  "commonHorizon": "All Strong BOS signals, including A stopped before update. Signed reference open at signal+15m to close at signal+120m, minus scenario roundtrip spread, two market slippages and commission. Require all 105 one-minute bars. Separate eligible cohort from rollover exclusions.",
+  "readiness": "Fresh in-session provider capture must succeed before cohort boundary. No scheduler is installed by this package.",
+  "primary": "B minus A central net R at equal planned dollar risk per trade over common calendar period. Paired weekly uncertainty, stress sensitivity, exposure and drawdown mandatory. No causal attribution to acceptance alone."
+}
