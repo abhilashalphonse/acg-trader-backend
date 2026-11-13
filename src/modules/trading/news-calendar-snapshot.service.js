@@ -69,9 +69,9 @@ class NewsCalendarSnapshotService {
   async #tick() {
     // The database pointer is also polled: a dropped process notification cannot strand an instance.
     await this.stateModel.updateOne({ _id: this.key }, { $setOnInsert: { generation: 0, leaseUntil: new Date(0), nextRefreshAt: new Date(0) } }, { upsert: true });
-    await this.#load(await this.stateModel.findById(KEY).lean());
+    await this.#load(await this.stateModel.findById(this.key).lean());
     const nowMs = this.now();
-    const state = await this.stateModel.findOneAndUpdate({ _id: KEY,
+    const state = await this.stateModel.findOneAndUpdate({ _id: this.key,
       leaseUntil: mongoose.trusted({ $lte: new Date(nowMs) }),
       nextRefreshAt: mongoose.trusted({ $lte: new Date(nowMs) }),
     }, { $set: { leaseOwner: this.owner, leaseUntil: new Date(nowMs + this.config.newsCalendarHttpTimeoutMs + 30000) }, $inc: { generation: 1 } }, { new: true }).lean();
@@ -140,7 +140,7 @@ class NewsCalendarSnapshotService {
     try {
       const response = await this.fetch(url, { signal: controller.signal, headers: { Accept: accept } });
       if (!response.ok) throw new Error('Calendar upstream HTTP ' + response.status);
-      return accept === 'text/calendar' ? response.text() : response.json();
+      return await (accept === 'text/calendar' ? response.text() : response.json());
     } finally { clearTimeout(timer); }
   }
 
