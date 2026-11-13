@@ -7,9 +7,9 @@ const CURRENCIES = new Set(['USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','CNY
 const HOUR = 3600000;
 const DAY = 86400000;
 const CORE_BLS = Object.freeze([
-  { label: 'employment', pattern: /employment situation|non.?farm payroll/i },
-  { label: 'cpi', pattern: /consumer price index/i },
-  { label: 'ppi', pattern: /producer price index/i },
+  { label: 'employment', pattern: /employment situation|non.?farm|\bnfp\b|\bpayrolls\b/i },
+  { label: 'cpi', pattern: /consumer price index|\bcpi\b/i },
+  { label: 'ppi', pattern: /producer price index|\bppi\b/i },
 ]);
 
 function normalizeShowMyTrades(payload, nowMs) {
