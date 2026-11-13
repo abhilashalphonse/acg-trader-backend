@@ -1,0 +1,25 @@
+name: Free economic calendar read-only provider probe
+
+on:
+  pull_request:
+    paths:
+      - 'src/modules/trading/free-calendar-sources.js'
+      - 'src/modules/trading/news-calendar-snapshot.service.js'
+      - 'scripts/check-free-calendar-providers.js'
+      - '.github/workflows/free-calendar-provider-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-provider-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify live free calendar response without credentials or trades
+        run: node scripts/check-free-calendar-providers.js
