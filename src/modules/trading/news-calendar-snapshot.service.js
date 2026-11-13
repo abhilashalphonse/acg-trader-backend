@@ -95,7 +95,9 @@ class NewsCalendarSnapshotService {
     let payload;
     try {
       payload = await Promise.race([timeout, (async () => {
-        const response = await this.fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
+        const headers = { Accept: 'application/json' };
+        if (this.config.financeCalendarApiKey) headers['X-API-Key'] = this.config.financeCalendarApiKey;
+        const response = await this.fetch(url, { signal: controller.signal, headers });
         if (!response.ok) throw new Error(`Calendar HTTP ${response.status}`);
         return response.json();
       })()]);
