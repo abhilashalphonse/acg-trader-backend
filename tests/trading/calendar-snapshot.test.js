@@ -3,9 +3,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { NewsCalendarSnapshotService } = require('../../src/modules/trading/news-calendar-snapshot.service');
 const { normalizeCalendarEvent } = require('../../src/modules/trading/trading-permission-policy.service');
-function fixture(fetchImpl, timeout = 30) {
+function fixture(fetchImpl, timeout = 30, configOverrides = {}) {
   let clock = Date.parse('2026-10-02T12:00:00Z');
-  const state = { _id: 'financecalendar-high-impact', generation: 0, leaseUntil: new Date(0), nextRefreshAt: new Date(0) };
+  const state = { _id: configOverrides.calendarProvider === 'showmytrades' ? 'showmytrades-high-impact' : 'financecalendar-high-impact', generation: 0, leaseUntil: new Date(0), nextRefreshAt: new Date(0) };
   const snapshots = new Map();
   const matches = filter => Object.entries(filter).every(([key, value]) => value?.$lte !== undefined ? state[key] <= value.$lte : value?.$gt !== undefined ? state[key] > value.$gt : state[key] === value);
   const apply = patch => { Object.assign(state, patch.$set); if (patch.$inc) state.generation++; };
@@ -15,9 +15,9 @@ function fixture(fetchImpl, timeout = 30) {
     findOneAndUpdate: (filter, patch) => ({ lean: async () => { if (!matches(filter)) return null; apply(patch); return { ...state }; } }),
   };
   const snapshotModel = { create: async data => snapshots.set(data._id, structuredClone(data)), findById: id => ({ lean: async () => snapshots.get(id) }) };
-  const config = { financeCalendarBaseUrl: 'https://calendar.invalid', newsCalendarHttpTimeoutMs: timeout, newsCalendarCacheTtlMs: 60000, newsCalendarStaleMaxMs: 900000 };
+  const config = { financeCalendarBaseUrl: 'https://calendar.invalid', newsCalendarHttpTimeoutMs: timeout, newsCalendarCacheTtlMs: 60000, newsCalendarStaleMaxMs: 900000, ...configOverrides };
   const options = { config, normalizeEvent: normalizeCalendarEvent, stateModel, snapshotModel, fetchImpl, now: () => clock };
-  return { service: new NewsCalendarSnapshotService(options), second: () => new NewsCalendarSnapshotService(options), state, snapshots, advance: ms => { clock += ms; } };
+  return { service: new NewsCalendarSnapshotService(options), second: () => new NewsCalendarSnapshotService(options), state, snapshots, advance: ms => { clock += ms; }, currentTime: () => clock };
 }
 const event = { id: 'cpi', timestamp: '2026-10-02T13:30:00Z', impact: 'high', currency: 'USD', title: 'US CPI' };
 
@@ -107,4 +107,82 @@ test('calendar HTTP 401 retains the unavailable state rather than publishing eve
   assert.equal(f.service.read().dataStatus, 'UNAVAILABLE');
   assert.match(f.service.lastError, /401/);
   assert.equal(f.snapshots.size, 0);
+});
+
+const blsCalendar = [
+  'BEGIN:VCALENDAR',
+  'BEGIN:VEVENT',
+  'UID:cpi-oct-2026',
+  'SUMMARY:Consumer Price Index for September 2026',
+  'DTSTART;TZID=America/New_York:20261002T093000',
+  'END:VEVENT',
+  'END:VCALENDAR',
+].join('\r\n');
+
+function freeFixture({ blsError = false, validated = false, primaryFailure = false } = {}) {
+  let observedCalls = [];
+  let currentTime = () => Date.parse('2026-10-02T12:00:00Z');
+  const fetchImpl = async (url, options) => {
+    observedCalls.push({url:String(url), accept:options.headers.Accept});
+    if (String(url).includes('showmytrades.com')) {
+      if (primaryFailure) return {ok:false,status:503};
+      const time = '2026-10-02T13:30:00Z';
+      return {ok:true,json: async () => ({
+        server_time: currentTime()/1000, count:1,
+        events:[{id:'us-cpi-2026',time,ts:Date.parse(time)/1000,impact:'high',currency:'USD',title:'US CPI'}],
+      })};
+    }
+    if (String(url).includes('bls.gov')) {
+      if (blsError) return {ok:false,status:403};
+      return {ok:true,text:async () => blsCalendar};
+    }
+    throw new Error('unexpected provider URL');
+  };
+  const f = fixture(fetchImpl,30,{
+    calendarProvider:'showmytrades',
+    freeCalendarValidated:validated,
+    showMyTradesCalendarUrl:'https://showmytrades.com/api/public/calendar/v1',
+    blsReleaseCalendarUrl:'https://www.bls.gov/schedule/news_release/bls.ics',
+  });
+  currentTime=f.currentTime;
+  return {...f, observedCalls};
+}
+
+test('free-feed snapshot is segregated, normalized and provisional before validation', async () => {
+  const f=freeFixture();
+  await f.service.tick();
+  const result=f.service.read();
+  assert.equal(result.dataStatus,'PENDING_VALIDATION');
+  assert.equal(result.provider,'showmytrades+bls');
+  assert.equal(result.verification.officialBls,'AVAILABLE');
+  assert.equal(result.verification.confirmed,1);
+  assert.equal(result.events.length,1);
+  assert.equal(result.events[0].currency,'USD');
+  assert.equal(f.state._id,'showmytrades-high-impact');
+  assert.match(f.observedCalls[0].url,/impact=high/);
+  assert.match(f.observedCalls[0].url,/days=3/);
+  assert.equal(f.observedCalls[1].accept,'text/calendar');
+  const second=f.second();
+  await second.tick();
+  assert.equal(second.read().snapshotVersion,result.snapshotVersion);
+});
+
+test('official BLS cross-check failure is explicitly degraded, not misreported as verified', async () => {
+  const f=freeFixture({blsError:true});
+  await f.service.tick();
+  assert.equal(f.service.read().verification.officialBls,'UNAVAILABLE');
+  assert.equal(f.service.read().dataStatus,'PENDING_VALIDATION');
+  f.advance(900001);
+  assert.equal(f.service.read().dataStatus,'EXPIRED');
+});
+
+test('validated feed can become fresh but primary HTTP failure never publishes a snapshot', async () => {
+  const good=freeFixture({validated:true});
+  await good.service.tick();
+  assert.equal(good.service.read().dataStatus,'FRESH');
+  const failed=freeFixture({primaryFailure:true});
+  await failed.service.tick();
+  assert.equal(failed.service.read().dataStatus,'UNAVAILABLE');
+  assert.match(failed.service.lastError,/503/);
+  assert.equal(failed.snapshots.size,0);
 });

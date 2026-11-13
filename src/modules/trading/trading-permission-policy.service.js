@@ -98,7 +98,7 @@ class TradingPermissionPolicyService {
       news,
       weekend,
       source: {
-        calendar: 'financecalendar.com',
+        calendar: this.config.calendarProvider === 'showmytrades' ? 'showmytrades.com + bls.gov' : 'financecalendar.com',
         highImpactOnly: true,
       },
       generatedAt: new Date(nowMs).toISOString(),

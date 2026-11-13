@@ -10,6 +10,7 @@ const snapshotSchema = new Schema({
   fetchedAt: { type: Date, required: true },
   checksum: { type: String, required: true },
   events: { type: [Schema.Types.Mixed], required: true },
+  verification: { type: Schema.Types.Mixed, default: null },
 }, { versionKey: false });
 // Snapshots are insert-only. Runtime health is derived from fetchedAt, never persisted into a snapshot.
 snapshotSchema.pre('save', function(next) { next(this.isNew ? undefined : new Error('Calendar snapshots are immutable')); });
