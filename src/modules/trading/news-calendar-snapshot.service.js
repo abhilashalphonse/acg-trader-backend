@@ -85,7 +85,16 @@ class NewsCalendarSnapshotService {
       }, { $set: { activeVersion: snapshot._id, leaseUntil: new Date(0), lastError: null,
         nextRefreshAt: new Date(this.now() + (this.config.calendarProvider === 'showmytrades'
           ? Math.max(900000, this.config.newsCalendarCacheTtlMs) : this.config.newsCalendarCacheTtlMs)) } }, { new: true }).lean();
-      if (published) { this.snapshot = Object.freeze(snapshot); this.lastError = null; }
+      if (published) {
+        this.snapshot = Object.freeze(snapshot);
+        this.lastError = null;
+        this.logger?.info?.({
+          provider: snapshot.provider,
+          eventCount: snapshot.events.length,
+          verification: snapshot.verification || null,
+          snapshotVersion: snapshot._id,
+        }, 'Calendar snapshot published');
+      }
     } catch (error) {
       await this.stateModel.updateOne(claim, { $set: { leaseUntil: new Date(0), lastError: error.message,
         nextRefreshAt: new Date(this.now() + 30000) } });
