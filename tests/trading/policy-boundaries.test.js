@@ -102,3 +102,19 @@ test('actual scanner queries cast with application sanitizeFilter settings', asy
     assert.equal(instrumentQueries, 1);
   } finally { mongoose.set('sanitizeFilter', previous); }
 });
+
+test('provisional free-calendar events never authorize new exposure for enforced accounts', async () => {
+  const { account, service } = fixture({ newsEnforcementEnabled: true, weekendEnforcementEnabled: false }, 'PENDING_VALIDATION');
+  const decision = await service.evaluateExposureIncrease({ accountId: account._id, account,
+    instrument, symbol: 'EURUSD', action: 'MARKET_OPEN' });
+  assert.equal(decision.status.news.authoritative, false);
+  assert.equal(decision.status.news.active, false, 'provisional event is never treated as confirmed');
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.kind, 'NEWS_DATA_UNAVAILABLE');
+  await assert.rejects(service.authorizeExecution({ account, instrument, action: 'PENDING_ENTRY' }),
+    { code: 'NEWS_CALENDAR_UNAVAILABLE' });
+  service.config.newsEnforcementEnabled = false;
+  assert.equal((await service.evaluateExposureIncrease({ accountId: account._id, account,
+    instrument, symbol: 'EURUSD', action: 'MARKET_OPEN' })).allowed, true,
+  'information-only customers are not blocked by unvalidated data');
+});
