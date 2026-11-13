@@ -84,3 +84,27 @@ test('unexpected removal of an upcoming event keeps the previous snapshot', asyn
   assert.equal(f.service.read().events.length, 1);
   assert.match(f.service.lastError, /removed/);
 });
+
+test('calendar requests authenticate with a server-side key without leaking it into URLs', async () => {
+  let requestedUrl;
+  let requestedHeaders;
+  const f = fixture(async (url, options) => {
+    requestedUrl = url.toString();
+    requestedHeaders = options.headers;
+    return { ok: true, json: async () => ({ events: [event] }) };
+  });
+  f.service.config.financeCalendarApiKey = 'secret-calendar-key';
+  await f.service.tick();
+  assert.equal(requestedHeaders['X-API-Key'], 'secret-calendar-key');
+  assert.equal(requestedHeaders.Accept, 'application/json');
+  assert.equal(requestedUrl.includes('secret-calendar-key'), false);
+  assert.equal(f.service.read().dataStatus, 'FRESH');
+});
+
+test('calendar HTTP 401 retains the unavailable state rather than publishing events', async () => {
+  const f = fixture(async () => ({ ok: false, status: 401 }));
+  await f.service.tick();
+  assert.equal(f.service.read().dataStatus, 'UNAVAILABLE');
+  assert.match(f.service.lastError, /401/);
+  assert.equal(f.snapshots.size, 0);
+});
