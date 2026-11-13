@@ -38,6 +38,10 @@ const schema = z.object({
   WEEKEND_PROCESSING_LEAD_MINUTES: z.coerce.number().int().min(5).max(120).default(10),
   FINANCE_CALENDAR_BASE_URL: z.string().url().default('https://www.financecalendar.com/wp-json/fc/v1'),
   FINANCE_CALENDAR_API_KEY: z.string().trim().optional(),
+  NEWS_CALENDAR_PROVIDER: z.enum(['financecalendar', 'showmytrades']).default('financecalendar'),
+  NEWS_FREE_CALENDAR_VALIDATED: booleanFromEnv.default(false),
+  SHOWMYTRADES_CALENDAR_URL: z.string().url().default('https://showmytrades.com/api/public/calendar/v1'),
+  BLS_RELEASE_CALENDAR_URL: z.string().url().default('https://www.bls.gov/schedule/news_release/bls.ics'),
   NEWS_CALENDAR_HTTP_TIMEOUT_MS: positiveInt(8000),
   NEWS_CALENDAR_CACHE_TTL_MS: positiveInt(60000),
   NEWS_CALENDAR_STALE_MAX_MS: positiveInt(900000),
@@ -110,6 +114,10 @@ if (!parsed.success) {
   throw new Error(`Invalid environment configuration: ${details}`);
 }
 const raw = parsed.data;
+if (raw.NEWS_CALENDAR_PROVIDER === 'showmytrades' && raw.NEWS_TRADING_ENFORCEMENT &&
+  !raw.NEWS_FREE_CALENDAR_VALIDATED) {
+  throw new Error('Free news calendar must pass live acceptance before news enforcement is enabled');
+}
 if (raw.SUPABASE_TRADING_SESSIONS_ENABLED && !raw.SUPABASE_IDENTITY_BOOTSTRAP_ENABLED) {
   throw new Error('Supabase trading sessions require identity bootstrap');
 }
@@ -204,6 +212,10 @@ const env = Object.freeze({
     weekendProcessingLeadMinutes: raw.WEEKEND_PROCESSING_LEAD_MINUTES,
     financeCalendarBaseUrl: raw.FINANCE_CALENDAR_BASE_URL.replace(/\/+$/, ''),
     financeCalendarApiKey: raw.FINANCE_CALENDAR_API_KEY || null,
+    calendarProvider: raw.NEWS_CALENDAR_PROVIDER,
+    freeCalendarValidated: raw.NEWS_FREE_CALENDAR_VALIDATED,
+    showMyTradesCalendarUrl: raw.SHOWMYTRADES_CALENDAR_URL,
+    blsReleaseCalendarUrl: raw.BLS_RELEASE_CALENDAR_URL,
     newsCalendarHttpTimeoutMs: raw.NEWS_CALENDAR_HTTP_TIMEOUT_MS,
     newsCalendarCacheTtlMs: raw.NEWS_CALENDAR_CACHE_TTL_MS,
     newsCalendarStaleMaxMs: raw.NEWS_CALENDAR_STALE_MAX_MS,
