@@ -114,10 +114,9 @@ if (!parsed.success) {
   throw new Error(`Invalid environment configuration: ${details}`);
 }
 const raw = parsed.data;
-if (raw.NEWS_CALENDAR_PROVIDER === 'showmytrades' && raw.NEWS_TRADING_ENFORCEMENT &&
-  !raw.NEWS_FREE_CALENDAR_VALIDATED) {
-  throw new Error('Free news calendar must pass live acceptance before news enforcement is enabled');
-}
+// Unvalidated free calendar remains non-authoritative. Permission-policy evaluation
+// treats PENDING_VALIDATION as unavailable and blocks new exposure for opted-in
+// accounts; do not crash production merely to activate information-only news.
 if (raw.SUPABASE_TRADING_SESSIONS_ENABLED && !raw.SUPABASE_IDENTITY_BOOTSTRAP_ENABLED) {
   throw new Error('Supabase trading sessions require identity bootstrap');
 }

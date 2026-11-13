@@ -117,7 +117,7 @@ class TradingPermissionPolicyService {
 
     const decisions = [
       { kind: 'NEWS', applicable: status.news?.active === true && !status.permissions.newsTrading, enforced: status.enforcement.newsEnabled },
-      { kind: 'NEWS_DATA_UNAVAILABLE', applicable: !status.permissions.newsTrading && ['UNAVAILABLE', 'EXPIRED'].includes(status.news?.dataStatus), enforced: status.enforcement.newsEnabled },
+      { kind: 'NEWS_DATA_UNAVAILABLE', applicable: !status.permissions.newsTrading && ['UNAVAILABLE', 'EXPIRED', 'PENDING_VALIDATION'].includes(status.news?.dataStatus), enforced: status.enforcement.newsEnabled },
       { kind: 'WEEKEND', applicable: status.weekend?.active === true && !status.permissions.weekendHolding, enforced: status.enforcement.weekendEnabled },
     ].filter(decision => decision.applicable).map(decision => ({ ...decision, wouldBlock: true, allowed: !decision.enforced }));
     for (const decision of decisions) {
