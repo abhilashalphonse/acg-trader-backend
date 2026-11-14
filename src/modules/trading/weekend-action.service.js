@@ -90,6 +90,62 @@ class WeekendActionService {
     };
   }
 
+  async cohortSummary(tenantId) {
+    const tenantObjectId = new mongoose.Types.ObjectId(String(tenantId));
+    const rolloutPercent = Math.max(0, Math.min(100, Number(this.policyService?.config?.weekendRolloutPercent) || 0));
+    const accounts = await this.accountModel.find({
+      tenantId: tenantObjectId,
+      status: 'ACTIVE',
+      tradingEnabled: true,
+      'tradingPermissions.weekendHolding': false,
+      tradingPermissionsVersion: mongoose.trusted({ $gt: 0 }),
+    }).select('_id').lean();
+
+    const accountIds = accounts.map(account => account._id);
+    let openPositions = [];
+    let pendingOrders = [];
+    if (accountIds.length) {
+      [openPositions, pendingOrders] = await Promise.all([
+        this.positionModel.find({
+          tenantId: tenantObjectId,
+          accountId: mongoose.trusted({ $in: accountIds }),
+          status: 'OPEN',
+        }).select('accountId').lean(),
+        this.orderModel.find({
+          tenantId: tenantObjectId,
+          accountId: mongoose.trusted({ $in: accountIds }),
+          status: mongoose.trusted({ $in: ['PENDING', 'TRIGGERED'] }),
+        }).select('accountId').lean(),
+      ]);
+    }
+
+    const exposedAccountIds = new Set([
+      ...openPositions.map(item => String(item.accountId)),
+      ...pendingOrders.map(item => String(item.accountId)),
+    ]);
+    const rows = accounts.map(account => {
+      const accountId = String(account._id);
+      return { accountId, bucket: rolloutBucket(accountId), exposed: exposedAccountIds.has(accountId) };
+    });
+    const exposedRows = rows.filter(item => item.exposed);
+    const eligibleAtCurrentRollout = rows.filter(item => item.bucket < rolloutPercent).length;
+    const exposedAtCurrentRollout = exposedRows.filter(item => item.bucket < rolloutPercent).length;
+    const minimumRolloutPercentForEligible = rows.length ? Math.min(...rows.map(item => item.bucket)) + 1 : null;
+    const minimumRolloutPercentForExposure = exposedRows.length ? Math.min(...exposedRows.map(item => item.bucket)) + 1 : null;
+
+    return {
+      status: 'OK',
+      rolloutPercent,
+      eligibleAccounts: rows.length,
+      accountsWithExposure: exposedRows.length,
+      eligibleAtCurrentRollout,
+      exposedAtCurrentRollout,
+      minimumRolloutPercentForEligible,
+      minimumRolloutPercentForExposure,
+      generatedAt: new Date(this.now()).toISOString(),
+    };
+  }
+
   health() {
     return {
       running: Boolean(this.timer) && !this.stopping,
@@ -234,5 +290,8 @@ class WeekendActionService {
 function confirmationIsLate(confirmedAt, marketCloseAt) {
   return new Date(confirmedAt).getTime() > new Date(marketCloseAt).getTime();
 }
+function rolloutBucket(accountId) {
+  return crypto.createHash('sha256').update(String(accountId)).digest().readUInt32BE(0) % 100;
+}
 function actionError(code) { return new AppError(code, { statusCode: 409, code }); }
-module.exports = { WeekendActionService, confirmationIsLate };
+module.exports = { WeekendActionService, confirmationIsLate, rolloutBucket };

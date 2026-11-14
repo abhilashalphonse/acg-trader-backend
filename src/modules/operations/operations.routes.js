@@ -55,6 +55,9 @@ function createOperationsRouter(runtime, authService) {
       retryAttentionAttempt: query.retryAttentionAttempt,
     }));
   });
+  router.get('/weekend-actions/cohort', async (req, res) => {
+    res.json(await runtime.weekendActionService.cohortSummary(req.servicePrincipal.tenantId));
+  });
   router.get('/policy-metrics', async (req, res) => {
     const query = parse(policyMetricsSchema, req.query || {});
     res.json(await runtime.policyMetricsService.summary(req.servicePrincipal.tenantId, query));
