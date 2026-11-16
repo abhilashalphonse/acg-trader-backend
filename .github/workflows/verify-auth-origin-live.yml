@@ -1,0 +1,41 @@
+name: Verify live Trader auth Origin protection (read-only)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/verify-auth-origin-live.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe unauthorized Origin requests without credentials
+        run: |
+          set -euo pipefail
+          api='https://acg-trader-backend-production.up.railway.app'
+          probe() {
+            local label="$1" origin="$2" status expected="$3"
+            status=$(curl -sS --max-time 20 --connect-timeout 8 -X POST \
+              -H "Origin: $origin" -H 'Content-Type: application/json' \
+              -H 'X-ACG-Refresh: 1' --data '{}' \
+              -o /tmp/acg-auth-response.json \
+              -w '%{http_code}' "$api/v1/auth/refresh")
+            printf 'AUTH_ORIGIN_PROBE|%s|HTTP_%s\n' "$label" "$status"
+            if [ "$expected" = "reject" ]; then
+              [ "$status" = "403" ]
+              grep -q '"UNTRUSTED_AUTH_ORIGIN"' /tmp/acg-auth-response.json
+            else
+              [ "$status" != "403" ] && [ "$status" != "200" ]
+              ! grep -q '"UNTRUSTED_AUTH_ORIGIN"' /tmp/acg-auth-response.json
+            fi
+          }
+          probe hostile https://evil.example reject
+          probe lookalike https://acg-trader.web.app.evil.example reject
+          probe opaque null reject
+          probe first-party https://acg-trader.web.app allow
+          echo 'PASS: live origin policy rejects foreign credential forms and permits first-party authentication route'
