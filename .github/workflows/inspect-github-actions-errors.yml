@@ -1,0 +1,38 @@
+name: Inspect recent backend GitHub Actions failures (read-only)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/inspect-github-actions-errors.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: List recent workflow states and failing job names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo 'BACKEND_ACTIONS_BEGIN'
+          gh api "/repos/$GH_REPO/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | [.id, .name, .event, .head_branch, .head_sha[0:10], .status, (.conclusion // "-"), .created_at, .html_url] | @tsv' \
+            | head -30
+          echo 'BACKEND_ACTIONS_END'
+          echo 'BACKEND_FAILED_JOB_IDS_BEGIN'
+          gh api "/repos/$GH_REPO/actions/runs?per_page=30" \
+            --jq '[.workflow_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out") | .id] | .[:8] | .[]' \
+            | while read -r run; do
+              [ -z "$run" ] && continue
+              echo "FAILED_RUN_ID $run"
+              gh api "/repos/$GH_REPO/actions/runs/$run/jobs?per_page=50" \
+                --jq '.jobs[] | select(.conclusion=="failure") | [.id, .name, .conclusion] | @tsv'
+            done
+          echo 'BACKEND_FAILED_JOB_IDS_END'
