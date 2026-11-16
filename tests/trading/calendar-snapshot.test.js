@@ -186,3 +186,37 @@ test('validated feed can become fresh but primary HTTP failure never publishes a
   assert.match(failed.service.lastError,/503/);
   assert.equal(failed.snapshots.size,0);
 });
+
+test('free feed retains previously known upcoming events when upstream temporarily omits them', async () => {
+  let upstreamEvents = [{ id: 'us-cpi-2026', time: '2026-10-02T13:30:00Z',
+    ts: Date.parse('2026-10-02T13:30:00Z') / 1000,
+    impact: 'high', currency: 'USD', title: 'US CPI' }];
+  const f = fixture(async url => {
+    if (String(url).includes('showmytrades.com')) return { ok: true, json: async () => ({
+      server_time: f.currentTime() / 1000, count: upstreamEvents.length, events: upstreamEvents,
+    }) };
+    return { ok: false, status: 503 }; // Optional BLS cross-check unavailable.
+  }, 30, {
+    calendarProvider: 'showmytrades', freeCalendarValidated: false,
+    showMyTradesCalendarUrl: 'https://showmytrades.com/api/public/calendar/v1',
+    blsReleaseCalendarUrl: 'https://www.bls.gov/schedule/news_release/bls.ics',
+  });
+  await f.service.tick();
+  const firstVersion = f.service.read().snapshotVersion;
+  assert.equal(f.service.read().events.length, 1);
+  upstreamEvents = [];
+  f.advance(900001);
+  await f.service.tick();
+  const refreshed = f.service.read();
+  assert.notEqual(refreshed.snapshotVersion, firstVersion);
+  assert.equal(refreshed.events.length, 1);
+  assert.equal(refreshed.events[0].id, 'smt:us-cpi-2026');
+  assert.equal(refreshed.verification.retainedUpcoming, 1);
+  assert.equal(refreshed.verification.upstreamDiscrepancy, true);
+  assert.equal(refreshed.dataStatus, 'PENDING_VALIDATION');
+
+  f.advance(90 * 60000);
+  await f.service.tick();
+  assert.equal(f.service.read().verification.retainedUpcoming, 0);
+  assert.equal(f.service.read().events.length, 0);
+});
