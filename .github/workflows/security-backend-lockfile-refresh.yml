@@ -28,12 +28,12 @@ jobs:
           set -euo pipefail
           npm install --package-lock-only --ignore-scripts --no-fund
           npm audit fix --package-lock-only --ignore-scripts --no-fund
-      - name: Verify actual dependency tree and backend behavior
+      - name: Verify actual dependency tree and advisory-free production packages
         run: |
           set -euo pipefail
           npm ci --ignore-scripts --no-fund
           npm audit --omit=dev --audit-level=moderate
-          npm test
+          # Full authenticated MongoDB test suite runs in Backend CI after this lockfile is committed.
       - name: Commit exact resolved lockfile to restricted branch
         run: |
           set -euo pipefail
