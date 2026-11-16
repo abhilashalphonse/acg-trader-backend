@@ -179,10 +179,23 @@ class NewsCalendarSnapshotService {
     if (events.some(event => !event) || events.length >= 500) {
       throw new Error('Free calendar returned invalid or excessive high-impact events');
     }
+    // If the upstream omits a previously scheduled future event, keep the
+    // restriction until the event's original timestamp passes. Silent removal
+    // could permit a new position during a high-impact release.
     const remaining = new Set(events.map(event => event.id));
-    if (this.snapshot?.events.some(event => Date.parse(event.timestamp) > nowMs &&
-      Date.parse(event.timestamp) < end && !remaining.has(event.id))) {
-      throw new Error('Free calendar removed a previously scheduled upcoming event');
+    const retained = (this.snapshot?.events || []).filter(event => {
+      const at = Date.parse(event.timestamp);
+      return at > nowMs && at < end && !remaining.has(event.id);
+    });
+    if (retained.length) {
+      if (events.length + retained.length >= 500) {
+        throw new Error('Free calendar retention exceeds safe event limit');
+      }
+      events.push(...retained);
+      this.logger?.warn?.({
+        retainedCount: retained.length,
+        eventIds: retained.slice(0, 12).map(event => event.id),
+      }, 'Free calendar retained missing upcoming events');
     }
     return {
       _id: crypto.randomUUID(), provider: 'showmytrades+bls',
@@ -190,7 +203,8 @@ class NewsCalendarSnapshotService {
       fetchedAt: new Date(this.now()),
       checksum: crypto.createHash('sha256').update(JSON.stringify(events)).digest('hex'),
       events,
-      verification: { primary: 'AVAILABLE', officialBls: blsStatus, ...merged.verification },
+      verification: { primary: 'AVAILABLE', officialBls: blsStatus, ...merged.verification,
+        retainedUpcoming: retained.length, upstreamDiscrepancy: retained.length > 0 },
     };
   }
 }
