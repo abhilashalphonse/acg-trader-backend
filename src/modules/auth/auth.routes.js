@@ -18,6 +18,12 @@ const exchangeSchema = z.object({ ticket: z.string().trim().min(16).max(512) }).
 function createAuthRouter(authService, { identityService = null, personalDemoService = null, verifyPersonalEmail = null } = {}) {
   const router = express.Router();
 
+  // Session responses must not be cached by browsers, proxies or CDNs.
+  router.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+
   router.post('/login', async (req, res) => {
     const result = await authService.loginNative(parse(loginSchema, req.body));
     issueRefreshCookie(res, result.refreshToken);
