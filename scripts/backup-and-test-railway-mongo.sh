@@ -39,23 +39,47 @@ echo "BACKUP_OBJECTS_UPLOAD_COMPLETE prefix=${prefix}"
 s3 s3 cp "s3://${BUCKET_NAME}/${prefix}/acg_trader.archive.gz" - --no-progress | gzip -t
 s3 s3 cp "s3://${BUCKET_NAME}/${prefix}/acg_trader_staging.archive.gz" - --no-progress | gzip -t
 echo "BACKUP_ARCHIVES_READBACK_OK"
-mkdir -p /tmp/acg-restore-test
-mongod --dbpath /tmp/acg-restore-test --bind_ip 127.0.0.1 --port 27019 \
-  --logpath /tmp/acg-restore-mongod.log --fork --wiredTigerCacheSizeGB 0.25 >/dev/null
+# Download each archive completely before selective restore. mongorestore can
+# stop reading early once the requested namespaces are restored, which causes
+# 'aws s3 cp ... - | mongorestore' to fail with a Broken pipe even for a
+# valid archive. A local file also makes download/validation failures distinct.
+verify_dir="$(mktemp -d /tmp/acg-backup-verify.XXXXXX)"
+mkdir -p "$verify_dir/mongo"
+cleanup() {
+  mongod --shutdown --dbpath "$verify_dir/mongo" >/dev/null 2>&1 || true
+  rm -rf "$verify_dir"
+}
+trap cleanup EXIT
+
+mongod --dbpath "$verify_dir/mongo" --bind_ip 127.0.0.1 --port 27019 \
+  --logpath "$verify_dir/mongod.log" --fork --wiredTigerCacheSizeGB 0.25 >/dev/null
 for db in acg_trader acg_trader_staging; do
   echo "BACKUP_VERIFY_RESTORE_BEGIN ${db}"
-  s3 s3 cp "s3://${BUCKET_NAME}/${prefix}/${db}.archive.gz" - --no-progress |
-      mongorestore --uri="mongodb://127.0.0.1:27019" --archive --gzip --stopOnError \
+  archive="$verify_dir/${db}.archive.gz"
+  if ! s3 s3 cp "s3://${BUCKET_NAME}/${prefix}/${db}.archive.gz" "$archive" --no-progress >/dev/null; then
+    echo "BACKUP_VERIFY_DOWNLOAD_FAILED ${db}"
+    exit 40
+  fi
+  if ! gzip -t "$archive"; then
+    echo "BACKUP_VERIFY_GZIP_FAILED ${db}"
+    exit 41
+  fi
+  echo "BACKUP_VERIFY_LOCAL_ARCHIVE_OK ${db}"
+  if ! mongorestore --uri="mongodb://127.0.0.1:27019" --archive="$archive" --gzip --stopOnError \
       --nsInclude="${db}.tradingaccounts" --nsInclude="${db}.positions" \
       --nsInclude="${db}.orders" --nsInclude="${db}.deals" \
       --nsInclude="${db}.accountledgers" --nsInclude="${db}.idempotencyrecords" \
-      2>/tmp/restore.error
+      2>"$verify_dir/${db}.restore.log"; then
+    echo "BACKUP_VERIFY_RESTORE_FAILED ${db}"
+    tail -n 12 "$verify_dir/${db}.restore.log" | sed -E 's#mongodb(\\+srv)?://[^[:space:]]+#<REDACTED>#g' || true
+    exit 42
+  fi
   TARGET_DB="$db" mongosh "mongodb://127.0.0.1:27019" --quiet --eval '
     const d=db.getSiblingDB(process.env.TARGET_DB);
     for(const n of ["tradingaccounts","positions","orders","deals","accountledgers","idempotencyrecords"]) {
       print("BACKUP_RESTORE_COUNT "+process.env.TARGET_DB+"."+n+"="+d.getCollection(n).countDocuments({}));
     }
   '
+  rm -f "$archive"
 done
-mongod --shutdown --dbpath /tmp/acg-restore-test >/dev/null || true
 echo "ACG_BACKUP_AND_RESTORE_TEST_COMPLETED prefix=${prefix}"
