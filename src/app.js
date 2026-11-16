@@ -17,6 +17,7 @@ const { createTradingRouter } = require('./modules/trading/trading.routes');
 const { createAccountControlRouter } = require('./modules/trading/account-control.routes');
 const { createAccountLedgerRouter } = require('./modules/accounts/account-ledger.routes');
 const { createAuthRouter } = require('./modules/auth/auth.routes');
+const { approvedBrowserOrigin, rejectUntrustedAuthOrigin } = require('./modules/auth/browser-origin-policy');
 const { createIdentityRouter } = require('./modules/identity/identity.routes');
 const { createAccountGrantRouter } = require('./modules/identity/account-grant.routes');
 const { AccountGrantManagementService } = require('./modules/identity/account-grant-management.service');
@@ -66,7 +67,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   app.use(helmet());
   app.use(cors({
     origin(origin, callback) {
-      if (!origin || env.corsOrigins.includes('*') || env.corsOrigins.includes(origin)) return callback(null, true);
+      if (!origin || approvedBrowserOrigin(origin, env.corsOrigins, env.isProduction)) return callback(null, true);
       return callback(null, false);
     },
     credentials: true,
@@ -83,6 +84,8 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   });
 
   app.use(['/v1/auth/login', '/v1/auth/federated/exchange', '/v1/auth/personal/demo'], rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }));
+  app.use('/v1/auth', (req, res, next) =>
+    rejectUntrustedAuthOrigin(req, res, next, env.corsOrigins, env.isProduction));
   app.use('/v1/auth', createAuthRouter(authService, {
     identityService: supabaseIdentityService,
     personalDemoService,
@@ -94,6 +97,8 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
   }));
   if (env.identity.bootstrapEnabled) {
     app.use('/v1/identity/bootstrap', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }));
+    app.use('/v1/identity', (req, res, next) =>
+      rejectUntrustedAuthOrigin(req, res, next, env.corsOrigins, env.isProduction));
     app.use('/v1/identity', createIdentityRouter(supabaseIdentityService));
   }
   app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
