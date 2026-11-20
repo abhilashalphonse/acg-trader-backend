@@ -5,15 +5,21 @@ const { approvedBrowserOrigin, rejectUntrustedAuthOrigin } = require('../../src/
 
 const configured = ['https://acgfunded.com', 'http://localhost:5173', '*'];
 
-test('Firebase first-party origins stay usable for production login without relying on CORS wildcard', () => {
+test('approved first-party origins stay usable for production login without relying on CORS wildcard', () => {
   assert.equal(approvedBrowserOrigin('https://acg-trader.web.app', configured, true), true);
   assert.equal(approvedBrowserOrigin('https://acg-trader.firebaseapp.com', configured, true), true);
+  assert.equal(approvedBrowserOrigin('https://acg-trader-frontend-production.up.railway.app', configured, true), true);
+  assert.equal(approvedBrowserOrigin('https://acgtrader.com', configured, true), true);
   assert.equal(approvedBrowserOrigin('https://acgfunded.com', configured, true), true);
 });
 
 test('credentialed production CORS never trusts arbitrary sites, lookalikes or malformed origins', () => {
   for (const origin of [
     'https://acg-trader.web.app.attacker.example',
+    'https://acgtrader.com.evil.example',
+    'http://acgtrader.com',
+    'https://www.acgtrader.com',
+    'https://acgtrader.com:4443',
     'https://evil.example',
     'https://acg-trader.web.app@evil.example',
     'https://acg-trader.web.app/path',

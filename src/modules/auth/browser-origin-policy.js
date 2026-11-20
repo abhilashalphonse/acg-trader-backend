@@ -1,12 +1,13 @@
 'use strict';
 
-// Firebase Hosting is the first-party browser origin, while the Trader API
-// runs separately on Railway. Never let a wildcard CORS configuration reflect
-// untrusted credential-form origins in production.
+// Approved first-party browser origins for ACG Trader and its recovery host.
+// The Trader API runs separately on Railway. Never let a wildcard CORS
+// configuration reflect untrusted credential-form origins in production.
 const PRODUCTION_BROWSER_ORIGINS = Object.freeze([
   'https://acg-trader.web.app',
   'https://acg-trader.firebaseapp.com',
   'https://acg-trader-frontend-production.up.railway.app',
+  'https://acgtrader.com',
 ]);
 
 function approvedBrowserOrigin(origin, configured = [], isProduction = false) {
