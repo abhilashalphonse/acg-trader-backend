@@ -6,6 +6,7 @@
 const PRODUCTION_BROWSER_ORIGINS = Object.freeze([
   'https://acg-trader.web.app',
   'https://acg-trader.firebaseapp.com',
+  'https://acg-trader-frontend-production.up.railway.app',
 ]);
 
 function approvedBrowserOrigin(origin, configured = [], isProduction = false) {
