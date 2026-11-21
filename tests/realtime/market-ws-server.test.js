@@ -79,3 +79,54 @@ test('remote reconciliation coalesces bursts into authoritative snapshots for su
   }
   assert.equal(eventBus.listenerCount('trading.account.reconciled'), 0);
 });
+
+
+test('production WebSocket handshake honors the same HTTPS origin policy as REST auth', async () => {
+  const server = http.createServer();
+  const eventBus = new EventEmitter();
+  const sockets = createMarketWebSocketServer({
+    server,
+    runtime: { eventBus, health: () => ({}), symbols: [], timeframes: [] },
+    tradingRuntime: { valuationEngine: {} },
+    path: '/v1/ws',
+    corsOrigins: ['https://acgfunded.com', '*'],
+    isProduction: true,
+    pingIntervalMs: 10000,
+    maxBufferBytes: 1024 * 1024,
+    logger: { error() {}, debug() {} },
+    authService: { authenticateSessionToken: async token => ({
+      sessionId: 'test-session', tenantId: 'test-tenant', accountIds: [], authMethod: 'FEDERATED',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }) },
+    traderStateService: { snapshotAccounts: async () => [] },
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `ws://127.0.0.1:${server.address().port}/v1/ws`;
+  const testOrigin = origin => new Promise((resolve, reject) => {
+    const socket = new WebSocket(base, ['acg-trader', 'auth.acg_ts_test'], { origin });
+    const timeout = setTimeout(() => { socket.terminate(); reject(new Error('WebSocket handshake timed out')); }, 3500);
+    socket.once('open', () => { clearTimeout(timeout); socket.terminate(); resolve(101); });
+    socket.once('unexpected-response', (_request, response) => {
+      clearTimeout(timeout);
+      response.resume();
+      socket.terminate();
+      resolve(response.statusCode);
+    });
+    socket.once('error', error => { clearTimeout(timeout); reject(error); });
+  });
+  try {
+    assert.equal(await testOrigin('https://acgtrader.com'), 101,
+      'new HTTPS custom domain must reach the trading WebSocket');
+    assert.equal(await testOrigin('https://acgfunded.com'), 101,
+      'configured partner frontend remains supported');
+    for (const origin of [
+      'http://acgtrader.com', 'https://acgtrader.com.attacker.example',
+      'https://attacker.example', 'https://www.acgtrader.com',
+    ]) {
+      assert.equal(await testOrigin(origin), 403, 'must reject non-allowlisted origin ' + origin);
+    }
+  } finally {
+    await sockets.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
