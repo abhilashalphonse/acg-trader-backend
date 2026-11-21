@@ -3,6 +3,7 @@
 const { WebSocketServer, WebSocket } = require('ws');
 const { normalizeSymbol } = require('../modules/market-data/market.utils');
 const { TraderStateService } = require('./trader-state.service');
+const { approvedBrowserOrigin } = require('../modules/auth/browser-origin-policy');
 
 const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024;
 const MAX_SYNC_BUFFER_EVENTS = 1000;
@@ -11,7 +12,7 @@ const AUTH_REVALIDATE_MS = 60_000;
 // ACG Funded sessions continue using their original revalidation cadence.
 const SUPABASE_GRANT_POLL_MS = 2_000;
 
-function createMarketWebSocketServer({ server, runtime, tradingRuntime, authService, path, corsOrigins, pingIntervalMs, maxBufferBytes, quoteCoalesceMs = 250, valuationCoalesceMs = 250, logger, traderStateService: suppliedStateService = null }) {
+function createMarketWebSocketServer({ server, runtime, tradingRuntime, authService, path, corsOrigins, isProduction = false, pingIntervalMs, maxBufferBytes, quoteCoalesceMs = 250, valuationCoalesceMs = 250, logger, traderStateService: suppliedStateService = null }) {
   if (!tradingRuntime?.valuationEngine) throw new Error('tradingRuntime with valuationEngine is required');
   const traderStateService = suppliedStateService || new TraderStateService({ valuationEngine: tradingRuntime.valuationEngine });
   const wss = new WebSocketServer({
@@ -64,7 +65,7 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     try { url = new URL(request.url, 'http://localhost'); } catch { socket.destroy(); return; }
     if (url.pathname !== path) { socket.destroy(); return; }
     const origin = request.headers.origin;
-    if (origin && !corsOrigins.includes('*') && !corsOrigins.includes(origin)) { rejectUpgrade(socket, 403, 'Forbidden'); return; }
+    if (origin && !approvedBrowserOrigin(origin, corsOrigins, isProduction)) { rejectUpgrade(socket, 403, 'Forbidden'); return; }
     try {
       const token = websocketAccessToken(request);
       if (!token) { rejectUpgrade(socket, 401, 'Unauthorized'); return; }
