@@ -138,9 +138,42 @@ class AlertShadowWorker {
     }
   }
 
+  async expireDueRules(now = new Date()) {
+    const due = await AlertRule.find({
+      status: { $in: ['STARTING', 'MONITORING'] }, expiresAt: { $lte: now, $ne: null },
+    }).limit(100).lean();
+    let expired = 0;
+    for (const rule of due) {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const fenced = await AlertLease.updateOne({
+            _id: LEASE_ID, ownerId: this.ownerId, token: this.token,
+            expiresAt: { $gt: new Date() },
+          }, { $set: { lastFenceAt: new Date() } }, { session });
+          if (fenced.matchedCount !== 1) throw new Error('ALERT_LEASE_FENCED');
+          const result = await AlertRule.updateOne({
+            _id: rule._id, version: rule.version,
+            status: { $in: ['STARTING', 'MONITORING'] }, expiresAt: { $lte: now },
+          }, { $set: { status: 'EXPIRED', runtime: {
+            ...emptyState(), ...(rule.runtime || {}), monitoring: 'EXPIRED',
+          } } }, { session });
+          if (result.matchedCount !== 1) throw new Error('ALERT_RULE_CHANGED_DURING_EVALUATION');
+        }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
+        expired++;
+      } catch (error) {
+        if (!/ALERT_LEASE_FENCED|ALERT_RULE_CHANGED_DURING_EVALUATION|WriteConflict/i.test(String(error?.message))) throw error;
+      } finally {
+        await session.endSession();
+      }
+    }
+    return expired;
+  }
+
   async pumpOnce({ maxRules = 200 } = {}) {
     if (this.token == null && await this.acquireLease() == null) return { ownsLease: false };
     if (!await this.renewLease()) return { ownsLease: false };
+    const expired = await this.expireDueRules();
     const rules = await AlertRule.find({ status: { $in: ['STARTING','MONITORING'] } })
       .limit(maxRules).lean();
     let advanced = 0, conflicts = 0;
@@ -157,7 +190,7 @@ class AlertShadowWorker {
       }
     }
     return { ownsLease: this.token != null, checkedRules: rules.length,
-      advanced, conflicts, triggers: this.committedTriggers, gapResets: this.gapResets };
+      advanced, conflicts, expired, triggers: this.committedTriggers, gapResets: this.gapResets };
   }
 }
 module.exports = { AlertShadowWorker, LEASE_ID, LEASE_TTL_MS };
