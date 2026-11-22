@@ -7,10 +7,16 @@ const CANDLE_KINDS = new Set(['candle_close_above', 'candle_close_below']);
 
 function decimalParts(value) {
   const raw = String(value);
-  if (!/^-?\d+(?:\.\d+)?$/.test(raw)) throw new Error('Invalid decimal: ' + raw);
-  const negative = raw.startsWith('-');
-  const [whole, fractional = ''] = (negative ? raw.slice(1) : raw).split('.');
-  return { integer: BigInt(whole + fractional) * (negative ? -1n : 1n), digits: fractional.length };
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(raw);
+  if (!match) throw new Error('Invalid decimal: ' + raw);
+  const negative = match[1] === '-';
+  const whole = match[2], fractional = match[3] || '';
+  const exponent = Number(match[4] || 0);
+  if (!Number.isInteger(exponent) || Math.abs(exponent) > 30) throw new Error('Invalid decimal exponent');
+  const effectiveDigits = fractional.length - exponent;
+  const digits = Math.max(0, effectiveDigits);
+  const zeros = Math.max(0, -effectiveDigits);
+  return { integer: BigInt(whole + fractional + '0'.repeat(zeros)) * (negative ? -1n : 1n), digits };
 }
 
 function ticks(value, tickSize) {
