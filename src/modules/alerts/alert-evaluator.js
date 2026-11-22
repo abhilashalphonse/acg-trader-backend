@@ -64,6 +64,9 @@ function evaluateAlert(rule, previous, event) {
   if (!event?.eventId || !Number.isFinite(Number(event.marketTimeMs))) throw new Error('Durable event identity and market timestamp required');
   if (event.eventId === state.lastEventId) return { state, trigger: null };
   if (String(event.streamId) !== String(rule.streamId)) return { state, trigger: null };
+  if (state.monitoring === 'COMPLETED' || state.monitoring === 'EXPIRED') {
+    return { state: { ...state, lastEventId: event.eventId, lastObservedMs: event.marketTimeMs }, trigger: null };
+  }
   const next = { ...state, lastEventId: event.eventId, lastObservedMs: event.marketTimeMs };
   if (event.kind === 'coverage_gap') {
     return { state: { ...next, baselineTicks: null, armed: true, monitoring: 'INTERRUPTED' }, trigger: null };
