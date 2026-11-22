@@ -5,9 +5,12 @@ const { MarketBatch, StreamCoverage } = require('./alert-models');
 const { position, gapPayload } = require('./alert-event-contract');
 
 const MAX_PENDING = 4096;
-const BATCH_SIZE = 64;
-const FLUSH_MS = 125;
-const REPLAY_RETENTION_HOURS = 48;
+const BATCH_SIZE = 128;
+const FLUSH_MS = 500;
+// Shadow default. Revisit only after measuring Railway write and retention costs.
+const requestedRetention = Number(process.env.ACG_ALERTS_REPLAY_HOURS || 12);
+const REPLAY_RETENTION_HOURS = Number.isFinite(requestedRetention)
+  ? Math.min(48, Math.max(2, requestedRetention)) : 12;
 
 function candleUpdate(event, session) {
   const openTime = new Date(event.openTimeMs);
