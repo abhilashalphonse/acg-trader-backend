@@ -1,0 +1,33 @@
+name: Alerts Stage 2 backend checks
+
+on:
+  pull_request:
+    paths:
+      - 'src/modules/alerts/**'
+      - 'src/server.js'
+      - 'tests/alerts-stage2.test.js'
+      - 'scripts/alerts-stage2-benchmark.js'
+      - 'package.json'
+      - '.github/workflows/alerts-stage2.yml'
+  workflow_dispatch:
+
+jobs:
+  deterministic-alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Deterministic Stage 2 alert tests
+        run: node --test tests/alerts-stage2.test.js
+      - name: Backend full test suite
+        run: npm test
+      - name: Syntax check shadow modules
+        run: |
+          for file in src/modules/alerts/*.js; do node --check "$file"; done
+      - name: Synthetic journal sizing sample
+        run: npm run alerts:stage2:benchmark
