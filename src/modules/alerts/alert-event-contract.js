@@ -41,6 +41,7 @@ function candlePayload(candle, feedId) {
   return {
     schemaVersion: SCHEMA_VERSION, kind: 'candle_closed',
     streamId: streamIdFor(feedId, candle.symbol),
+    openTimeMs: Number(candle.openTimeMs),
     symbol: String(candle.symbol).toUpperCase(), feedId, timeframe: candle.timeframe,
     marketTimeMs: Number(candle.closeTimeMs), receivedAtMs: Date.now(),
     close: String(candle.close), open: String(candle.open), high: String(candle.high),
