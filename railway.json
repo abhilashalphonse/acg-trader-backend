@@ -2,9 +2,9 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile.single-member-mongo"
+    "dockerfilePath": "Dockerfile.single-member-check"
   },
   "deploy": {
-    "restartPolicyType": "ALWAYS"
+    "restartPolicyType": "NEVER"
   }
 }
