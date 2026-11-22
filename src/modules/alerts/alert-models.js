@@ -30,9 +30,11 @@ const marketBatchSchema = new Schema({
   lastSequence: { type: Number, required: true },
   events: { type: [Schema.Types.Mixed], required: true },
   acceptedAt: { type: Date, default: Date.now },
+  expiresAt: { type: Date, required: true },
 }, { versionKey: false });
 marketBatchSchema.index({ streamId: 1, generation: 1, firstSequence: 1 }, { unique: true });
 marketBatchSchema.index({ acceptedAt: 1 });
+marketBatchSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 const streamCoverageSchema = new Schema({
   _id: { type: String, required: true },
