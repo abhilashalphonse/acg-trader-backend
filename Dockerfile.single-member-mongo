@@ -1,0 +1,4 @@
+FROM mongo:8.0
+COPY scripts/ops/start-single-member-mongo.sh /usr/local/bin/acg-single-member-mongo
+RUN chmod 0755 /usr/local/bin/acg-single-member-mongo
+ENTRYPOINT ["/usr/local/bin/acg-single-member-mongo"]
