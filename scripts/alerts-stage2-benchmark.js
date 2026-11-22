@@ -31,8 +31,7 @@ const scenarios = rates.map(eventsPerSecond => ({
   eventsPerSecondPerStream: eventsPerSecond,
   streams: 1,
   estimatedUncompressedDataGiBForRetention: Number((perEvent * eventsPerSecond * 3600 * retentionHours / (1024 ** 3)).toFixed(3)),
-  estimatedJournalBatchesPerSecond: Number(Math.min(eventsPerSecond / BATCH_SIZE + 1 / (FLUSH_MS / 1000),
-    eventsPerSecond).toFixed(2)),
+  estimatedJournalBatchesPerSecond: Number(Math.min(eventsPerSecond, Math.max(eventsPerSecond / BATCH_SIZE, 1 / (FLUSH_MS / 1000))).toFixed(2)),
 }));
 process.stdout.write(JSON.stringify({
   kind: 'synthetic_not_live_measurement', sampleEvents: SAMPLE, sampleBatches: docs.length,
