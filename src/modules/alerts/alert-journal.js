@@ -1,6 +1,7 @@
 'use strict';
 const mongoose = require('mongoose');
 const { Candle } = require('../market-data/candle.model');
+const { candleExpiresAt } = require('../market-data/candle-retention');
 const { MarketBatch, StreamCoverage } = require('./alert-models');
 const { position, gapPayload } = require('./alert-event-contract');
 
@@ -20,7 +21,8 @@ function candleUpdate(event, session) {
       $set: {
         closeTime: new Date(event.marketTimeMs), open: event.open, high: event.high,
         low: event.low, close: event.close, complete: true, synthetic: false,
-        source: event.source || 'LIVE', provider: event.feedId, 
+        source: event.source || 'LIVE', provider: event.feedId,
+        expiresAt: candleExpiresAt(event.timeframe, event.openTimeMs),
       },
       $setOnInsert: { symbol: event.symbol, timeframe: event.timeframe, openTime, tickCount: 0 },
     },
