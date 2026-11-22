@@ -122,34 +122,28 @@ class DurableAlertStream {
       acceptedAt: new Date(acceptedAtMs),
     };
     const candles = entries.filter(event => event.kind === 'candle_closed' && !event.synthetic && event.complete);
-    if (candles.length) {
-      // The alert candle and its replay event become visible in the same transaction.
-      const session = await mongoose.startSession();
-      try {
-        await session.withTransaction(async () => {
-          for (const candle of candles) await candleUpdate(candle, session);
-          await MarketBatch.create([batch], { session });
-        }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
-      } finally {
-        await session.endSession();
-      }
-    } else {
-      await MarketBatch.collection.insertOne(batch, { writeConcern: { w: 'majority' } });
+    const hasBaseline = entries.some(event => event.kind === 'quote');
+    // Serialised batches are committed with a conditional generation write.
+    // A superseded capture process cannot accept old-generation events after takeover.
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const ownership = await StreamCoverage.updateOne({
+          _id: this.streamId, generation, status: { $in: ['STARTING', 'MONITORING'] },
+        }, { $set: {
+          lastSequence: batch.lastSequence, lastEventAt: new Date(acceptedAtMs),
+          ...(hasBaseline ? { status: 'MONITORING', lastReason: null } : {}),
+        } }, { session });
+        if (ownership.matchedCount !== 1) throw new Error('ALERT_CAPTURE_FENCED_OR_INTERRUPTED');
+        for (const candle of candles) await candleUpdate(candle, session);
+        await MarketBatch.create([batch], { session });
+      }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
+    } finally {
+      await session.endSession();
     }
     this.sequence = batch.lastSequence;
     this.acceptedEvents += entries.length;
     this.acceptedBatches += 1;
-    const hasBaseline = entries.some(event => event.kind === 'quote');
-    try {
-      await StreamCoverage.updateOne(
-        { _id: this.streamId, generation, status: { $ne: 'INTERRUPTED' } },
-        { $set: { lastSequence: this.sequence, lastEventAt: new Date(acceptedAtMs),
-          ...(hasBaseline ? { status: 'MONITORING', lastReason: null } : {}) } },
-      );
-    } catch (error) {
-      // A coverage status write failure must never make uncommitted events accepted.
-      this.logger?.warn?.({ err: error, streamId: this.streamId }, 'Alert coverage status update failed');
-    }
   }
 
   async stop() {
