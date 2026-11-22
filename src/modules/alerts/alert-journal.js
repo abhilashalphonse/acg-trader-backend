@@ -9,7 +9,7 @@ const BATCH_SIZE = 64;
 const FLUSH_MS = 125;
 
 function candleUpdate(event, session) {
-  const openTime = new Date(event.marketTimeMs - require('../market-data/market.constants').TIMEFRAME_MS[event.timeframe]);
+  const openTime = new Date(event.openTimeMs);
   return Candle.updateOne(
     { symbol: event.symbol, timeframe: event.timeframe, openTime },
     {
@@ -142,7 +142,7 @@ class DurableAlertStream {
     const hasBaseline = entries.some(event => event.kind === 'quote');
     try {
       await StreamCoverage.updateOne(
-        { _id: this.streamId, generation },
+        { _id: this.streamId, generation, status: { $ne: 'INTERRUPTED' } },
         { $set: { lastSequence: this.sequence, lastEventAt: new Date(acceptedAtMs),
           ...(hasBaseline ? { status: 'MONITORING', lastReason: null } : {}) } },
       );
