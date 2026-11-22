@@ -5,9 +5,23 @@ umask 077
 : "${CANDIDATE_MONGO_PASSWORD:?missing CANDIDATE_MONGO_PASSWORD}"
 mode="${ACG_COPY_MODE:-BASELINE}"
 [[ "$mode" == "BASELINE" || "$mode" == "FINAL" ]] || { echo "COPY_MODE_INVALID"; exit 20; }
-if [[ "$mode" == "FINAL" && "${ACG_WRITES_FROZEN_CONFIRMED:-}" != "true" ]]; then
-  echo "FINAL_COPY_REQUIRES_CONFIRMED_MAINTENANCE"
-  exit 21
+if [[ "$mode" == "FINAL" ]]; then
+  if [[ "${ACG_WRITES_FROZEN_CONFIRMED:-}" != "true" ]]; then
+    echo "FINAL_COPY_REQUIRES_CONFIRMED_MAINTENANCE"
+    exit 21
+  fi
+  # Independent server-side guard: prevent an accidental final copy while the
+  # ACG Trader backend is still accepting orders and database writes.
+  maintenance="$(curl --fail --silent --show-error --max-time 8 \
+    http://acg-trader-backend.railway.internal:4000/health/ready)" || {
+    echo "FINAL_COPY_MAINTENANCE_UNREACHABLE"
+    exit 25
+  }
+  if [[ "$maintenance" != *'"status":"maintenance"'* || "$maintenance" != *'"databaseWritesEnabled":false'* ]]; then
+    echo "FINAL_COPY_MAINTENANCE_NOT_ACTIVE"
+    exit 26
+  fi
+  echo "FINAL_COPY_MAINTENANCE_CONFIRMED"
 fi
 target_host="acg-mongo-single-candidate.railway.internal"
 target_user="acgadmin"
