@@ -2,7 +2,7 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile.single-member-check"
+    "dockerfilePath": "Dockerfile.single-member-migration"
   },
   "deploy": {
     "restartPolicyType": "NEVER"
