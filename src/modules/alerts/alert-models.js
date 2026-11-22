@@ -10,6 +10,7 @@ const alertRuleSchema = new Schema({
   feedId: { type: String, required: true },
   status: { type: String, enum: ['STARTING','MONITORING','PAUSED','COMPLETED','EXPIRED','NEEDS_ATTENTION'], default: 'STARTING' },
   version: { type: Number, required: true, default: 1 },
+  effectiveFrom: { type: Date, required: true, default: Date.now },
   condition: { type: Schema.Types.Mixed, required: true },
   priceSource: { type: String, enum: ['bid','ask','last'], required: true },
   tickSize: { type: String, required: true },
