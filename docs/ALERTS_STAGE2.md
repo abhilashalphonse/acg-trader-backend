@@ -34,7 +34,7 @@ The first complete real candle after creation may satisfy a candle-close conditi
 
 `AlertShadowWorker` acquires a renewable singleton Mongo lease. Every progress transaction writes to that lease with `ownerId + token + expiry` as a predicate, preventing stale worker commits. In the same transaction it writes the rule runtime state and durable cursor, plus any immutable trigger records and `shadow` outbox jobs. Rule `version`, activation state, previous cursor and unexpired condition are checked in the transaction. A failure rolls back the checkpoint, events and outbox.
 
-The unique trigger index uses `(alertId, ruleVersion, eventId)`. Rule edits must increment version, and paused/deleted rules must not match the trigger commit predicate. Every outbox job is **shadow-only**, never dispatched.
+The unique trigger index uses `(alertId, ruleVersion, eventId)`. Rules carry a stable effective-from timestamp: retained events accepted before activation are skipped (but checkpointed). Rule edits must increment version, reset evaluation state, and set a new effective-from timestamp; paused/deleted rules must not match the trigger commit predicate. Every outbox job is **shadow-only**, never dispatched.
 
 The capture writer also fences each persisted batch against its current stream generation in a Mongo transaction, so a superseded capture process cannot accept new events under an obsolete epoch.
 
