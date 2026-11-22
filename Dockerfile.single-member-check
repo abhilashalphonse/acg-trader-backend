@@ -1,0 +1,4 @@
+FROM mongo:8.0
+COPY scripts/ops/verify-single-member-mongo.sh /usr/local/bin/acg-mongo-verify
+RUN chmod 0755 /usr/local/bin/acg-mongo-verify
+ENTRYPOINT ["/usr/local/bin/acg-mongo-verify"]
