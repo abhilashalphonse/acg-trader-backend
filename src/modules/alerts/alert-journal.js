@@ -7,6 +7,7 @@ const { position, gapPayload } = require('./alert-event-contract');
 const MAX_PENDING = 4096;
 const BATCH_SIZE = 64;
 const FLUSH_MS = 125;
+const REPLAY_RETENTION_HOURS = 48;
 
 function candleUpdate(event, session) {
   const openTime = new Date(event.openTimeMs);
@@ -35,6 +36,7 @@ class DurableAlertStream {
     this.sequence = 0;
     this.running = false;
     this.flushing = null;
+    this.restartPromise = null;
     this.broken = false;
     this.timer = null;
     this.lastError = null;
@@ -87,11 +89,15 @@ class DurableAlertStream {
   }
 
   async restart(reason = 'RECOVERED_AFTER_GAP') {
-    if (this.flushing) await this.flushing.catch(() => {});
-    if (this.timer) clearInterval(this.timer);
-    this.running = false;
-    this.broken = false;
-    return this.start(reason);
+    if (this.restartPromise) return this.restartPromise;
+    this.restartPromise = (async () => {
+      if (this.flushing) await this.flushing.catch(() => {});
+      if (this.timer) clearInterval(this.timer);
+      this.running = false;
+      this.broken = false;
+      await this.start(reason);
+    })().finally(() => { this.restartPromise = null; });
+    return this.restartPromise;
   }
 
   async flush() {
@@ -120,6 +126,7 @@ class DurableAlertStream {
       streamId: this.streamId, generation, firstSequence: start,
       lastSequence: start + entries.length - 1, events: entries,
       acceptedAt: new Date(acceptedAtMs),
+      expiresAt: new Date(acceptedAtMs + REPLAY_RETENTION_HOURS * 60 * 60 * 1000),
     };
     const candles = entries.filter(event => event.kind === 'candle_closed' && !event.synthetic && event.complete);
     const hasBaseline = entries.some(event => event.kind === 'quote');
