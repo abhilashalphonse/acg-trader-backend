@@ -1,0 +1,96 @@
+# ACG Trader Alerts — Stage 2 Shadow Engine (DRAFT)
+
+**Scope:** Backend-only durable input, deterministic evaluator, atomic progress/outbox and restart recovery. No customer alerts, UI, notification delivery, database URI changes, or Railway deployments are included.
+
+**Default:** All features OFF. Existing trading market, execution and authentication paths are unchanged unless an operator deliberately sets an opt-in capture/worker flag in a safe environment.
+
+## Event acceptance and continuity
+
+The canonical backend publishes `market.tick` and `market.candle.closed` through its local event bus. That bus and the current QuoteStore are not durable.
+
+An alert input becomes **accepted** only when its ordered `AlertStage2MarketBatch` and generation/checkpoint fence commit with majority write concern. Evaluation only reads accepted Mongo batches. The synchronous market/trading path NEVER waits for alert persistence.
+
+Events contain a schema version, instrument/feed stream identity, `generation:sequence` position, event ID, kind, provider/market and received timestamps, explicit Bid/Ask/Last values or candle OHLC/timeframe, quality and synthetic-spread markers. Inputs are stored in generation order; the evaluator must never infer continuous price action across a `coverage_gap` or a missing replay sequence.
+
+Each stream has a Mongo `AlertStage2Coverage` record. Capture begins only for streams with active shadow rules, creates a new monotonically increasing generation and records an explicit initial gap. A first valid persisted quote is required before the coverage record becomes MONITORING. Streams are marked INTERRUPTED on provider status errors, persistence failures, or in-process buffer overflow. On successful recovery capture starts a fresh generation rather than bridging an unknown interval.
+
+**Limits:** This stage does not reconstruct ticks the provider never supplied or that could not be persisted before a crash. In those cases coverage is explicitly incomplete. The client must not describe gaps as monitored. The code records the provider's identity and labels derived bid/ask; it does not substitute unavailable sources.
+
+## Candle contract
+
+Alert-eligible candles are ACG-finalised **non-synthetic** candles, currently based on the ACG chart/Last price. The alert journal transaction persists each candle row and its event batch together. The existing candle engine may also asynchronously persist the same finalised row. Provider corrections are recorded as `candle_corrected` evidence, ignored by the live evaluator and never rewrite historical trigger evidence. A later provider correction cannot silently retroactively trigger a new alert.
+
+**Open question before release:** instrument/session-specific candle open-time alignment must be verified against all enabled feed types; provider reconciliation currently covers only a subset of candles.
+
+## Pure condition evaluator
+
+`evaluateAlert(rule, previousState, durableEvent)` performs no IO and no clock reads. It supports `crosses`, `crosses_above`, `crosses_below`, `enters_range`, `exits_range`, `candle_close_above`, and `candle_close_below`. Price is rounded deterministically to the configured tick size using decimal integer math. It supports once/repeat, reset before repeat, optional cooldown, UTC/IANA-timezone daily schedule and expiry.
+
+For quote crossings the first valid observation establishes a baseline, not a trigger. Unknown price source resets the baseline and sets SOURCE_UNAVAILABLE. A gap resets the baseline. A repeat cooldown suppresses the eligible crossing without queuing it for later.
+
+The first complete real candle after creation may satisfy a candle-close condition; unlike a quote crossing it does not require two preceding candle observations.
+
+## Persistence, fencing and failure boundaries
+
+`AlertShadowWorker` acquires a renewable singleton Mongo lease. Every progress transaction writes to that lease with `ownerId + token + expiry` as a predicate, preventing stale worker commits. In the same transaction it writes the rule runtime state and durable cursor, plus any immutable trigger records and `shadow` outbox jobs. Rule `version`, activation state, previous cursor and unexpired condition are checked in the transaction. A failure rolls back the checkpoint, events and outbox.
+
+The unique trigger index uses `(alertId, ruleVersion, eventId)`. Rule edits must increment version, and paused/deleted rules must not match the trigger commit predicate. Every outbox job is **shadow-only**, never dispatched.
+
+The capture writer also fences each persisted batch against its current stream generation in a Mongo transaction, so a superseded capture process cannot accept new events under an obsolete epoch.
+
+## Safe testing and commands
+
+```bash
+npm test                           # includes pure evaluator and event contract tests
+npm run alerts:stage2:benchmark    # synthetic sizing only; NOT a Railway bill
+```
+
+After live topology and transaction checks have passed, an operator can test in an isolated staging environment by explicitly configuring:
+
+```text
+ACG_ALERTS_STAGE2_CAPTURE=true
+ACG_ALERTS_STAGE2_SHADOW_WORKER=true
+ACG_ALERTS_REPLAY_HOURS=12
+```
+
+`ACG_ALERTS_STAGE2_CAPTURE` is read by the existing Trader backend and subscribes to its internal event bus. `ACG_ALERTS_STAGE2_SHADOW_WORKER` gates the separate `node src/modules/alerts/alert-worker.main.js` process. Both are disabled by default. The worker reads the same DB selection flags as the existing backend; it does not change those variables.
+
+Before activating, insert isolated shadow rules with valid `tenantId`, `ownerId`, `streamId`, condition, source, tick size, version and status STARTING. There is deliberately no public create-alert API in Stage 2.
+
+The replay log has a capped **12-hour default TTL** (configurable between 2 and 48 hours); immutable trigger history has no automatic TTL. TTL expiry can make an old cursor unrecoverable. The evaluator resets its baseline when it detects a missing replay sequence or unannounced generation. Retention must be sized from the staging event-rate sample, not set indefinitely without cost measurements.
+
+## Mandatory acceptance matrix (NOT YET EXECUTED AGAINST RAILWAY)
+
+| Test | Required result | Status |
+|---|---|---|
+| Pure crossing, zone, candle, source, reset, cooldown tests | Deterministic | Automated tests added; CI outcome pending |
+| Market ingestion continues during evaluator restart | Replay accepted batches | Needs staging |
+| Kill process during transaction | All-or-nothing trigger/state/outbox | Needs staging |
+| Reprocess same batch | One trigger and one outbox logical job | Needs staging |
+| Run two evaluators | Old fencing token cannot write | Needs staging |
+| Pause or increment rule version mid-evaluation | Outdated transaction aborts | Needs staging |
+| Disconnect provider or force DB failure | Health interrupted, next observation is fresh baseline | Needs staging |
+| Expire replay while worker offline | Explicit gap and no inferred crossing | Needs staging |
+| Force notification provider failure | Not applicable; Stage 2 has no sending | Stage 3 |
+| Measure market events/s, batches/s, DB CPU/RAM/disk, write latency | Published cost report | Needs staging |
+
+## Shadow-run report (current)
+
+- **Production capture:** Not enabled.
+- **Production worker:** Not deployed.
+- **Production notifications:** Not enabled.
+- **Live market-event sample:** Not collected.
+- **Verified active database target/topology:** Unconfirmed through redacted Railway variables.
+- **Measured Railway cost delta:** Unavailable; must not be inferred from synthetic JSON sizing.
+- **Release recommendation:** Keep PR as DRAFT. Complete safe staging topology verification, unit/CI checks, fault injection and live cost measurements before enabling or integrating UI.
+
+## Known limitations before implementation is considered complete
+
+1. Need a controlled staging integration test against the actual MongoDB topology and event rates. Unit tests do not prove process-crash atomicity.
+2. No public alert create/edit/pause API is exposed. Rule lifecycle and validation will require dedicated authenticated endpoints after Stage 2.
+3. Source cadence and provider gaps cannot be reconstructed from candle high/low alone.
+4. The initial worker scans a bounded number of rules per iteration; tenant-scale scheduling and starvation-free pagination must be designed and load-tested before broad activation.
+5. Persisted stream health is updated on event commits/failures; downstream UI needs a staleness threshold and explicit source-health handling, not merely the last saved status.
+6. Event-batch retention, outbox history and indexing need measured disk/transaction overhead on Railway.
+
+**Gate:** No production alerts or UI integration until crash/restart, fencing, honest gap reporting, and actual staging cost measurements pass.
