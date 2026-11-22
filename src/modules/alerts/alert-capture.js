@@ -57,7 +57,7 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
 
   function onStatus(status) {
     const state = String(status?.state || '').toUpperCase();
-    if (!['DISCONNECTED','STALE','UNAVAILABLE','SUBSCRIPTION_ERROR','STOPPED'].includes(state)) return;
+    if (!['DISCONNECTED','STALE','UNAVAILABLE','SUBSCRIPTION_ERROR','STOPPED','ERROR','DISABLED','CONNECTING'].includes(state)) return;
     if (status.scope === 'symbol' && status.symbol) {
       try { streams.get(streamIdFor(feedFor(status.symbol), status.symbol))?.interrupt('FEED_' + state); }
       catch { /* ignore unknown symbol */ }
