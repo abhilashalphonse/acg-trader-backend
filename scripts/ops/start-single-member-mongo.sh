@@ -43,7 +43,7 @@ for i in $(seq 1 180); do
   if MONGODB_REPL_STATUS="$(mongosh --host 127.0.0.1 --port 27017 \
      --username "$MONGO_INITDB_ROOT_USERNAME" \
      --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin \
-     --quiet --eval 'const s=db.adminCommand({replSetGetStatus:1}); print(s.ok===1?"READY":s.code===94?"NOT_INITIALIZED":"WAIT")' 2>/dev/null)"; then
+     --quiet --eval 'try { const s=db.adminCommand({replSetGetStatus:1}); print(s.ok===1?"READY":"WAIT"); } catch(e) { print(e.code===94 || /not yet initialized|no replset config/i.test(e.message)?"NOT_INITIALIZED":"WAIT"); }' 2>/dev/null)"; then
     if [[ "$MONGODB_REPL_STATUS" == *READY* || "$MONGODB_REPL_STATUS" == *NOT_INITIALIZED* ]]; then
       ready=1
       break
