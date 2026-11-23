@@ -77,6 +77,8 @@ jobs:
           fi
       - name: Test atomic rollback, expiry replay, fenced takeover and journal generation
         run: node --test tests/alerts-stage2-integration.test.js
+      - name: Test actual SIGKILL recovery at transaction boundaries
+        run: node --test tests/alerts-stage2-process-kill.test.js
       - name: Print replica-set diagnostics on failure
         if: failure()
         run: docker logs acg-alert-stage2-mongo --tail 100 || true
