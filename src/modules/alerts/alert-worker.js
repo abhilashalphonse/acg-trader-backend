@@ -64,9 +64,53 @@ class AlertShadowWorker {
     return MarketBatch.findOne(filter).sort({ generation: 1, firstSequence: 1 }).lean();
   }
 
+  // If all pending batches have expired, the durable capture watermark still
+  // tells us which stream positions existed. Never pretend those ticks were
+  // evaluated: atomically mark an unrecoverable gap and skip to the watermark.
+  async handleUnavailableReplay(rule) {
+    const coverage = await StreamCoverage.findById(rule.streamId).lean();
+    if (!coverage || !Number.isInteger(coverage.generation) ||
+      !Number.isInteger(coverage.lastSequence) || coverage.generation < 1 ||
+      coverage.lastSequence < 1) return false;
+    const cursor = rule.checkpoint || null;
+    const watermark = { streamId: rule.streamId,
+      generation: coverage.generation, sequence: coverage.lastSequence };
+    if (cursor && comparePositions(watermark, cursor) <= 0) return false;
+    const evidence = { eventId: position(rule.streamId, watermark.generation, watermark.sequence),
+      reason: 'REPLAY_UNAVAILABLE_NO_RETAINED_BATCH', fromCursor: cursor,
+      resumedAt: watermark };
+    const runtime = { ...emptyState(), ...(rule.runtime || {}),
+      baselineTicks: null, armed: true, monitoring: 'INTERRUPTED',
+      lastCoverageGap: evidence, lastEventId: evidence.eventId,
+      lastObservedMs: coverage.lastEventAt ? new Date(coverage.lastEventAt).getTime() : null };
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const fence = await AlertLease.updateOne({
+          _id: LEASE_ID, ownerId: this.ownerId, token: this.token,
+          expiresAt: { $gt: new Date() },
+        }, { $set: { lastFenceAt: new Date() } }, { session });
+        if (fence.matchedCount !== 1) throw new Error('ALERT_LEASE_FENCED');
+        const update = await this.ruleModel.updateOne({
+          _id: rule._id, version: rule.version,
+          status: { $in: ['STARTING','MONITORING'] }, checkpoint: cursor,
+        }, { $set: { runtime, checkpoint: watermark, status: 'STARTING' } }, { session });
+        if (update.matchedCount !== 1) throw new Error('ALERT_RULE_CHANGED_DURING_EVALUATION');
+        await AlertReplayGap.create([{
+          alertId: rule._id, tenantId: rule.tenantId, ownerId: rule.ownerId,
+          streamId: rule.streamId, ruleVersion: rule.version, ...evidence,
+        }], { session });
+      }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
+      this.gapResets += 1;
+      return true;
+    } finally {
+      await session.endSession();
+    }
+  }
+
   async processRule(rule) {
     const batch = await this.nextBatch(rule);
-    if (!batch) return false;
+    if (!batch) return this.handleUnavailableReplay(rule);
     const cursor = rule.checkpoint || null;
     let runtime = { ...emptyState(), ...(rule.runtime || {}) };
     const processed = [];
