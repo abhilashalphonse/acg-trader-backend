@@ -27,7 +27,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Deterministic Stage 2 alert tests
-        run: node --test tests/alerts-stage2.test.js
+        run: node --test tests/alerts-stage2*.test.js
       - name: Backend full test suite
         run: npm test
       - name: Syntax check shadow modules
