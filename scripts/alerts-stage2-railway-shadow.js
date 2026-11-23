@@ -151,7 +151,7 @@ async function main(){
   requireIsolation();
   await mongoose.connect(uri,{serverSelectionTimeoutMS:8000,maxPoolSize:5});
   const hello=await mongoose.connection.db.admin().command({hello:1});
-  failSafe(hello.setName==='rs0' && hello.isWritablePrimary === true,
+  failSafe(hello.setName==='alertsTest' && hello.isWritablePrimary === true,
     'Not connected to expected writable isolated MongoDB replica set');
   const db=mongoose.connection.db.databaseName;
   failSafe(db==='acg_alerts_stage2_shadow','Unexpected isolated DB name: '+db);
