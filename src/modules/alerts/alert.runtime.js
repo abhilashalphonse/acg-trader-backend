@@ -10,9 +10,10 @@ async function startAlertRuntime({logger}) {
   let stopped=false, pending=null, deliveryPending=null;
   const run=()=>{
     if(stopped||pending)return;
-    pending=worker.pumpOnce()
+    let advanced=false;
+    pending=worker.pumpOnce().then(result=>{advanced=result.advanced>0;})
       .catch(error=>logger.error({err:error},'Alert processing interrupted'))
-      .finally(()=>{pending=null;});
+      .finally(()=>{pending=null;if(advanced&&!stopped){const next=setTimeout(run,10);next.unref?.();}});
   };
   const send=()=>{
     if(stopped||deliveryPending)return;
