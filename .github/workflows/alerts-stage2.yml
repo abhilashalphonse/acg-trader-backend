@@ -15,6 +15,10 @@ jobs:
   deterministic-alerts:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Isolated, intentionally unreachable test URI. No external DB credentials.
+      MONGODB_URI: mongodb://127.0.0.1:27017/acg_alerts_ci
+      NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
