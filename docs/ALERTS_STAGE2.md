@@ -74,6 +74,21 @@ The replay log has a capped **12-hour default TTL** (configurable between 2 and 
 | Force notification provider failure | Not applicable; Stage 2 has no sending | Stage 3 |
 | Measure market events/s, batches/s, DB CPU/RAM/disk, write latency | Published cost report | Needs staging |
 
+## Additional controlled fault-injection verification (2026-11-23)
+
+The dedicated GitHub Actions MongoDB job now runs against a **throwaway local replica set** and contains these additional gates:
+
+1. **Real process termination:** fork a separate Node evaluator, pause at four commit boundaries (after rule update, after trigger insertion, after outbox insertion, and after commit), deliver OS-level `SIGKILL`, restart a replacement, and reconcile rule/checkpoint/trigger/outbox counts.
+2. **Lifecycle races:** externally pause or edit a loaded rule while its evaluator is suspended, then prove the old version cannot commit.
+3. **Feed and database faults:** inject a feed interruption and a journal persistence error; assert the capture health becomes INTERRUPTED and recovery opens a fresh stream generation with a fresh price baseline.
+4. **Real retention deletion:** configure the disposable MongoDB TTL monitor to delete an expired batch, then verify a persisted `AlertStage2ReplayGap` record and a fresh baseline, not an invented crossing.
+
+`AlertReplayGap` is an immutable record written in the same transaction as an affected rule's checkpoint and monitoring state. It records the reason, previous replay cursor, first recovered position and rule version. When all pending batches have expired, the worker consults the durable stream coverage high-water mark, writes a gap and advances its checkpoint only with the gap evidence committed.
+
+**Test type distinctions:** Child process `SIGKILL` is stronger than throwing inside the same Node process, but still uses a disposable CI MongoDB container. Fake provider/database interruption is not equivalent to losing Railway networking or the real market-data feed. Only a separate isolated Railway shadow run can validate operational lag, costs and actual provider behavior.
+
+**Latest CI outcome:** Recheck the PR head's workflow before sign-off; the additional tests are initially recorded as pending, not as passing merely because they exist.
+
 ## Shadow-run report (current)
 
 - **Production capture:** Not enabled.
