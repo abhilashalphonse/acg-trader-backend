@@ -1,0 +1,87 @@
+name: Alerts Stage 2 backend checks
+
+on:
+  pull_request:
+    paths:
+      - 'src/modules/alerts/**'
+      - 'src/server.js'
+      - 'tests/alerts-stage2*.test.js'
+      - 'scripts/alerts-stage2-benchmark.js'
+      - 'package.json'
+      - '.github/workflows/alerts-stage2.yml'
+  workflow_dispatch:
+
+jobs:
+  deterministic-alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Isolated, intentionally unreachable test URI. No external DB credentials.
+      MONGODB_URI: mongodb://127.0.0.1:27017/acg_alerts_ci
+      # Fake validation-only key; no market provider is contacted by these tests.
+      TWELVE_DATA_API_KEY: acg-ci-only-invalid-api-key
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Deterministic Stage 2 alert tests
+        run: node --test tests/alerts-stage2*.test.js
+      - name: Backend full test suite
+        run: npm test
+      - name: Syntax check shadow modules
+        run: |
+          for file in src/modules/alerts/*.js; do node --check "$file"; done
+      - name: Synthetic journal sizing sample
+        run: npm run alerts:stage2:benchmark
+
+  mongodb-fault-injection:
+    name: MongoDB transaction and replay fault injection
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+      ACG_ALERTS_STAGE2_E2E: 'true'
+      ACG_ALERTS_STAGE2_E2E_MONGO_URI: mongodb://127.0.0.1:27017/acg_alerts_stage2_e2e?replicaSet=rs0&directConnection=true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Start disposable local MongoDB replica set
+        run: |
+          docker run -d --name acg-alert-stage2-mongo -p 127.0.0.1:27017:27017 \
+            mongo:7 mongod --replSet rs0 --bind_ip_all
+          for i in $(seq 1 40); do
+            if docker exec acg-alert-stage2-mongo mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker exec acg-alert-stage2-mongo mongosh --quiet --eval \
+            'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          ready=0
+          for i in $(seq 1 40); do
+            if [ "$(docker exec acg-alert-stage2-mongo mongosh --quiet --eval 'rs.isMaster().ismaster' 2>/dev/null)" = "true" ]; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs acg-alert-stage2-mongo --tail 80
+            exit 1
+          fi
+      - name: Test atomic rollback, expiry replay, fenced takeover and journal generation
+        run: node --test tests/alerts-stage2-integration.test.js
+      - name: Test actual SIGKILL recovery at transaction boundaries
+        run: timeout --signal=TERM --kill-after=5s 420s node --test tests/alerts-stage2-process-kill.test.js
+      - name: Print replica-set diagnostics on failure
+        if: failure()
+        run: docker logs acg-alert-stage2-mongo --tail 100 || true
+      - name: Dispose local MongoDB
+        if: always()
+        run: docker rm -f acg-alert-stage2-mongo || true

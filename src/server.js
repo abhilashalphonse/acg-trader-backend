@@ -8,6 +8,8 @@ const { logger } = require('./infrastructure/logger/logger');
 const { startMaintenanceServer } = require('./infrastructure/maintenance/maintenance-server');
 const { createApp } = require('./app');
 const { createMarketRuntime } = require('./modules/market-data/market.runtime');
+const { createAlertCapture } = require('./modules/alerts/alert-capture');
+const { startAlertRuntime } = require('./modules/alerts/alert.runtime');
 const { createTradingRuntime } = require('./modules/trading/trading.runtime');
 const { createAuthRuntime } = require('./modules/auth/auth.runtime');
 const { syncInstrumentCatalog, syncIndiaPilotCatalog, provisionCatalogExecution, enforceCatalogLeveragePolicy } = require('./modules/instruments/instrument-catalog.service');
@@ -34,9 +36,17 @@ async function start() {
   const marketRuntime = createMarketRuntime();
   const tradingRuntime = createTradingRuntime({ marketRuntime });
   const authRuntime = createAuthRuntime();
+  // Opt-in shadow capture only: disabled by default and independent of trading.
+  const alertCapture = process.env.ACG_ALERTS_STAGE2_CAPTURE === 'true' || process.env.ACG_ALERTS_ENABLED === 'true'
+    ? createAlertCapture({ marketRuntime, logger }) : null;
 
   await tradingRuntime.start();
+  if (alertCapture) {
+    try { await alertCapture.start(); }
+    catch (error) { logger.error({ err: error }, 'Alert shadow capture unavailable; trading remains enabled'); }
+  }
   await marketRuntime.start();
+  const alertsRuntime = process.env.ACG_ALERTS_ENABLED === 'true' ? await startAlertRuntime({logger}) : null;
 
   const app = createApp({ marketRuntime, tradingRuntime, authRuntime });
   const server = http.createServer(app);
@@ -64,6 +74,8 @@ async function start() {
       // Stop new realtime/market work first. QuoteStore remains available to
       // HTTP commands that were already accepted before server.close().
       await marketRuntime.stop();
+      if (alertCapture) await alertCapture.stop();
+      if (alertsRuntime) await alertsRuntime.stop();
       await httpClosed;
 
       // No new commands can enter after HTTP/WS are drained, so trading can
