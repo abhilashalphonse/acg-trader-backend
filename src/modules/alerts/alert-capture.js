@@ -88,7 +88,7 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
       }
       for (const [streamId, stream] of streams) {
         if (desired.has(streamId)) {
-          if (!stream.running && !stream.superseded && !stream.broken) {
+          if (!stream.running && !stream.superseded && !stream.broken && !stream.restartPromise) {
             await stream.start('CAPTURE_STANDBY_LEASE_RETRY');
           }
           continue;
