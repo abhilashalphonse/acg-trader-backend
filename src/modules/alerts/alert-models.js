@@ -61,6 +61,20 @@ const triggerSchema = new Schema({
 }, { timestamps: true, versionKey: false });
 triggerSchema.index({ alertId: 1, ruleVersion: 1, eventId: 1 }, { unique: true });
 
+// Immutable, rule-scoped evidence of unrecoverable input intervals.
+const replayGapSchema = new Schema({
+  alertId: { type: Schema.Types.ObjectId, required: true },
+  tenantId: { type: String, required: true },
+  ownerId: { type: String, required: true },
+  streamId: { type: String, required: true },
+  ruleVersion: { type: Number, required: true },
+  eventId: { type: String, required: true },
+  reason: { type: String, required: true },
+  fromCursor: { type: Schema.Types.Mixed, default: null },
+  resumedAt: { type: Schema.Types.Mixed, required: true },
+}, { timestamps: true, versionKey: false });
+replayGapSchema.index({ alertId: 1, ruleVersion: 1, eventId: 1 }, { unique: true });
+
 const outboxSchema = new Schema({
   triggerId: { type: Schema.Types.ObjectId, required: true },
   channel: { type: String, default: 'shadow' },
@@ -84,6 +98,7 @@ const models = {
   MarketBatch: mongoose.models.AlertStage2MarketBatch || mongoose.model('AlertStage2MarketBatch', marketBatchSchema),
   StreamCoverage: mongoose.models.AlertStage2Coverage || mongoose.model('AlertStage2Coverage', streamCoverageSchema),
   AlertTrigger: mongoose.models.AlertStage2Trigger || mongoose.model('AlertStage2Trigger', triggerSchema),
+  AlertReplayGap: mongoose.models.AlertStage2ReplayGap || mongoose.model('AlertStage2ReplayGap', replayGapSchema),
   AlertOutbox: mongoose.models.AlertStage2Outbox || mongoose.model('AlertStage2Outbox', outboxSchema),
   AlertLease: mongoose.models.AlertStage2Lease || mongoose.model('AlertStage2Lease', leaseSchema),
 };
