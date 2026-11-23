@@ -128,6 +128,47 @@ if (!ENABLED) {
     assert.equal(await AlertTrigger.countDocuments({}),1);
   });
 
+
+  for (const mutation of ['PAUSED','EDITED']) {
+    test('concurrent '+mutation.toLowerCase()+' during evaluation rejects stale work', async () => {
+      await clear();
+      const r = await rule();
+      const now=Date.now();
+      await batch([price(1,99,now-5000),price(2,101,now-4000)]);
+      const worker = new AlertShadowWorker();
+      await worker.acquireLease();
+      const originalNext = worker.nextBatch.bind(worker);
+      let signalStarted;
+      const entered = new Promise(resolve => { signalStarted = resolve; });
+      let releaseEvaluation;
+      const hold = new Promise(resolve => { releaseEvaluation = resolve; });
+      worker.nextBatch = async (...args) => {
+        const result = await originalNext(...args);
+        signalStarted();
+        await hold; // The rule was loaded before the external lifecycle change.
+        return result;
+      };
+      const staleAttempt = worker.processRule(r.toObject());
+      await entered;
+      if (mutation === 'PAUSED') {
+        await AlertRule.updateOne({ _id:r._id, version:1 },
+          { $set:{status:'PAUSED'}, $inc:{version:1} });
+      } else {
+        await AlertRule.updateOne({ _id:r._id, version:1 },
+          { $set:{ condition:{type:'crosses_below',level:'100'},
+            effectiveFrom:new Date(),runtime:null,checkpoint:null }, $inc:{version:1} });
+      }
+      releaseEvaluation();
+      await assert.rejects(staleAttempt,/ALERT_RULE_CHANGED_DURING_EVALUATION/);
+      const persisted = await AlertRule.findById(r._id).lean();
+      assert.equal(persisted.version,2);
+      assert.equal(persisted.status,mutation === 'PAUSED' ? 'PAUSED':'STARTING');
+      assert.equal(persisted.checkpoint,null);
+      assert.equal(await AlertTrigger.countDocuments({alertId:r._id}),0);
+      assert.equal(await AlertOutbox.countDocuments({}),0);
+    });
+  }
+
   test('journal ownership cannot ping-pong after a new generation takes over', async () => {
     await clear();
     const first = new DurableAlertStream({ streamId,ownerId:'first-capture' });
