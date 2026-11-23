@@ -11,11 +11,12 @@ const LEASE_TTL_MS = 15000;
 
 class AlertShadowWorker {
   constructor({ ownerId = crypto.randomUUID(), logger = null, leaseTtlMs = LEASE_TTL_MS,
-    ruleModel = AlertRule } = {}) {
+    ruleModel = AlertRule, liveDelivery = false } = {}) {
     this.ownerId = ownerId;
     this.logger = logger;
     this.leaseTtlMs = leaseTtlMs;
     this.ruleModel = ruleModel;
+    this.liveDelivery = liveDelivery;
     this.token = null;
     this.processedBatches = 0;
     this.committedTriggers = 0;
@@ -193,8 +194,11 @@ class AlertShadowWorker {
             ruleVersion: rule.version, eventId: evidence.eventId, evidence,
           }], { session });
           // No delivery channel is enabled during Stage 2.
-          await AlertOutbox.create([{ triggerId: trigger._id, channel: 'shadow',
-            status: 'PENDING', attempt: 0 }], { session });
+          await AlertOutbox.create([{ triggerId: trigger._id, channel: this.liveDelivery ? 'terminal' : 'shadow',
+            status: this.liveDelivery ? 'DELIVERED' : 'PENDING', attempt: 0 }], { session });
+          if (this.liveDelivery && rule.pushEnabled) await AlertOutbox.create([{
+            triggerId: trigger._id, channel: 'push', status: 'PENDING', attempt: 0,
+          }], { session });
         }
       }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
       this.processedBatches += 1;

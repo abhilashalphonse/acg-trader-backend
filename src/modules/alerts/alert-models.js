@@ -3,6 +3,11 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 const alertRuleSchema = new Schema({
+  name: { type: String, maxlength: 80, default: '' },
+  note: { type: String, maxlength: 300, default: '' },
+  deleted: { type: Boolean, default: false },
+  pushEnabled: { type: Boolean, default: false },
+  clientRequestId: { type: String },
   tenantId: { type: String, required: true, index: true },
   ownerId: { type: String, required: true, index: true },
   streamId: { type: String, required: true, index: true },
@@ -24,6 +29,7 @@ const alertRuleSchema = new Schema({
 }, { timestamps: true, versionKey: false });
 alertRuleSchema.index({ streamId: 1, status: 1 });
 alertRuleSchema.index({ status: 1, _id: 1 });
+alertRuleSchema.index({ tenantId: 1, ownerId: 1, clientRequestId: 1 }, { unique: true, partialFilterExpression: { clientRequestId: { $type: 'string' } } });
 
 const marketBatchSchema = new Schema({
   streamId: { type: String, required: true },
@@ -58,6 +64,7 @@ const triggerSchema = new Schema({
   ruleVersion: { type: Number, required: true },
   eventId: { type: String, required: true },
   evidence: { type: Schema.Types.Mixed, required: true },
+  readAt: { type: Date, default: null },
 }, { timestamps: true, versionKey: false });
 triggerSchema.index({ alertId: 1, ruleVersion: 1, eventId: 1 }, { unique: true });
 
@@ -82,6 +89,9 @@ const outboxSchema = new Schema({
   attempt: { type: Number, default: 0 },
   nextAttemptAt: { type: Date, default: null },
   destinationRef: { type: String, default: null },
+  claimUntil: { type: Date, default: null },
+  claimId: { type: String, default: null },
+  lastError: { type: String, default: null },
 }, { timestamps: true, versionKey: false });
 outboxSchema.index({ triggerId: 1, channel: 1 }, { unique: true });
 
@@ -93,7 +103,22 @@ const leaseSchema = new Schema({
   lastFenceAt: { type: Date, default: null },
 }, { versionKey: false });
 
+const subscriptionSchema = new Schema({
+  tenantId: { type: String, required: true }, ownerId: { type: String, required: true },
+  endpoint: { type: String, required: true },
+  keys: { p256dh: String, auth: String },
+}, { timestamps: true });
+subscriptionSchema.index({ tenantId: 1, ownerId: 1, endpoint: 1 }, { unique: true });
+
+// All selectors here are constructed internally from validated scalars. The
+// application enables sanitizeFilter globally; these selectors intentionally
+// contain operators (including the conditional writes that enforce fencing).
+for (const schema of [alertRuleSchema, marketBatchSchema, streamCoverageSchema,
+  triggerSchema, replayGapSchema, outboxSchema, leaseSchema, subscriptionSchema]) {
+  schema.pre(/^(find|update|delete|count)/, function () { this.setOptions({ sanitizeFilter: false }); });
+}
 const models = {
+  AlertSubscription: mongoose.models.AlertSubscription || mongoose.model('AlertSubscription', subscriptionSchema),
   AlertRule: mongoose.models.AlertStage2Rule || mongoose.model('AlertStage2Rule', alertRuleSchema),
   MarketBatch: mongoose.models.AlertStage2MarketBatch || mongoose.model('AlertStage2MarketBatch', marketBatchSchema),
   StreamCoverage: mongoose.models.AlertStage2Coverage || mongoose.model('AlertStage2Coverage', streamCoverageSchema),

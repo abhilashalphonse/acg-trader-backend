@@ -29,6 +29,7 @@ const { createInternalAuthRouter } = require('./modules/auth/internal-auth.route
 const { createOperationsRouter } = require('./modules/operations/operations.routes');
 const { TraderProfileService } = require('./modules/profile/trader-profile.service');
 const { createTraderProfileRouter } = require('./modules/profile/trader-profile.routes');
+const { createAlertRouter } = require('./modules/alerts/alert.routes');
 const { notFoundHandler, errorHandler } = require('./shared/http/error-middleware');
 
 function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
@@ -102,6 +103,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
     app.use('/v1/identity', createIdentityRouter(supabaseIdentityService));
   }
   app.use('/v1/profile', createTraderProfileRouter({ authService, profileService: new TraderProfileService() }));
+  if (process.env.ACG_ALERTS_ENABLED === 'true') app.use('/v1/alerts', createAlertRouter({authService,marketRuntime}));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
   if (env.identity.tradingSessionsEnabled) {
     app.use('/v1/internal/identity', createAccountGrantRouter({
