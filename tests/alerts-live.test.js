@@ -81,6 +81,8 @@ else{
       assert.equal((await call('/push','POST',{endpoint:'https://127.0.0.1/secret',keys:{p256dh:'x'.repeat(80),auth:'x'.repeat(24)}})).status,400);
       const event=await models.AlertTrigger.findOne({ownerId:'owner:alice'}).lean();
       await models.AlertSubscription.create({tenantId:'tenant-a',ownerId:'owner:alice',endpoint:'https://fcm.googleapis.com/fcm/send/test-only',keys:{p256dh:'test',auth:'test'}});
+      assert.equal((await call('/push/status','POST',{endpoint:'https://fcm.googleapis.com/fcm/send/test-only'})).data.subscribed,true);
+      assert.equal((await call('/push/status','POST',{endpoint:'https://fcm.googleapis.com/fcm/send/test-only'},'bob')).data.subscribed,false);
       const job=await models.AlertOutbox.create({triggerId:event._id,channel:'push',status:'PENDING'});
       webpush.sendNotification=async()=>{throw Object.assign(new Error('test'),{statusCode:503});};
       await dispatchPush();let saved=await models.AlertOutbox.findById(job._id).lean();assert.equal(saved.status,'PENDING');assert.equal(saved.attempt,1);
