@@ -7,7 +7,7 @@ const { profileIdentity } = require('../profile/trader-profile.service');
 const { AppError } = require('../../shared/errors/app-error');
 const { streamIdFor } = require('./alert-event-contract');
 const { ticks } = require('./alert-evaluator');
-const { AlertRule, AlertTrigger, AlertReplayGap, StreamCoverage, AlertLease, AlertSubscription } = require('./alert-models');
+const { AlertRule, AlertTrigger, AlertReplayGap, StreamCoverage, AlertLease, AlertSubscription, AlertOutbox } = require('./alert-models');
 
 const price = z.string().regex(/^\d{1,12}(\.\d{1,10})?$/).refine(v => Number(v) > 0, 'Price must be positive');
 const definitionSchema = z.object({
@@ -53,10 +53,12 @@ function validateDefinition(data, runtime) {
   if (data.expiresAt && Date.parse(data.expiresAt) <= Date.now()) throw new AppError('Expiry must be in the future', { statusCode: 400 });
   return { ...data, tickSize, feedId: instrument.provider, streamId: streamIdFor(instrument.provider,data.symbol) };
 }
-function publicRule(r, coverage) {
+function publicRule(r, coverage, evaluatorLease) {
   const lastEvent = coverage?.lastEventAt ? new Date(coverage.lastEventAt).getTime() : 0;
   let monitoring = r.runtime?.monitoring || 'STARTING';
   if (['STARTING','MONITORING'].includes(r.status) && (!coverage || coverage.status !== 'MONITORING' || Date.now()-lastEvent>30000)) monitoring = 'WAITING_FOR_DATA';
+  else if (['STARTING','MONITORING'].includes(r.status) && (!evaluatorLease || new Date(evaluatorLease.expiresAt).getTime()<=Date.now() ||
+    r.runtime?.lastObservedMs && Date.now()-Number(r.runtime.lastObservedMs)>30000)) monitoring='RECOVERING';
   return { id: String(r._id), version: r.version, name:r.name, note:r.note, symbol:r.symbol,
     condition:r.condition, priceSource:r.priceSource, timeframe:r.timeframe, frequency:r.frequency,
     cooldownMs:r.cooldownMs, expiresAt:r.expiresAt, pushEnabled:r.pushEnabled,
@@ -71,7 +73,8 @@ function createAlertRouter({ authService, marketRuntime }) {
   router.get('/', async(req,res)=>{
     const rows=await AlertRule.find({...identity(req.traderPrincipal),deleted:false}).sort({_id:-1}).limit(100).lean();
     const coverage=await StreamCoverage.find({_id:{$in:[...new Set(rows.map(r=>r.streamId))]}}).lean();
-    res.json({alerts:rows.map(r=>publicRule(r,coverage.find(c=>c._id===r.streamId)))});
+    const lease=await AlertLease.findById('stage2-alert-evaluator').lean();
+    res.json({alerts:rows.map(r=>publicRule(r,coverage.find(c=>c._id===r.streamId),lease))});
   });
   router.post('/', async(req,res)=>{
     const data=validateDefinition(parse(createSchema,req.body),marketRuntime);
@@ -115,8 +118,9 @@ function createAlertRouter({ authService, marketRuntime }) {
     const owner=identity(req.traderPrincipal);
     const before=typeof req.query.before==='string'&&/^[a-f0-9]{24}$/i.test(req.query.before)?{_id:{$lt:req.query.before}}:{};
     const events=await AlertTrigger.find({...owner,...before}).sort({_id:-1}).limit(50).lean();
+    const deliveries=await AlertOutbox.find({triggerId:{$in:events.map(e=>e._id)},channel:'push'}).lean();
     const gaps=await AlertReplayGap.find(owner).sort({_id:-1}).limit(20).lean();
-    res.json({events:events.map(e=>({id:String(e._id),alertId:String(e.alertId),createdAt:e.createdAt,readAt:e.readAt,evidence:e.evidence})),gaps:gaps.map(g=>({id:String(g._id),reason:g.reason,streamId:g.streamId,createdAt:g.createdAt})),nextBefore:events.length===50?String(events.at(-1)._id):null});
+    res.json({events:events.map(e=>({id:String(e._id),alertId:String(e.alertId),createdAt:e.createdAt,readAt:e.readAt,evidence:e.evidence,pushStatus:deliveries.find(d=>String(d.triggerId)===String(e._id))?.status||null})),gaps:gaps.map(g=>({id:String(g._id),reason:g.reason,streamId:g.streamId,createdAt:g.createdAt})),nextBefore:events.length===50?String(events.at(-1)._id):null});
   });
   router.post('/history/read',async(req,res)=>{
     const {ids}=parse(z.object({ids:z.array(z.string().regex(/^[a-f0-9]{24}$/i)).max(50)}).strict(),req.body);

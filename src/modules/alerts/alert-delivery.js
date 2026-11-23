@@ -20,7 +20,7 @@ async function dispatchPush() {
     if(!subscriptions.length)throw new Error('NO_SUBSCRIBED_DEVICE');
     const evidence=trigger.evidence;
     const payload=JSON.stringify({eventId:String(trigger._id),title:evidence.name||`${evidence.symbol||rule?.symbol||'Market'} alert`,
-      body:`${evidence.symbol||rule?.symbol||evidence.streamId} � ${evidence.condition.type.replaceAll('_',' ')} � ${evidence.observedPrice||''} � ${evidence.note||'Open the chart to review.'}`,
+      body:`${evidence.symbol||rule?.symbol||evidence.streamId} · ${evidence.condition.type.replaceAll('_',' ')} · ${evidence.observedPrice||''} · ${evidence.note||'Open the chart to review.'}`,
       symbol:evidence.symbol||rule?.symbol,timeframe:evidence.timeframe});
     for(const sub of subscriptions) {
       try { await webpush.sendNotification({endpoint:sub.endpoint,keys:sub.keys},payload,{
