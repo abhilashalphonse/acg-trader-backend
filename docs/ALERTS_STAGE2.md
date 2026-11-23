@@ -91,18 +91,36 @@ The dedicated GitHub Actions MongoDB job now runs against a **throwaway local re
 
 **Observed recovery timing:** Three in-transaction SIGKILL checks took about **90 seconds each** in the disposable CI environment; after-commit termination recovered much faster. These are end-to-end test elapsed times, not isolated database abort timings, and are not yet Railway recovery measurements. Record and investigate this latency against the operational alert recovery SLO before release.
 
-## Shadow-run report (current)
+## Railway isolated shadow-run report — 2026-11-23 (FINAL: FAIL)
 
-- **Production capture:** Not enabled.
-- **Production worker:** Not deployed.
-- **Production notifications:** Not enabled.
-- **Live market-event sample:** Not collected.
-- **Verified active database target/topology:** Unconfirmed through redacted Railway variables.
-- **Measured Railway cost delta:** Unavailable; must not be inferred from synthetic JSON sizing.
-- **CI validation:** Dedicated full-suite checks and isolated MongoDB replica-set fault injection passed on PR #101 (2026-11-23).
-- **Isolated Mongo checks:** Pre-expiry backlog, atomic rollback on injected failure, capture fencing, evaluator fencing and missing-sequence replay passed.
-- **Railway staging:** Not deployed. The existing STAGING environment has unrelated legacy work and pending changes; deliberately left untouched.
-- **Release recommendation:** Keep PR as DRAFT. Complete safe staging topology verification, true process-kill/failure testing and live cost measurements before enabling or integrating UI.
+**Decision:** **STAGE 2 FAIL — do not merge or enable customer alerts.** Test spend was user-authorised up to €15 and three hours. Test resources were removed after evidence collection; at final verification the private Railway project `acg-trader-alerts-stage2-staging` had **zero services, zero volumes and no staged changes**. The existing Trader production and old staging environments were not modified, and no notifications were enabled.
+
+**Evidence provenance and scope.** A temporary MongoDB 7 single-member replica set `alertsTest`, persistent 1 GB Railway volume, a database acceptance runner, and separate capture and evaluator services were deployed to project `98a016a8-668d-401f-896f-00f407c5c15d`. The separate synthetic capture/evaluator were pinned to PR branch code commit `4d28fc74bc5a4ec7c590643aeabdd2c99432922d`; the post-test duplicate-key handling fix is commit `20afacb1cfda083fad89be2064717e81689e3d0f`. The database acceptance runner used a different, experimental branch (`feature/alerts-live-20261123` at `fea33f445a71de08bb0e2fed7fb58e250f6c96a4`), so its outcomes are not interchangeable with validation of the latest PR head.
+
+| Evidence | Result |
+| --- | --- |
+| Actual Railway MongoDB transaction topology | Writable `alertsTest` single-member replica set confirmed using the private internal hostname |
+| Database integration tests | 10/10 passed: expiry/backlog, rollback, lease takeover, rule pause/edit, feed outage, DB write interruption, TTL, missing sequences |
+| OS process-kill recovery | 4/4 passed for SIGKILL after rule, trigger, outbox writes and after commit; no duplicate outbox/trigger |
+| In-transaction SIGKILL test duration | ~88–90 seconds each (end-to-end per case); post-commit significantly faster; exact blocking source not yet isolated |
+| Experimental native-alert integration tests | **2/3 failed**, initial capture lease Date-cast error; Stage 2 branch fix split coverage initialization from conditional lease acquisition, then handled duplicate-key standby; no green rerun of the failing experimental branch |
+| Synthetic capture, bounded 100 s sample | 393 generated quotes (3.93/s); 396 durably accepted events including coverage markers; at least 182 batches accepted by second 92 |
+| Synthetic interruption recovery | Explicit feed disconnection and forced journal persistence failure recovered with new generation and baseline markers; observed generations advanced to 6 |
+| Evaluator shadow evidence | 289 trigger records and 25 rule-scoped gap records in the sampled evaluator process; outbox delivery remained disabled |
+| Evaluation lag | Last observed ~58.5 s; peak observed ~188 s during catch-up. **Failed** to establish low-lag, stable backlog recovery |
+| Live licensed market-feed integration | **Not tested.** No new Twelve Data subscription was opened; provider entitlement and connection limits could not be verified |
+| Notification/trading isolation | No customer notification delivery or trading commands enabled |
+| Cleanup | All four temporary services and the 1 GB test volume deleted; no remaining billable staging resources |
+
+**Observed Railway resource samples** (last-hour measurement window includes off-time; peaks are not sustained averages): Mongo CPU 0.044 vCPU, RAM 0.176 GB, disk 0.042 GB; capture CPU 0.020 vCPU, RAM 0.031 GB; evaluator CPU 0.042 vCPU, RAM 0.040 GB; acceptance runner CPU 0.080 vCPU, RAM 0.110 GB. The additional duplicate MongoDB template and its 5 GB volume were detected early and deleted.
+
+**Cost:** The connected Railway tooling does not expose itemised project billing or a final invoice. Therefore **the actual measured € charge is unavailable**. Using the published usage rates of approximately $20 per active vCPU-month, $10 per GB RAM-month and $0.15 per allocated GB-volume-month, even charging the observed resource peaks for the full ~18-minute window yields only about **$0.003 of modelled resource charges**. This is **not a billed cost** and excludes plan fee, egress, Railway billing rounding and unknown adjustments; the full €15 budget was not approached under measured resource consumption. Always confirm exact charges from Railway Usage/Billing.
+
+**Monthly projection (very small synthetic workload only):** At the observed near-end sample rates (~0.048 vCPU combined, ~0.246 GB RAM, 0.042 GB data), continuous Mongo+capture+evaluator resource usage would be about **$3.4/month** excluding backup, persistent allocated volume, traffic, retries, storage growth, notifications, higher event volume and base subscription. This is *not* a production sizing forecast.
+
+**Blockers before a PASS:** Identify and bound the ~90-second transaction recovery latency with timestamps separating Mongo lock cleanup, driver retries, evaluator lease and harness; establish target evaluation lag and prove backlog drains under a stable representative market feed; obtain authorised feed access and check provider limits; rerun failing native-alert integration tests against the same current PR head; obtain actual billed cost and a realistic load-based monthly projection. Production remains disabled until resolved.
+
+**Release recommendation:** Keep PR **DRAFT**, retain Stage 2 as FAIL. The engine alone does not deliver the native customer Alerts feature; authenticated APIs, notification delivery and terminal UI follow only after Stage 2 reliability acceptance.
 
 ## Known limitations before implementation is considered complete
 
