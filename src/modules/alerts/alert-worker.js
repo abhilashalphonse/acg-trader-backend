@@ -17,6 +17,8 @@ class AlertShadowWorker {
     this.processedBatches = 0;
     this.committedTriggers = 0;
     this.gapResets = 0;
+    // Keyset pagination provides bounded, round-robin coverage for every rule.
+    this.scanCursorId = null;
   }
 
   async acquireLease() {
@@ -67,8 +69,9 @@ class AlertShadowWorker {
     const processed = [];
     const triggers = [];
     const first = batch.events[0];
-    const missingWithinGeneration = cursor && cursor.generation === batch.generation
-      && batch.firstSequence > cursor.sequence + 1;
+    const missingWithinGeneration = cursor
+      ? cursor.generation === batch.generation && batch.firstSequence > cursor.sequence + 1
+      : batch.firstSequence > 1;
     const unannouncedGeneration = cursor && cursor.generation !== batch.generation
       && first?.kind !== 'coverage_gap';
     if (missingWithinGeneration || unannouncedGeneration) {
@@ -117,7 +120,8 @@ class AlertShadowWorker {
           _id: rule._id, version: rule.version,
           status: { $in: ['STARTING','MONITORING'] },
           checkpoint: cursor,
-          $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+          // No wall-clock expiry predicate: durable observations received
+          // before expiry remain eligible even when replay runs afterwards.
         }, { $set: { runtime, checkpoint: nextCursor, status: nextStatus } }, { session });
         if (updated.matchedCount !== 1) throw new Error('ALERT_RULE_CHANGED_DURING_EVALUATION');
         for (const evidence of triggers) {
@@ -138,46 +142,27 @@ class AlertShadowWorker {
     }
   }
 
-  async expireDueRules(now = new Date()) {
-    const due = await AlertRule.find({
-      status: { $in: ['STARTING', 'MONITORING'] }, expiresAt: { $lte: now, $ne: null },
-    }).limit(100).lean();
-    let expired = 0;
-    for (const rule of due) {
-      const session = await mongoose.startSession();
-      try {
-        await session.withTransaction(async () => {
-          const fenced = await AlertLease.updateOne({
-            _id: LEASE_ID, ownerId: this.ownerId, token: this.token,
-            expiresAt: { $gt: new Date() },
-          }, { $set: { lastFenceAt: new Date() } }, { session });
-          if (fenced.matchedCount !== 1) throw new Error('ALERT_LEASE_FENCED');
-          const result = await AlertRule.updateOne({
-            _id: rule._id, version: rule.version,
-            status: { $in: ['STARTING', 'MONITORING'] }, expiresAt: { $lte: now },
-          }, { $set: { status: 'EXPIRED', runtime: {
-            ...emptyState(), ...(rule.runtime || {}), monitoring: 'EXPIRED',
-          } } }, { session });
-          if (result.matchedCount !== 1) throw new Error('ALERT_RULE_CHANGED_DURING_EVALUATION');
-        }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
-        expired++;
-      } catch (error) {
-        if (!/ALERT_LEASE_FENCED|ALERT_RULE_CHANGED_DURING_EVALUATION|WriteConflict/i.test(String(error?.message))) throw error;
-      } finally {
-        await session.endSession();
-      }
-    }
-    return expired;
-  }
 
   async pumpOnce({ maxRules = 200 } = {}) {
+    if (!Number.isInteger(maxRules) || maxRules < 1) throw new Error('maxRules must be positive');
     if (this.token == null && await this.acquireLease() == null) return { ownsLease: false };
     if (!await this.renewLease()) return { ownsLease: false };
-    const expired = await this.expireDueRules();
-    const rules = await AlertRule.find({ status: { $in: ['STARTING','MONITORING'] } })
-      .limit(maxRules).lean();
+
+    const query = { status: { $in: ['STARTING', 'MONITORING'] } };
+    if (this.scanCursorId) query._id = { $gt: this.scanCursorId };
+    let rules = await AlertRule.find(query).sort({ _id: 1 }).limit(maxRules).lean();
+    if (!rules.length && this.scanCursorId) {
+      this.scanCursorId = null;
+      rules = await AlertRule.find({ status: { $in: ['STARTING', 'MONITORING'] } })
+        .sort({ _id: 1 }).limit(maxRules).lean();
+    }
     let advanced = 0, conflicts = 0;
-    for (const rule of rules) {
+    for (let index = 0; index < rules.length; index++) {
+      const rule = rules[index];
+      // Update the lease periodically during large scans, not just per batch.
+      if (index % 10 === 0 && !await this.renewLease()) {
+        return { ownsLease: false, checkedRules: index, advanced, conflicts };
+      }
       try {
         if (await this.processRule(rule)) advanced += 1;
       } catch (error) {
@@ -188,9 +173,12 @@ class AlertShadowWorker {
           throw error;
         }
       }
+      this.scanCursorId = rule._id;
     }
     return { ownsLease: this.token != null, checkedRules: rules.length,
-      advanced, conflicts, expired, triggers: this.committedTriggers, gapResets: this.gapResets };
+      advanced, conflicts, triggers: this.committedTriggers, gapResets: this.gapResets,
+      scanCursor: String(this.scanCursorId || '') };
   }
+
 }
 module.exports = { AlertShadowWorker, LEASE_ID, LEASE_TTL_MS };
