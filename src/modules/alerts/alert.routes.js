@@ -139,6 +139,11 @@ function createAlertRouter({ authService, marketRuntime }) {
     await AlertSubscription.findOneAndUpdate({endpoint:body.endpoint},{$set:{...body,...owner}},{upsert:true});
     res.status(204).end();
   });
+  router.post('/push/status',async(req,res)=>{
+    const {endpoint}=parse(z.object({endpoint:z.string().max(2048)}).strict(),req.body);
+    const subscribed=Boolean(await AlertSubscription.exists({...identity(req.traderPrincipal),endpoint}));
+    res.json({subscribed});
+  });
   router.post('/push/remove',async(req,res)=>{
     const {endpoint}=parse(z.object({endpoint:z.string().max(2048)}).strict(),req.body);
     await AlertSubscription.deleteOne({...identity(req.traderPrincipal),endpoint});res.status(204).end();
