@@ -20,6 +20,9 @@ async function main(){
   await mongoose.connect(uri);const hello=await mongoose.connection.db.admin().command({hello:1});
   console.log(JSON.stringify({gate:'topology',setName:hello.setName,isWritablePrimary:hello.isWritablePrimary}));
   await mongoose.disconnect();
+  if(process.env.ACG_ALERTS_ACCEPTANCE_ONLY_API==='true'){
+    await run('tests/alerts-live.test.js');console.log('RAILWAY_LIVE_API_DELIVERY_PASS');server.close();return;
+  }
   const start=Date.now();
   await run('tests/alerts-stage2-integration.test.js');
   if(process.env.ACG_ALERTS_ACCEPTANCE_SKIP_KILLS!=='true')await run('tests/alerts-stage2-process-kill.test.js');
@@ -48,7 +51,7 @@ async function main(){
   }
   await stream.stop();for(let i=0;i<5;i++)await worker.pumpOnce();
   const stats=await mongoose.connection.db.command({dbStats:1});writeLatencies.sort((a,b)=>a-b);
-  console.log(JSON.stringify({gate:'RAILWAY_LOAD_SAMPLE',durationMs:Date.now()-begin,events,liveSamples,
+  console.log(JSON.stringify({message:'RAILWAY_LOAD_SAMPLE',gate:'RAILWAY_LOAD_SAMPLE',durationMs:Date.now()-begin,events,liveSamples,
     journalWriteP95Ms:writeLatencies[Math.floor(writeLatencies.length*.95)],dataSize:stats.dataSize,storageSize:stats.storageSize,indexSize:stats.indexSize,
     triggers:await models.AlertTrigger.countDocuments({}),batches:await models.MarketBatch.countDocuments({}),workerBatches:worker.processedBatches}));
   await mongoose.disconnect();server.close();

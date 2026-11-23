@@ -22,16 +22,18 @@ async function dispatchPush() {
     const payload=JSON.stringify({eventId:String(trigger._id),title:evidence.name||`${evidence.symbol||rule?.symbol||'Market'} alert`,
       body:`${evidence.symbol||rule?.symbol||evidence.streamId} · ${evidence.condition.type.replaceAll('_',' ')} · ${evidence.observedPrice||''} · ${evidence.note||'Open the chart to review.'}`,
       symbol:evidence.symbol||rule?.symbol,timeframe:evidence.timeframe});
+    let accepted=0;
     for(const sub of subscriptions) {
       try { await webpush.sendNotification({endpoint:sub.endpoint,keys:sub.keys},payload,{
         TTL:300,timeout:8000,vapidDetails:{subject:process.env.ACG_ALERTS_VAPID_SUBJECT||'mailto:support@acgtrader.com',
           publicKey:process.env.ACG_ALERTS_VAPID_PUBLIC_KEY,privateKey:process.env.ACG_ALERTS_VAPID_PRIVATE_KEY},
-      }); }
+      }); accepted++; }
       catch(error){
         if([404,410].includes(error.statusCode))await AlertSubscription.deleteOne({_id:sub._id});
         else failure='PUSH_SERVICE_UNAVAILABLE';
       }
     }
+    if(!accepted&&!failure)failure='NO_SUBSCRIBED_DEVICE';
   }catch(error){failure=error.message==='NO_SUBSCRIBED_DEVICE'?'NO_SUBSCRIBED_DEVICE':'PUSH_SERVICE_UNAVAILABLE';}
   const permanent=job.attempt>=5||failure==='NO_SUBSCRIBED_DEVICE';
   await AlertOutbox.updateOne({_id:job._id,claimId},{$set:{status:failure?(permanent?'FAILED':'PENDING'):'ACCEPTED',

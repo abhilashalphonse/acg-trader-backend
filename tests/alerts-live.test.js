@@ -61,4 +61,20 @@ else{
     await call('/history/read','POST',{ids:[eventId]},'bob');assert.equal((await call('/history')).data.events[0].readAt,null);
     await call('/history/read','POST',{ids:[eventId]});assert.ok((await call('/history')).data.events[0].readAt);
   });
+  test('push failures retry independently and provider acceptance is not device delivery',async()=>{
+    const webpush=require('web-push');const original=webpush.sendNotification;
+    const priorPublic=process.env.ACG_ALERTS_VAPID_PUBLIC_KEY,priorPrivate=process.env.ACG_ALERTS_VAPID_PRIVATE_KEY;
+    const keys=webpush.generateVAPIDKeys();process.env.ACG_ALERTS_VAPID_PUBLIC_KEY=keys.publicKey;process.env.ACG_ALERTS_VAPID_PRIVATE_KEY=keys.privateKey;
+    const {dispatchPush}=require('../src/modules/alerts/alert-delivery');
+    try{
+      assert.equal((await call('/push','POST',{endpoint:'https://127.0.0.1/secret',keys:{p256dh:'x'.repeat(80),auth:'x'.repeat(24)}})).status,400);
+      const event=await models.AlertTrigger.findOne({ownerId:'owner:alice'}).lean();
+      await models.AlertSubscription.create({tenantId:'tenant-a',ownerId:'owner:alice',endpoint:'https://fcm.googleapis.com/fcm/send/test-only',keys:{p256dh:'test',auth:'test'}});
+      const job=await models.AlertOutbox.create({triggerId:event._id,channel:'push',status:'PENDING'});
+      webpush.sendNotification=async()=>{throw Object.assign(new Error('test'),{statusCode:503});};
+      await dispatchPush();let saved=await models.AlertOutbox.findById(job._id).lean();assert.equal(saved.status,'PENDING');assert.equal(saved.attempt,1);
+      await models.AlertOutbox.updateOne({_id:job._id},{$set:{nextAttemptAt:new Date(0)}});
+      webpush.sendNotification=async()=>({statusCode:201});await dispatchPush();saved=await models.AlertOutbox.findById(job._id).lean();assert.equal(saved.status,'ACCEPTED');assert.equal(saved.attempt,2);
+    }finally{webpush.sendNotification=original;if(priorPublic===undefined)delete process.env.ACG_ALERTS_VAPID_PUBLIC_KEY;else process.env.ACG_ALERTS_VAPID_PUBLIC_KEY=priorPublic;if(priorPrivate===undefined)delete process.env.ACG_ALERTS_VAPID_PRIVATE_KEY;else process.env.ACG_ALERTS_VAPID_PRIVATE_KEY=priorPrivate;}
+  });
 }
