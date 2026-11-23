@@ -84,17 +84,25 @@ class DurableAlertStream {
       ? [ { captureLeaseUntil: { $lte: now } }, { captureLeaseUntil: null } ]
       : [ { captureOwnerId: this.ownerId, captureToken: previousToken,
           generation: previousGeneration } ];
-    const coverage = await this.coverageModel.findOneAndUpdate(
-      { _id: this.streamId, $or: conditions },
-      {
-        $inc: { generation: 1, captureToken: 1 },
-        $set: {
-          captureOwnerId: this.ownerId, captureLeaseUntil: leaseUntil,
-          status: 'STARTING', lastReason: reason, lastSequence: 0,
+    let coverage;
+    try {
+      coverage = await this.coverageModel.findOneAndUpdate(
+        { _id: this.streamId, $or: conditions },
+        {
+          $inc: { generation: 1, captureToken: 1 },
+          $set: {
+            captureOwnerId: this.ownerId, captureLeaseUntil: leaseUntil,
+            status: 'STARTING', lastReason: reason, lastSequence: 0,
+          },
         },
-      },
-      { new: true, upsert: false },
-    ).lean();
+        { new: true, upsert: false },
+      ).lean();
+    } catch (error) {
+      // A concurrent owner/duplicate-id race is a lease miss, not a reason
+      // to rotate the generation or crash the capture process.
+      if (error.code !== 11000) throw error;
+      coverage = null;
+    }
     if (!coverage) {
       // A competing capture owns the still-valid lease. Do not rotate its
       // generation; a previously fenced owner must never reclaim it.
