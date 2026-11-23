@@ -23,6 +23,7 @@ const alertRuleSchema = new Schema({
   checkpoint: { type: Schema.Types.Mixed, default: null },
 }, { timestamps: true, versionKey: false });
 alertRuleSchema.index({ streamId: 1, status: 1 });
+alertRuleSchema.index({ status: 1, _id: 1 });
 
 const marketBatchSchema = new Schema({
   streamId: { type: String, required: true },
@@ -44,6 +45,10 @@ const streamCoverageSchema = new Schema({
   lastEventAt: { type: Date, default: null },
   lastSequence: { type: Number, default: 0 },
   lastReason: { type: String, default: null },
+  // Exclusive durable capture ownership; token advances on every generation.
+  captureOwnerId: { type: String, default: null },
+  captureToken: { type: Number, default: 0 },
+  captureLeaseUntil: { type: Date, default: null },
 }, { timestamps: true, versionKey: false });
 
 const triggerSchema = new Schema({
