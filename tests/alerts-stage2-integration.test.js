@@ -6,7 +6,7 @@ const { DurableAlertStream } = require('../src/modules/alerts/alert-journal');
 const { AlertShadowWorker } = require('../src/modules/alerts/alert-worker');
 const { position } = require('../src/modules/alerts/alert-event-contract');
 const {
-  AlertRule, MarketBatch, StreamCoverage, AlertTrigger, AlertOutbox, AlertLease,
+  AlertRule, MarketBatch, StreamCoverage, AlertTrigger, AlertOutbox, AlertLease, AlertReplayGap,
 } = require('../src/modules/alerts/alert-models');
 
 const ENABLED = process.env.ACG_ALERTS_STAGE2_E2E === 'true';
@@ -21,7 +21,7 @@ if (!ENABLED) {
       throw new Error('E2E MongoDB must be a dedicated localhost-only test instance');
     }
     await mongoose.connect(URI, { serverSelectionTimeoutMS: 15000, maxPoolSize: 10 });
-    await Promise.all([AlertRule, MarketBatch, StreamCoverage, AlertTrigger, AlertOutbox, AlertLease]
+    await Promise.all([AlertRule, MarketBatch, StreamCoverage, AlertTrigger, AlertOutbox, AlertLease, AlertReplayGap]
       .map(model => model.init()));
   });
   after(async () => { await mongoose.disconnect(); });
@@ -198,6 +198,135 @@ if (!ENABLED) {
       await first.stop(); await second.stop();
     }
   });
+
+
+  async function awaitCondition(callback, message, timeoutMs = 10000) {
+    const limit = Date.now() + timeoutMs;
+    do {
+      if (await callback()) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } while (Date.now() < limit);
+    throw new Error('Timed out: ' + message);
+  }
+
+  test('provider disconnect records interrupted health and requires fresh baseline', async () => {
+    await clear();
+    const r = await rule();
+    const stream = new DurableAlertStream({streamId, ownerId:'feed-outage-capture'});
+    const event = (value, when) => ({kind:'quote', schemaVersion:1, streamId,
+      marketTimeMs:when,receivedAtMs:when,quality:'LIVE',
+      prices:{bid:String(value),ask:String(value),last:String(value)} });
+    try {
+      await stream.start();
+      await stream.flush(); // Durable starting coverage gap.
+      const startAt = Date.now();
+      assert.equal(stream.accept(event(99,startAt)),true);
+      await stream.flush();
+      const worker = new AlertShadowWorker({ownerId:'feed-gap-evaluator'});
+      await worker.acquireLease();
+      let persisted = await AlertRule.findById(r._id).lean();
+      assert.equal(await worker.processRule(persisted),true);
+      persisted = await AlertRule.findById(r._id).lean();
+      assert.equal(await worker.processRule(persisted),true);
+      assert.equal(await AlertTrigger.countDocuments({alertId:r._id}),0);
+
+      stream.interrupt('FEED_DISCONNECTED');
+      await awaitCondition(async () => (await StreamCoverage.findById(streamId).lean())?.status === 'INTERRUPTED',
+        'feed interruption persisted');
+      assert.equal(await stream.restart('RECOVERY_AFTER_FEED_OUTAGE'),true);
+      await stream.flush(); // Starting gap in a new generation.
+      assert.equal(stream.accept(event(101,startAt+1000)),true);
+      await stream.flush(); // Must NOT cross from previous generation 99.
+      for(let i=0;i<2;i++){
+        const next = await AlertRule.findById(r._id).lean();
+        assert.equal(await worker.processRule(next),true);
+      }
+      assert.equal(await AlertTrigger.countDocuments({alertId:r._id}),0);
+      assert.equal(stream.accept(event(99,startAt+2000)),true);
+      await stream.flush();
+      assert.equal(stream.accept(event(101,startAt+3000)),true);
+      await stream.flush();
+      for(let i=0;i<2;i++){
+        const next = await AlertRule.findById(r._id).lean();
+        assert.equal(await worker.processRule(next),true);
+      }
+      assert.equal(await AlertTrigger.countDocuments({alertId:r._id}),1);
+      assert.ok(await AlertReplayGap.countDocuments({alertId:r._id}) >= 2);
+      const final=await AlertRule.findById(r._id).lean();
+      assert.ok(final.runtime.lastCoverageGap);
+    } finally {
+      await stream.stop();
+    }
+  });
+
+  test('journal write rejection interrupts coverage, but never blocks later recovery', async () => {
+    await clear();
+    const stream = new DurableAlertStream({streamId, ownerId:'write-outage-capture'});
+    try {
+      await stream.start();
+      await stream.flush();
+      const original = stream.persist.bind(stream);
+      stream.persist = async () => { throw new Error('INJECTED_DATABASE_WRITE_FAILURE'); };
+      assert.equal(stream.accept({kind:'quote', schemaVersion:1, streamId,
+        marketTimeMs:Date.now(),receivedAtMs:Date.now(),quality:'LIVE',
+        prices:{bid:'99',ask:'100',last:'99'}}),true);
+      await assert.rejects(stream.flush(), /INJECTED_DATABASE_WRITE_FAILURE/);
+      await awaitCondition(async () => (await StreamCoverage.findById(streamId).lean())?.status === 'INTERRUPTED',
+        'write failure persisted as interruption');
+      const before=(await StreamCoverage.findById(streamId).lean()).generation;
+      stream.persist = original;
+      assert.equal(await stream.restart('RECOVERED_AFTER_DATABASE_OUTAGE'),true);
+      await stream.flush();
+      const after=await StreamCoverage.findById(streamId).lean();
+      assert.equal(after.generation,before+1);
+      assert.equal(after.status,'STARTING');
+      const latest=await MarketBatch.findOne({streamId,generation:after.generation}).lean();
+      assert.equal(latest.events[0].kind,'coverage_gap');
+    } finally {
+      await stream.stop();
+    }
+  });
+
+  test('actual TTL deletion is recorded as unrecoverable; next tick is only baseline',
+    { timeout: 85000 }, async () => {
+      await clear();
+      await mongoose.connection.db.admin().command({setParameter:1,ttlMonitorSleepSecs:1});
+      const now=Date.now();
+      const r=await rule({status:'MONITORING',
+        checkpoint:{streamId,generation:1,sequence:1},
+        runtime:{ baselineTicks:'99',armed:true,monitoring:'MONITORING',
+          lastEventId:position(streamId,1,1),lastTriggerMs:null },
+      });
+      await StreamCoverage.create({_id:streamId,generation:1,lastSequence:2,
+        status:'MONITORING',lastEventAt:new Date(now)});
+      await MarketBatch.create({streamId,generation:1,firstSequence:2,lastSequence:2,
+        events:[price(2,101,now-2000)],acceptedAt:new Date(now-2000),
+        expiresAt:new Date(now-10000)});
+      await awaitCondition(async () =>
+        await MarketBatch.countDocuments({streamId,generation:1}) === 0,
+        'Mongo TTL deletion',75000);
+      const worker=new AlertShadowWorker();
+      await worker.acquireLease();
+      const stale=await AlertRule.findById(r._id).lean();
+      assert.equal(await worker.processRule(stale),true); // Captured watermark, no retained events.
+      const afterGap=await AlertRule.findById(r._id).lean();
+      assert.equal(afterGap.runtime.monitoring,'INTERRUPTED');
+      assert.equal(afterGap.runtime.baselineTicks,null);
+      assert.deepEqual(afterGap.checkpoint,{streamId,generation:1,sequence:2});
+      const gaps=await AlertReplayGap.find({alertId:r._id}).lean();
+      assert.equal(gaps.length,1);
+      assert.equal(gaps[0].reason,'REPLAY_UNAVAILABLE_NO_RETAINED_BATCH');
+      assert.equal(await AlertTrigger.countDocuments({alertId:r._id}),0);
+
+      await batch([price(3,101,now+1000),price(4,99,now+2000),
+        price(5,101,now+3000)],1,3);
+      const next=await AlertRule.findById(r._id).lean();
+      assert.equal(await worker.processRule(next),true);
+      const evidence=await AlertTrigger.find({alertId:r._id}).lean();
+      assert.equal(evidence.length,1);
+      assert.equal(evidence[0].eventId,position(streamId,1,5));
+      assert.equal(await AlertReplayGap.countDocuments({alertId:r._id}),1);
+    });
 
   test('missing replay segment resets crossing baseline rather than inventing a trigger', async () => {
     await clear();
