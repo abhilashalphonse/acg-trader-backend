@@ -9,6 +9,7 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
   let started = false;
   let timer = null;
   let refreshing = false;
+  const expiryWatermarks = new Map();
 
   function feedFor(symbol) {
     const instrument = marketRuntime.instrumentRegistry.get(symbol);
@@ -27,6 +28,7 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
     }
     const stream = streams.get(streamId);
     if (!stream) return;
+    if (stream.superseded || stream.standby) return;
     if (stream.broken) { void stream.restart('RECOVERY_AFTER_INTERRUPTION').catch(() => {}); return; }
     stream.accept(event);
   }
@@ -72,20 +74,46 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
     if (refreshing) return;
     refreshing = true;
     try {
+      // Keep capture live until the evaluator checkpoints a post-expiry
+      // watermark. Wall-clock expiry must never shut capture down before replay.
       const desired = new Set(await AlertRule.distinct('streamId', {
         status: { $in: ['STARTING','MONITORING'] },
-        $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
       }));
       for (const streamId of desired) {
         if (streams.has(streamId)) continue;
         const stream = new DurableAlertStream({ streamId, logger });
-        await stream.start('CAPTURE_ACTIVATED_NO_PRIOR_COVERAGE');
         streams.set(streamId, stream);
+        await stream.start('CAPTURE_ACTIVATED_NO_PRIOR_COVERAGE');
       }
       for (const [streamId, stream] of streams) {
-        if (desired.has(streamId)) continue;
+        if (desired.has(streamId)) {
+          if (!stream.running && !stream.superseded && !stream.broken) {
+            await stream.start('CAPTURE_STANDBY_LEASE_RETRY');
+          }
+          continue;
+        }
         streams.delete(streamId);
+        expiryWatermarks.delete(streamId);
         await stream.stop();
+      }
+      const overdue = await AlertRule.find({
+        status: { $in: ['STARTING', 'MONITORING'] },
+        expiresAt: { $ne: null, $lte: new Date() },
+      }).select('streamId expiresAt').lean();
+      const latestDue = new Map();
+      for (const rule of overdue) {
+        const cutoff = new Date(rule.expiresAt).getTime();
+        latestDue.set(rule.streamId, Math.max(cutoff, latestDue.get(rule.streamId) || 0));
+      }
+      for (const [streamId, cutoff] of latestDue) {
+        const stream = streams.get(streamId);
+        if (!stream?.running || stream.broken || stream.superseded) continue;
+        const prior = expiryWatermarks.get(streamId);
+        if (prior?.generation === stream.generation && prior.cutoff >= cutoff) continue;
+        const nowMs = Date.now();
+        const queued = stream.accept({ kind: 'expiry_watermark', schemaVersion: 1, streamId,
+          marketTimeMs: nowMs, receivedAtMs: nowMs, quality: 'CAPTURE_WATERMARK' });
+        if (queued) expiryWatermarks.set(streamId, { generation: stream.generation, cutoff });
       }
     } catch (error) {
       logger?.error?.({ err: error }, 'Alert capture rule refresh failed');
@@ -123,6 +151,7 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
     health() {
       return { enabled: started, streams: [...streams].map(([id, stream]) => ({
         id, generation: stream.generation, buffered: stream.buffer.length, broken: stream.broken,
+        standby: stream.standby, superseded: stream.superseded, owned: stream.running,
         acceptedEvents: stream.acceptedEvents, acceptedBatches: stream.acceptedBatches,
       })) };
     },
