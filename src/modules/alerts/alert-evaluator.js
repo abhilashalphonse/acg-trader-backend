@@ -74,6 +74,13 @@ function evaluateAlert(rule, previous, event) {
   if (event.kind === 'candle_corrected') {
     return { state: next, trigger: null };
   }
+  // A durable post-expiry capture watermark is a barrier: all earlier
+  // observations on this ordered stream have been committed before it.
+  if (event.kind === 'expiry_watermark') {
+    const expiryMs = rule.expiresAt == null ? null : new Date(rule.expiresAt).getTime();
+    return { state: expiryMs != null && Number(event.receivedAtMs) >= expiryMs
+      ? { ...next, monitoring: 'EXPIRED' } : next, trigger: null };
+  }
 
   const type = rule.condition?.type;
   if (!QUOTE_KINDS.has(type) && !CANDLE_KINDS.has(type)) throw new Error('Unsupported alert condition');
@@ -136,10 +143,15 @@ function evaluateAlert(rule, previous, event) {
   }
   const wasInterrupted = state.monitoring === 'INTERRUPTED' || state.monitoring === 'SOURCE_UNAVAILABLE';
   if (wasInterrupted && !candle) candidate = false; // fresh baseline after gaps
-  if (rule.frequency === 'repeat' && !state.armed && reset) next.armed = true;
+  if (rule.frequency === 'repeat' && !state.armed && (reset || (type === 'crosses' && candidate))) next.armed = true;
+  // For an either-direction crossing, the reverse crossing is itself the
+  // disarming reset. It must notify immediately, not require a third tick.
   next.baselineTicks = current;
   next.monitoring = 'MONITORING';
-  const expired = rule.expiresAt != null && event.marketTimeMs >= new Date(rule.expiresAt).getTime();
+  // Compare expiry to observation/receipt time, never evaluation wall-clock or
+  // durability-commit time. Delayed replay remains eligible after a restart.
+  const observedAtMs = Number(event.receivedAtMs ?? event.marketTimeMs);
+  const expired = rule.expiresAt != null && observedAtMs >= new Date(rule.expiresAt).getTime();
   if (expired) return { state: { ...next, monitoring: 'EXPIRED' }, trigger: null };
   if (!scheduleAllows(rule.schedule, event.marketTimeMs)) {
     // Still update baseline: reopening a schedule must not fabricate a crossing.
