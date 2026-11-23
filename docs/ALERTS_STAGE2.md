@@ -87,7 +87,9 @@ The dedicated GitHub Actions MongoDB job now runs against a **throwaway local re
 
 **Test type distinctions:** Child process `SIGKILL` is stronger than throwing inside the same Node process, but still uses a disposable CI MongoDB container. Fake provider/database interruption is not equivalent to losing Railway networking or the real market-data feed. Only a separate isolated Railway shadow run can validate operational lag, costs and actual provider behavior.
 
-**Latest CI outcome:** Recheck the PR head's workflow before sign-off; the additional tests are initially recorded as pending, not as passing merely because they exist.
+**CI evidence obtained:** [Alerts CI run 45090396375](https://github.com/abhilashalphonse/acg-trader-backend/actions/runs/45090396375) passed the four real OS-level `SIGKILL` boundaries with one logical trigger/outbox after restart. The earlier 7-case disposable Mongo integration suite in this run also passed including pause/edit races. Subsequent workflows include durable replay-gap records, forced journal failure and actual TTL removal; **only mark their current-head gate passed after the latest full workflow completes successfully**.
+
+**Observed recovery timing:** Three in-transaction SIGKILL checks took about **90 seconds each** in the disposable CI environment; after-commit termination recovered much faster. These are end-to-end test elapsed times, not isolated database abort timings, and are not yet Railway recovery measurements. Record and investigate this latency against the operational alert recovery SLO before release.
 
 ## Shadow-run report (current)
 
