@@ -35,10 +35,12 @@ function candleUpdate(event, session) {
 
 class DurableAlertStream {
   constructor({ streamId, logger = null, maxPending = MAX_PENDING, batchSize = BATCH_SIZE,
-    ownerId = crypto.randomUUID(), leaseTtlMs = CAPTURE_LEASE_MS }) {
+    ownerId = crypto.randomUUID(), leaseTtlMs = CAPTURE_LEASE_MS,
+    coverageModel = StreamCoverage }) {
     this.streamId = streamId;
     this.logger = logger;
     this.ownerId = ownerId;
+    this.coverageModel = coverageModel;
     this.leaseTtlMs = leaseTtlMs;
     this.captureToken = null;
     this.superseded = false;
@@ -74,7 +76,7 @@ class DurableAlertStream {
       : [predecessor];
     let coverage;
     try {
-      coverage = await StreamCoverage.findOneAndUpdate(
+      coverage = await this.coverageModel.findOneAndUpdate(
         { _id: this.streamId, $or: conditions },
         {
           $inc: { generation: 1, captureToken: 1 },
@@ -133,7 +135,7 @@ class DurableAlertStream {
   async renewLease() {
     if (!this.running || this.superseded || this.captureToken == null) return false;
     const now = new Date();
-    const result = await StreamCoverage.updateOne({
+    const result = await this.coverageModel.updateOne({
       _id: this.streamId, generation: this.generation,
       captureOwnerId: this.ownerId, captureToken: this.captureToken,
       captureLeaseUntil: { $gt: now },
@@ -164,7 +166,7 @@ class DurableAlertStream {
     this.broken = true;
     this.buffer = [];
     this.lastError = reason;
-    void StreamCoverage.updateOne({
+    void this.coverageModel.updateOne({
       _id: this.streamId, generation: this.generation,
       captureOwnerId: this.ownerId, captureToken: this.captureToken,
     }, { $set: { status: 'INTERRUPTED', lastReason: reason } }).catch(() => {});
@@ -219,7 +221,7 @@ class DurableAlertStream {
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
-        const ownership = await StreamCoverage.updateOne({
+        const ownership = await this.coverageModel.updateOne({
           _id: this.streamId, generation, status: { $in: ['STARTING', 'MONITORING'] },
           captureOwnerId: this.ownerId, captureToken: this.captureToken,
           captureLeaseUntil: { $gt: new Date() },
@@ -251,7 +253,7 @@ class DurableAlertStream {
         else await this.flush().catch(() => {});
       }
       if (this.flushing) await this.flushing.catch(() => {});
-      await StreamCoverage.updateOne({
+      await this.coverageModel.updateOne({
         _id: this.streamId, generation: this.generation,
         captureOwnerId: this.ownerId, captureToken: this.captureToken,
       }, { $set: { status: 'STOPPED', lastReason: 'CAPTURE_STOPPED',
