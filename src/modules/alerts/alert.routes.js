@@ -132,10 +132,10 @@ function createAlertRouter({ authService, marketRuntime }) {
     if(url.protocol!=='https:'||url.port||url.username||url.password||!['fcm.googleapis.com','updates.push.services.mozilla.com','web.push.apple.com','wns2-par02p.notify.windows.com'].includes(url.hostname)) throw new AppError('Unsupported push service',{statusCode:400});
     const owner=identity(req.traderPrincipal);
     if(await AlertSubscription.countDocuments(owner)>=10&&!await AlertSubscription.exists({...owner,endpoint:body.endpoint}))throw new AppError('Maximum 10 devices',{statusCode:409});
-    await AlertSubscription.findOneAndUpdate({...owner,endpoint:body.endpoint},{$set:body,$setOnInsert:owner},{upsert:true});
+    await AlertSubscription.findOneAndUpdate({endpoint:body.endpoint},{$set:{...body,...owner}},{upsert:true});
     res.status(204).end();
   });
-  router.delete('/push',async(req,res)=>{
+  router.post('/push/remove',async(req,res)=>{
     const {endpoint}=parse(z.object({endpoint:z.string().max(2048)}).strict(),req.body);
     await AlertSubscription.deleteOne({...identity(req.traderPrincipal),endpoint});res.status(204).end();
   });

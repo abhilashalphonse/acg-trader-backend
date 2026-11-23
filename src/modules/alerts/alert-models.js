@@ -108,14 +108,21 @@ const subscriptionSchema = new Schema({
   endpoint: { type: String, required: true },
   keys: { p256dh: String, auth: String },
 }, { timestamps: true });
-subscriptionSchema.index({ tenantId: 1, ownerId: 1, endpoint: 1 }, { unique: true });
+subscriptionSchema.index({ endpoint: 1 }, { unique: true });
 
 // All selectors here are constructed internally from validated scalars. The
 // application enables sanitizeFilter globally; these selectors intentionally
 // contain operators (including the conditional writes that enforce fencing).
 for (const schema of [alertRuleSchema, marketBatchSchema, streamCoverageSchema,
   triggerSchema, replayGapSchema, outboxSchema, leaseSchema, subscriptionSchema]) {
-  schema.pre(/^(find|update|delete|count)/, function () { this.setOptions({ sanitizeFilter: false }); });
+  schema.pre(/^(find|update|delete|count)/, function () { trustInternalOperators(this.getFilter()); });
+}
+function trustInternalOperators(value) {
+  if (!value || typeof value !== 'object' || value instanceof Date) return value;
+  if (Array.isArray(value)) { value.forEach(trustInternalOperators); return value; }
+  for (const child of Object.values(value)) trustInternalOperators(child);
+  if (Object.keys(value).some(key=>key.startsWith('$'))) mongoose.trusted(value);
+  return value;
 }
 const models = {
   AlertSubscription: mongoose.models.AlertSubscription || mongoose.model('AlertSubscription', subscriptionSchema),

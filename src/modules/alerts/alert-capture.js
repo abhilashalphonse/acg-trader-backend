@@ -77,13 +77,14 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
       // Keep capture live until the evaluator checkpoints a post-expiry
       // watermark. Wall-clock expiry must never shut capture down before replay.
       const desired = new Set(await AlertRule.distinct('streamId', {
-        status: { $in: ['STARTING','MONITORING'] },
-      }));
+        status: require('mongoose').trusted({ $in: ['STARTING','MONITORING'] }),
+      }).setOptions({sanitizeFilter:false}));
       for (const streamId of desired) {
         if (streams.has(streamId)) continue;
         const stream = new DurableAlertStream({ streamId, logger });
         streams.set(streamId, stream);
         await stream.start('CAPTURE_ACTIVATED_NO_PRIOR_COVERAGE');
+        marketRuntime.retainPriority?.(streamId.split(':').at(-1));
       }
       for (const [streamId, stream] of streams) {
         if (desired.has(streamId)) {
@@ -93,6 +94,7 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
           continue;
         }
         streams.delete(streamId);
+        marketRuntime.releasePriority?.(streamId.split(':').at(-1));
         expiryWatermarks.delete(streamId);
         await stream.stop();
       }
@@ -144,7 +146,7 @@ function createAlertCapture({ marketRuntime, logger, refreshMs = 5000 }) {
       bus.off('market.candle.closed', onCandle);
       bus.off('market.candle.corrected', onCorrection);
       bus.off('market.status', onStatus);
-      for (const stream of streams.values()) await stream.stop();
+      for (const [streamId,stream] of streams) { await stream.stop(); marketRuntime.releasePriority?.(streamId.split(':').at(-1)); }
       streams.clear();
     },
     refreshActive,

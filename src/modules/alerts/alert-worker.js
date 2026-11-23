@@ -142,7 +142,7 @@ class AlertShadowWorker {
       // Retained events from older subscribers must never become retroactive alerts.
       const effectiveFromMs = new Date(rule.effectiveFrom || rule.createdAt).getTime();
       if (!Number.isFinite(effectiveFromMs)) throw new Error('ALERT_RULE_EFFECTIVE_FROM_REQUIRED');
-      if (Number(event.acceptedAtMs) < effectiveFromMs) {
+      if (Number(event.receivedAtMs ?? event.acceptedAtMs) < effectiveFromMs) {
         processed.push(event); // checkpoint safely, but do not evaluate the old input
         continue;
       }

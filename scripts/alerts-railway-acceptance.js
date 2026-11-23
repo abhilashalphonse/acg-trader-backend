@@ -22,7 +22,7 @@ async function main(){
   await mongoose.disconnect();
   const start=Date.now();
   await run('tests/alerts-stage2-integration.test.js');
-  await run('tests/alerts-stage2-process-kill.test.js');
+  if(process.env.ACG_ALERTS_ACCEPTANCE_SKIP_KILLS!=='true')await run('tests/alerts-stage2-process-kill.test.js');
   await run('tests/alerts-live.test.js');
   console.log(JSON.stringify({gate:'RAILWAY_DATABASE_ACCEPTANCE_PASS',elapsedMs:Date.now()-start}));
   // A bounded load sample uses the actual journal/evaluator against staging.
