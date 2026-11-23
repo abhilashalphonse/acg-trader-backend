@@ -126,7 +126,7 @@ async function evaluate() {
         MarketBatch.findOne({streamId:shadowStream}).sort({generation:-1,lastSequence:-1}).lean(),
         StreamCoverage.findById(shadowStream).lean(),
         AlertRule.find({streamId:shadowStream}).select('checkpoint runtime status').lean(),
-        AlertTrigger.countDocuments({streamId:shadowStream}),
+        AlertTrigger.countDocuments({'evidence.streamId':shadowStream}),
         AlertReplayGap.countDocuments({streamId:shadowStream}),
         AlertOutbox.countDocuments({channel:'shadow'}),
       ]);
