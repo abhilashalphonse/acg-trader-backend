@@ -1,7 +1,8 @@
 'use strict';
 const crypto = require('crypto');
 const mongoose = require('mongoose');
-const { AlertRule, MarketBatch, AlertTrigger, AlertOutbox, AlertLease } = require('./alert-models');
+const { AlertRule, MarketBatch, AlertTrigger, AlertOutbox, AlertLease,
+  AlertReplayGap, StreamCoverage } = require('./alert-models');
 const { evaluateAlert, emptyState } = require('./alert-evaluator');
 const { comparePositions, gapPayload, position } = require('./alert-event-contract');
 
@@ -70,6 +71,7 @@ class AlertShadowWorker {
     let runtime = { ...emptyState(), ...(rule.runtime || {}) };
     const processed = [];
     const triggers = [];
+    const gaps = [];
     const first = batch.events[0];
     const missingWithinGeneration = cursor
       ? cursor.generation === batch.generation && batch.firstSequence > cursor.sequence + 1
@@ -82,7 +84,11 @@ class AlertShadowWorker {
         eventId: position(rule.streamId, batch.generation, Math.max(0, batch.firstSequence - 1)),
       };
       runtime = evaluateAlert(rule, runtime, gap).state;
-      this.gapResets += 1;
+      const evidence = { eventId: gap.eventId,
+        reason: 'REPLAY_RETENTION_OR_SEQUENCE_GAP', fromCursor: cursor,
+        resumedAt: { streamId: rule.streamId, generation: batch.generation, sequence: batch.firstSequence } };
+      runtime.lastCoverageGap = evidence;
+      gaps.push(evidence);
     }
     for (const event of batch.events) {
       const eventPos = { streamId: rule.streamId, generation: batch.generation,
@@ -97,6 +103,12 @@ class AlertShadowWorker {
       }
       const result = evaluateAlert(rule, runtime, event);
       runtime = result.state;
+      if (event.kind === 'coverage_gap') {
+        const evidence = { eventId: event.eventId, reason: String(event.reason || 'CAPTURE_INTERRUPTED'),
+          fromCursor: cursor, resumedAt: eventPos };
+        runtime.lastCoverageGap = evidence;
+        gaps.push(evidence);
+      }
       processed.push(event);
       if (result.trigger) triggers.push(result.trigger);
     }
@@ -126,6 +138,11 @@ class AlertShadowWorker {
           // before expiry remain eligible even when replay runs afterwards.
         }, { $set: { runtime, checkpoint: nextCursor, status: nextStatus } }, { session });
         if (updated.matchedCount !== 1) throw new Error('ALERT_RULE_CHANGED_DURING_EVALUATION');
+        for (const evidence of gaps) {
+          await AlertReplayGap.create([{ alertId: rule._id, tenantId: rule.tenantId,
+            ownerId: rule.ownerId, streamId: rule.streamId, ruleVersion: rule.version,
+            ...evidence }], { session });
+        }
         for (const evidence of triggers) {
           const [trigger] = await AlertTrigger.create([{
             alertId: rule._id, tenantId: rule.tenantId, ownerId: rule.ownerId,
@@ -138,6 +155,7 @@ class AlertShadowWorker {
       }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
       this.processedBatches += 1;
       this.committedTriggers += triggers.length;
+      this.gapResets += gaps.length;
       return true;
     } finally {
       await session.endSession();
