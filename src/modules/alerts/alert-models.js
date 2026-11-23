@@ -7,6 +7,7 @@ const alertRuleSchema = new Schema({
   note: { type: String, maxlength: 300, default: '' },
   deleted: { type: Boolean, default: false },
   pushEnabled: { type: Boolean, default: false },
+  soundEnabled: { type: Boolean, default: true },
   clientRequestId: { type: String },
   tenantId: { type: String, required: true, index: true },
   ownerId: { type: String, required: true, index: true },
