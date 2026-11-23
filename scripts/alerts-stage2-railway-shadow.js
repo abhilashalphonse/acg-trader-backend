@@ -12,6 +12,8 @@ const projectId = '98a016a8-668d-401f-896f-00f407c5c15d';
 const shadowStream = 'shadow-synthetic:XAUUSD';
 const uri = process.env.ACG_ALERTS_STAGE2_DB_URI || '';
 const role = process.env.ACG_ALERTS_SHADOW_ROLE || '';
+const maxSeconds = Number(process.env.ACG_ALERTS_TEST_MAX_SECONDS || 100);
+if (!Number.isFinite(maxSeconds) || maxSeconds < 30 || maxSeconds > 300) throw new Error('Invalid bounded test duration');
 const requireIsolation = () => {
   if (process.env.RAILWAY_PROJECT_ID !== projectId ||
       process.env.ACG_ALERTS_STAGE2_PRIVATE_TEST !== 'true' ||
@@ -62,12 +64,21 @@ async function capture() {
   await seed();
   const stream=new DurableAlertStream({streamId:shadowStream,
     ownerId:process.env.RAILWAY_REPLICA_ID || 'isolated-capture'});
-  failSafe(await stream.start('SYNTHETIC_SHADOW_CAPTURE_START')===true,'Capture lease unavailable');
+  let owned = false;
+  for (let attempt=0; attempt<8 && !owned && running; attempt++){
+    owned = await stream.start('SYNTHETIC_SHADOW_CAPTURE_START');
+    if(!owned) {
+      log('capture_standby', {attempt:attempt+1});
+      await sleep(3500);
+    }
+  }
+  failSafe(owned,'Capture lease did not become available within bounded retry window');
   await stream.flush();
   let tick=0, injectedFeed=false, injectedDb=false;
   const start=Date.now();
   while(running){
     const elapsed=Date.now()-start;
+    if (elapsed >= maxSeconds*1000) { running=false; break; }
     if (!injectedFeed && elapsed>20000) {
       injectedFeed=true;
       log('feed_disconnect_injected');
@@ -119,6 +130,7 @@ async function evaluate() {
   const start=Date.now();
   let count=0;
   while(running){
+    if(Date.now()-start >= maxSeconds*1000) { running=false; break; }
     const state=await worker.pumpOnce({maxRules:50});
     count++;
     if(count%20===0){
