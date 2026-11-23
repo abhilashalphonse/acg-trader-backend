@@ -48,6 +48,17 @@ else{
     assert.equal((await call('/'+id,'DELETE',{version:3})).status,204);
     assert.equal((await call()).data.alerts.length,0);
   });
+  test('per-alert sound survives create and edit without suppressing history',async()=>{
+    const input={symbol:'BTCUSD',condition:{type:'crosses_above',level:'100'},soundEnabled:false};
+    const created=await call('','POST',{...input,clientRequestId:crypto.randomUUID()});
+    assert.equal(created.status,201);assert.equal(created.data.alert.soundEnabled,false);
+    const id=created.data.alert.id;
+    assert.equal((await models.AlertRule.findById(id).lean()).soundEnabled,false);
+    const changed=await call('/'+id,'PUT',{...input,soundEnabled:true,version:1});
+    assert.equal(changed.status,200);assert.equal(changed.data.alert.soundEnabled,true);
+    assert.equal((await models.AlertRule.findById(id).lean()).soundEnabled,true);
+    assert.equal((await call('/'+id,'DELETE',{version:2})).status,204);
+  });
   test('durable trigger reaches only owner history with terminal delivery and read acknowledgement',async()=>{
     const created=await call('','POST',{symbol:'BTCUSD',condition:{type:'crosses_above',level:'100'},clientRequestId:crypto.randomUUID()});
     const id=created.data.alert.id,streamId='twelve-data:BTCUSD';
@@ -70,11 +81,34 @@ else{
       assert.equal((await call('/push','POST',{endpoint:'https://127.0.0.1/secret',keys:{p256dh:'x'.repeat(80),auth:'x'.repeat(24)}})).status,400);
       const event=await models.AlertTrigger.findOne({ownerId:'owner:alice'}).lean();
       await models.AlertSubscription.create({tenantId:'tenant-a',ownerId:'owner:alice',endpoint:'https://fcm.googleapis.com/fcm/send/test-only',keys:{p256dh:'test',auth:'test'}});
+      assert.equal((await call('/push/status','POST',{endpoint:'https://fcm.googleapis.com/fcm/send/test-only'})).data.subscribed,true);
+      assert.equal((await call('/push/status','POST',{endpoint:'https://fcm.googleapis.com/fcm/send/test-only'},'bob')).data.subscribed,false);
       const job=await models.AlertOutbox.create({triggerId:event._id,channel:'push',status:'PENDING'});
       webpush.sendNotification=async()=>{throw Object.assign(new Error('test'),{statusCode:503});};
       await dispatchPush();let saved=await models.AlertOutbox.findById(job._id).lean();assert.equal(saved.status,'PENDING');assert.equal(saved.attempt,1);
       await models.AlertOutbox.updateOne({_id:job._id},{$set:{nextAttemptAt:new Date(0)}});
       webpush.sendNotification=async()=>({statusCode:201});await dispatchPush();saved=await models.AlertOutbox.findById(job._id).lean();assert.equal(saved.status,'ACCEPTED');assert.equal(saved.attempt,2);
+      // Accepted devices are not resent when another device needs a retry.
+      await models.AlertSubscription.create({tenantId:'tenant-a',ownerId:'owner:alice',endpoint:'https://fcm.googleapis.com/fcm/send/second-device',keys:{p256dh:'test',auth:'test'}});
+      await models.AlertOutbox.updateOne({_id:job._id},{$set:{status:'PENDING',attempt:0,nextAttemptAt:new Date(0),acceptedDevices:[]}});
+      const sends={};let failSecond=true;
+      webpush.sendNotification=async subscription=>{
+        sends[subscription.endpoint]=(sends[subscription.endpoint]||0)+1;
+        if(subscription.endpoint.endsWith('second-device')&&failSecond)throw Object.assign(new Error('transient'),{statusCode:503});
+        return {statusCode:201};
+      };
+      await dispatchPush();saved=await models.AlertOutbox.findById(job._id).lean();
+      assert.equal(saved.status,'PENDING');assert.equal(saved.acceptedDevices.length,1);
+      failSecond=false;await models.AlertOutbox.updateOne({_id:job._id},{$set:{nextAttemptAt:new Date(0)}});
+      await dispatchPush();saved=await models.AlertOutbox.findById(job._id).lean();
+      assert.equal(saved.status,'ACCEPTED');assert.equal(saved.acceptedDevices.length,2);
+      assert.equal(sends['https://fcm.googleapis.com/fcm/send/test-only'],1);
+      assert.equal(sends['https://fcm.googleapis.com/fcm/send/second-device'],2);
+      // A crashed fifth attempt must reach a terminal status after its claim expires.
+      await models.AlertOutbox.updateOne({_id:job._id},{$set:{status:'CLAIMED',attempt:5,claimUntil:new Date(0)}});
+      await dispatchPush();saved=await models.AlertOutbox.findById(job._id).lean();
+      assert.equal(saved.status,'FAILED');assert.equal(saved.lastError,'DELIVERY_ATTEMPTS_EXHAUSTED');
+
     }finally{webpush.sendNotification=original;if(priorPublic===undefined)delete process.env.ACG_ALERTS_VAPID_PUBLIC_KEY;else process.env.ACG_ALERTS_VAPID_PUBLIC_KEY=priorPublic;if(priorPrivate===undefined)delete process.env.ACG_ALERTS_VAPID_PRIVATE_KEY;else process.env.ACG_ALERTS_VAPID_PRIVATE_KEY=priorPrivate;}
   });
 }

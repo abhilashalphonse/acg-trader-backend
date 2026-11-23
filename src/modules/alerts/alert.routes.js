@@ -20,7 +20,7 @@ const definitionSchema = z.object({
   priceSource: z.enum(['bid','ask','last']).default('last'),
   timeframe: z.enum(['1m','5m','15m','30m','1h','4h','1d']).nullable().default(null),
   frequency: z.enum(['once','repeat']).default('once'), cooldownMs: z.number().int().min(0).max(86400000).default(60000),
-  expiresAt: z.iso.datetime().nullable().default(null), pushEnabled: z.boolean().default(false),
+  expiresAt: z.iso.datetime().nullable().default(null), pushEnabled: z.boolean().default(false), soundEnabled: z.boolean().default(true),
 }).strict();
 const createSchema = definitionSchema.extend({ clientRequestId: z.uuid() });
 const editSchema = definitionSchema.extend({ version: z.number().int().positive() });
@@ -61,7 +61,7 @@ function publicRule(r, coverage, evaluatorLease) {
     r.runtime?.lastObservedMs && Date.now()-Number(r.runtime.lastObservedMs)>30000)) monitoring='RECOVERING';
   return { id: String(r._id), version: r.version, name:r.name, note:r.note, symbol:r.symbol,
     condition:r.condition, priceSource:r.priceSource, timeframe:r.timeframe, frequency:r.frequency,
-    cooldownMs:r.cooldownMs, expiresAt:r.expiresAt, pushEnabled:r.pushEnabled,
+    cooldownMs:r.cooldownMs, expiresAt:r.expiresAt, pushEnabled:r.pushEnabled, soundEnabled:r.soundEnabled!==false,
     status:r.status, monitoring, createdAt:r.createdAt };
 }
 function createAlertRouter({ authService, marketRuntime }) {
@@ -138,6 +138,11 @@ function createAlertRouter({ authService, marketRuntime }) {
     if(await AlertSubscription.countDocuments(owner)>=10&&!await AlertSubscription.exists({...owner,endpoint:body.endpoint}))throw new AppError('Maximum 10 devices',{statusCode:409});
     await AlertSubscription.findOneAndUpdate({endpoint:body.endpoint},{$set:{...body,...owner}},{upsert:true});
     res.status(204).end();
+  });
+  router.post('/push/status',async(req,res)=>{
+    const {endpoint}=parse(z.object({endpoint:z.string().max(2048)}).strict(),req.body);
+    const subscribed=Boolean(await AlertSubscription.exists({...identity(req.traderPrincipal),endpoint}));
+    res.json({subscribed});
   });
   router.post('/push/remove',async(req,res)=>{
     const {endpoint}=parse(z.object({endpoint:z.string().max(2048)}).strict(),req.body);

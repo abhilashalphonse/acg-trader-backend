@@ -6,6 +6,8 @@ on:
       - 'src/modules/alerts/**'
       - 'src/server.js'
       - 'tests/alerts-stage2*.test.js'
+      - 'tests/alerts-live.test.js'
+      - 'tests/alerts-notifications.test.js'
       - 'scripts/alerts-stage2-benchmark.js'
       - 'package.json'
       - '.github/workflows/alerts-stage2.yml'
@@ -77,6 +79,8 @@ jobs:
           fi
       - name: Test atomic rollback, expiry replay, fenced takeover and journal generation
         run: node --test tests/alerts-stage2-integration.test.js
+      - name: Test authenticated management and notification delivery
+        run: node --test tests/alerts-live.test.js tests/alerts-notifications.test.js
       - name: Test actual SIGKILL recovery at transaction boundaries
         run: timeout --signal=TERM --kill-after=5s 420s node --test tests/alerts-stage2-process-kill.test.js
       - name: Print replica-set diagnostics on failure

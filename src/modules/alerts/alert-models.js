@@ -7,6 +7,7 @@ const alertRuleSchema = new Schema({
   note: { type: String, maxlength: 300, default: '' },
   deleted: { type: Boolean, default: false },
   pushEnabled: { type: Boolean, default: false },
+  soundEnabled: { type: Boolean, default: true },
   clientRequestId: { type: String },
   tenantId: { type: String, required: true, index: true },
   ownerId: { type: String, required: true, index: true },
@@ -66,6 +67,7 @@ const triggerSchema = new Schema({
   evidence: { type: Schema.Types.Mixed, required: true },
   readAt: { type: Date, default: null },
 }, { timestamps: true, versionKey: false });
+triggerSchema.index({ tenantId: 1, ownerId: 1, _id: -1 });
 triggerSchema.index({ alertId: 1, ruleVersion: 1, eventId: 1 }, { unique: true });
 
 // Immutable, rule-scoped evidence of unrecoverable input intervals.
@@ -80,6 +82,7 @@ const replayGapSchema = new Schema({
   fromCursor: { type: Schema.Types.Mixed, default: null },
   resumedAt: { type: Schema.Types.Mixed, required: true },
 }, { timestamps: true, versionKey: false });
+replayGapSchema.index({ tenantId: 1, ownerId: 1, _id: -1 });
 replayGapSchema.index({ alertId: 1, ruleVersion: 1, eventId: 1 }, { unique: true });
 
 const outboxSchema = new Schema({
@@ -89,10 +92,13 @@ const outboxSchema = new Schema({
   attempt: { type: Number, default: 0 },
   nextAttemptAt: { type: Date, default: null },
   destinationRef: { type: String, default: null },
+  acceptedDevices: { type: [String], default: [] },
   claimUntil: { type: Date, default: null },
   claimId: { type: String, default: null },
   lastError: { type: String, default: null },
 }, { timestamps: true, versionKey: false });
+outboxSchema.index({ channel: 1, status: 1, nextAttemptAt: 1, attempt: 1 });
+outboxSchema.index({ channel: 1, status: 1, claimUntil: 1 });
 outboxSchema.index({ triggerId: 1, channel: 1 }, { unique: true });
 
 const leaseSchema = new Schema({
@@ -108,6 +114,7 @@ const subscriptionSchema = new Schema({
   endpoint: { type: String, required: true },
   keys: { p256dh: String, auth: String },
 }, { timestamps: true });
+subscriptionSchema.index({ tenantId: 1, ownerId: 1 });
 subscriptionSchema.index({ endpoint: 1 }, { unique: true });
 
 // All selectors here are constructed internally from validated scalars. The
