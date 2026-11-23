@@ -1,10 +1,13 @@
 'use strict';
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const { Candle } = require('../market-data/candle.model');
 const { candleExpiresAt } = require('../market-data/candle-retention');
 const { MarketBatch, StreamCoverage } = require('./alert-models');
 const { position, gapPayload } = require('./alert-event-contract');
 
+const CAPTURE_LEASE_MS = 15000;
+const CAPTURE_RENEW_MS = 4000;
 const MAX_PENDING = 4096;
 const BATCH_SIZE = 128;
 const FLUSH_MS = 500;
@@ -31,9 +34,16 @@ function candleUpdate(event, session) {
 }
 
 class DurableAlertStream {
-  constructor({ streamId, logger = null, maxPending = MAX_PENDING, batchSize = BATCH_SIZE }) {
+  constructor({ streamId, logger = null, maxPending = MAX_PENDING, batchSize = BATCH_SIZE,
+    ownerId = crypto.randomUUID(), leaseTtlMs = CAPTURE_LEASE_MS }) {
     this.streamId = streamId;
     this.logger = logger;
+    this.ownerId = ownerId;
+    this.leaseTtlMs = leaseTtlMs;
+    this.captureToken = null;
+    this.superseded = false;
+    this.standby = false;
+    this.leaseTimer = null;
     this.maxPending = maxPending;
     this.batchSize = batchSize;
     this.buffer = [];
@@ -50,22 +60,89 @@ class DurableAlertStream {
   }
 
   async start(reason = 'CAPTURE_STARTED') {
-    if (this.running) return;
-    const coverage = await StreamCoverage.findOneAndUpdate(
-      { _id: this.streamId },
-      {
-        $inc: { generation: 1 },
-        $set: { status: 'STARTING', lastReason: reason, lastSequence: 0 },
-      },
-      { new: true, upsert: true },
-    ).lean();
+    if (this.running || this.superseded) return this.running;
+    const now = new Date();
+    const leaseUntil = new Date(now.getTime() + this.leaseTtlMs);
+    const previousGeneration = this.generation;
+    const previousToken = this.captureToken;
+    const predecessor = previousToken == null
+      ? { captureLeaseUntil: { $lte: now } }
+      : { captureOwnerId: this.ownerId, captureToken: previousToken,
+        generation: previousGeneration, captureLeaseUntil: { $gt: now } };
+    const conditions = previousToken == null
+      ? [predecessor, { captureLeaseUntil: null }, { captureLeaseUntil: { $exists: false } }]
+      : [predecessor];
+    let coverage;
+    try {
+      coverage = await StreamCoverage.findOneAndUpdate(
+        { _id: this.streamId, $or: conditions },
+        {
+          $inc: { generation: 1, captureToken: 1 },
+          $set: {
+            captureOwnerId: this.ownerId, captureLeaseUntil: leaseUntil,
+            status: 'STARTING', lastReason: reason, lastSequence: 0,
+          },
+        },
+        { new: true, upsert: true },
+      ).lean();
+    } catch (error) {
+      if (error.code === 11000) {
+        // Another process owns the unexpired lease. A never-owner can retry;
+        // a previously fenced owner must remain shut down permanently.
+        if (previousToken != null) this.standDown('CAPTURE_LEASE_SUPERSEDED');
+        else this.standby = true;
+        return false;
+      }
+      throw error;
+    }
+    if (!coverage) return false;
     this.generation = coverage.generation;
+    this.captureToken = coverage.captureToken;
     this.sequence = 0;
     this.running = true;
     this.broken = false;
+    this.standby = false;
     this.buffer = [gapPayload(this.streamId, reason)];
+    if (this.timer) clearInterval(this.timer);
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
     this.timer = setInterval(() => { void this.flush().catch(() => {}); }, FLUSH_MS);
     this.timer.unref?.();
+    this.leaseTimer = setInterval(() => {
+      void this.renewLease().catch(error => {
+        this.logger?.error?.({ err: error, streamId: this.streamId }, 'Capture lease renewal failed');
+        this.interrupt('CAPTURE_LEASE_RENEWAL_FAILED');
+      });
+    }, CAPTURE_RENEW_MS);
+    this.leaseTimer.unref?.();
+    return true;
+  }
+
+  standDown(reason = 'CAPTURE_LEASE_SUPERSEDED') {
+    this.superseded = true;
+    this.standby = false;
+    this.running = false;
+    this.broken = true;
+    this.buffer = [];
+    this.lastError = reason;
+    if (this.timer) clearInterval(this.timer);
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    this.timer = null;
+    this.leaseTimer = null;
+  }
+
+  async renewLease() {
+    if (!this.running || this.superseded || this.captureToken == null) return false;
+    const now = new Date();
+    const result = await StreamCoverage.updateOne({
+      _id: this.streamId, generation: this.generation,
+      captureOwnerId: this.ownerId, captureToken: this.captureToken,
+      captureLeaseUntil: { $gt: now },
+    }, { $set: { captureLeaseUntil: new Date(now.getTime() + this.leaseTtlMs) } });
+    if (result.matchedCount !== 1) {
+      this.standDown('CAPTURE_LEASE_SUPERSEDED');
+      return false;
+    }
+    return true;
   }
 
   accept(event) {
@@ -83,24 +160,26 @@ class DurableAlertStream {
   }
 
   interrupt(reason) {
-    if (this.broken) return;
+    if (this.broken || this.superseded) return;
     this.broken = true;
     this.buffer = [];
     this.lastError = reason;
-    void StreamCoverage.updateOne(
-      { _id: this.streamId, generation: this.generation },
-      { $set: { status: 'INTERRUPTED', lastReason: reason } },
-    ).catch(() => {});
+    void StreamCoverage.updateOne({
+      _id: this.streamId, generation: this.generation,
+      captureOwnerId: this.ownerId, captureToken: this.captureToken,
+    }, { $set: { status: 'INTERRUPTED', lastReason: reason } }).catch(() => {});
   }
 
   async restart(reason = 'RECOVERED_AFTER_GAP') {
     if (this.restartPromise) return this.restartPromise;
     this.restartPromise = (async () => {
+      if (this.superseded) return false;
       if (this.flushing) await this.flushing.catch(() => {});
       if (this.timer) clearInterval(this.timer);
+      if (this.leaseTimer) clearInterval(this.leaseTimer);
       this.running = false;
       this.broken = false;
-      await this.start(reason);
+      return this.start(reason);
     })().finally(() => { this.restartPromise = null; });
     return this.restartPromise;
   }
@@ -142,6 +221,8 @@ class DurableAlertStream {
       await session.withTransaction(async () => {
         const ownership = await StreamCoverage.updateOne({
           _id: this.streamId, generation, status: { $in: ['STARTING', 'MONITORING'] },
+          captureOwnerId: this.ownerId, captureToken: this.captureToken,
+          captureLeaseUntil: { $gt: new Date() },
         }, { $set: {
           lastSequence: batch.lastSequence, lastEventAt: new Date(acceptedAtMs),
           ...(hasBaseline ? { status: 'MONITORING', lastReason: null } : {}),
@@ -160,18 +241,26 @@ class DurableAlertStream {
 
   async stop() {
     if (this.timer) clearInterval(this.timer);
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
     this.timer = null;
-    while (this.buffer.length && !this.broken) {
+    this.leaseTimer = null;
+    // Only this process's own capture can flush and release its lease.
+    if (this.running && !this.superseded) {
+      while (this.buffer.length && !this.broken) {
+        if (this.flushing) await this.flushing.catch(() => {});
+        else await this.flush().catch(() => {});
+      }
       if (this.flushing) await this.flushing.catch(() => {});
-      else await this.flush().catch(() => {});
+      await StreamCoverage.updateOne({
+        _id: this.streamId, generation: this.generation,
+        captureOwnerId: this.ownerId, captureToken: this.captureToken,
+      }, { $set: { status: 'STOPPED', lastReason: 'CAPTURE_STOPPED',
+        captureLeaseUntil: new Date(0) } });
     }
-    if (this.flushing) await this.flushing.catch(() => {});
     this.running = false;
-    await StreamCoverage.updateOne(
-      { _id: this.streamId, generation: this.generation },
-      { $set: { status: 'STOPPED', lastReason: 'NO_MONITORED_RULES' } },
-    );
   }
+
 }
 
-module.exports = { DurableAlertStream, MAX_PENDING, BATCH_SIZE, FLUSH_MS };
+module.exports = { DurableAlertStream, MAX_PENDING, BATCH_SIZE, FLUSH_MS,
+  CAPTURE_LEASE_MS, CAPTURE_RENEW_MS };
