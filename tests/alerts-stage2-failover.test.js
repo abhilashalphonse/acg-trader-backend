@@ -96,14 +96,23 @@ test('capture exclusive lease prevents ping-pong takeover; fenced owner stands d
     assert.equal(record.generation, 1);
     assert.equal(await first.renewLease(), true);
 
+    // A scheduler/database delay can expire a lease without any takeover.
+    // Recover that same token with explicit new-generation gap evidence.
+    record.captureLeaseUntil = new Date(0);
+    assert.equal(await first.renewLease(), true);
+    assert.equal(first.superseded, false);
+    assert.equal(first.generation, 2);
+    assert.equal(first.buffer[0].kind, 'coverage_gap');
+    assert.equal(first.buffer[0].reason, 'RECOVERY_AFTER_CAPTURE_LEASE_EXPIRY');
+
     // Model an expired first lease and an overlapping new instance.
     record.captureLeaseUntil = new Date(0);
     assert.equal(await second.start(), true);
-    assert.equal(record.generation, 2);
+    assert.equal(record.generation, 3);
     assert.equal(await first.renewLease(), false);
     assert.equal(first.superseded, true);
     assert.equal(await first.restart(), false);
-    assert.equal(record.generation, 2);
+    assert.equal(record.generation, 3);
     assert.equal(record.captureOwnerId, 'second-owner');
   } finally {
     first.buffer = [];
