@@ -70,7 +70,8 @@ class DurableAlertStream {
     const predecessor = previousToken == null
       ? { captureLeaseUntil: { $lte: now } }
       : { captureOwnerId: this.ownerId, captureToken: previousToken,
-        generation: previousGeneration, captureLeaseUntil: { $gt: now } };
+        generation: previousGeneration }; // current owner may recover an expired lease
+
     const conditions = previousToken == null
       ? [predecessor, { captureLeaseUntil: null }, { captureLeaseUntil: { $exists: false } }]
       : [predecessor];
