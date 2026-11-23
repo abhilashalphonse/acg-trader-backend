@@ -134,3 +134,37 @@ test('normalization retains absent sources and explicit quality', () => {
   assert.equal(candle.kind,'candle_closed');
   assert.equal(candle.quality,'ACG_FINALISED');
 });
+
+test('two-way repeat crosses on every alternating crossing without cooldown', () => {
+  const rule = { ...basic, frequency: 'repeat', cooldownMs: 0,
+    tickSize: '1', condition: { type: 'crosses', level: '100' } };
+  const p = (n, price) => ({ ...quote(n, String(price)), prices: { bid: String(price) },
+    receivedAtMs: n * 1000 });
+  const result = run(rule, [p(1,99),p(2,101),p(3,99),p(4,101)]);
+  assert.deepEqual(result.fired.map(item => item.eventId),
+    [p(2,101).eventId,p(3,99).eventId,p(4,101).eventId]);
+});
+
+test('pre-expiry observed price survives a later durability commit and replay', () => {
+  const rule = { ...basic, expiresAt: new Date(3500).toISOString() };
+  const older = { ...quote(2,'3250.10'), receivedAtMs: 2000, acceptedAtMs: 9000 };
+  const result = run(rule, [
+    { ...quote(1,'3249.90'), receivedAtMs: 1000 }, older,
+  ]);
+  assert.equal(result.fired.length, 1);
+  assert.equal(result.fired[0].eventId, older.eventId);
+});
+
+test('durably ordered expiry watermark ends monitoring only after prior trigger', () => {
+  const rule = { ...basic, frequency: 'repeat', expiresAt: new Date(3500).toISOString() };
+  const result = run(rule, [
+    { ...quote(1,'3249.90'), receivedAtMs: 1000 },
+    { ...quote(2,'3250.10'), receivedAtMs: 2000 },
+    { ...quote(3,'3249.90'), receivedAtMs: 3000 },
+    { ...gapPayload(streamId, 'NOT_A_GAP', 4000), kind: 'expiry_watermark',
+      receivedAtMs: 4000, eventId: position(streamId,1,4) },
+    { ...quote(5,'3250.10'), receivedAtMs: 5000 },
+  ]);
+  assert.equal(result.fired.length, 1);
+  assert.equal(result.state.monitoring, 'EXPIRED');
+});
