@@ -153,8 +153,21 @@ class DurableAlertStream {
       captureLeaseUntil: { $gt: now },
     }, { $set: { captureLeaseUntil: new Date(now.getTime() + this.leaseTtlMs) } });
     if (result.matchedCount !== 1) {
-      this.standDown('CAPTURE_LEASE_SUPERSEDED');
-      return false;
+      // A late renewal is not proof of takeover. Reclaim only the exact
+      // ownership token, and open a fresh generation rather than bridging
+      // the interval during which this lease was expired.
+      const owned = await this.coverageModel.updateOne({
+        _id: this.streamId, generation: this.generation,
+        captureOwnerId: this.ownerId, captureToken: this.captureToken,
+      }, { $set: { status: 'INTERRUPTED', lastReason: 'CAPTURE_LEASE_EXPIRED' } });
+      if (owned.matchedCount !== 1) {
+        this.standDown('CAPTURE_LEASE_SUPERSEDED');
+        return false;
+      }
+      this.broken = true;
+      this.buffer = [];
+      this.lastError = 'CAPTURE_LEASE_EXPIRED';
+      return this.restart('RECOVERY_AFTER_CAPTURE_LEASE_EXPIRY');
     }
     return true;
   }
