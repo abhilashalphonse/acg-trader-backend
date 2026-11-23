@@ -67,38 +67,41 @@ class DurableAlertStream {
     const leaseUntil = new Date(now.getTime() + this.leaseTtlMs);
     const previousGeneration = this.generation;
     const previousToken = this.captureToken;
-    const predecessor = previousToken == null
-      ? { captureLeaseUntil: { $lte: now } }
-      : { captureOwnerId: this.ownerId, captureToken: previousToken,
-        generation: previousGeneration }; // current owner may recover an expired lease
-
-    const conditions = previousToken == null
-      ? [predecessor, { captureLeaseUntil: null }, { captureLeaseUntil: { $exists: false } }]
-      : [predecessor];
-    let coverage;
-    try {
-      coverage = await this.coverageModel.findOneAndUpdate(
-        { _id: this.streamId, $or: conditions },
-        {
-          $inc: { generation: 1, captureToken: 1 },
-          $set: {
-            captureOwnerId: this.ownerId, captureLeaseUntil: leaseUntil,
-            status: 'STARTING', lastReason: reason, lastSequence: 0,
-          },
-        },
-        { new: true, upsert: true },
-      ).lean();
-    } catch (error) {
-      if (error.code === 11000) {
-        // Another process owns the unexpired lease. A never-owner can retry;
-        // a previously fenced owner must remain shut down permanently.
-        if (previousToken != null) this.standDown('CAPTURE_LEASE_SUPERSEDED');
-        else this.standby = true;
-        return false;
-      }
-      throw error;
+    // Initialize the coverage record independently. Mongo/Mongoose must not
+    // turn an $exists predicate from an upsert filter into a Date field value.
+    // A unique _id guarantees two new capture instances cannot create two rows.
+    if (previousToken == null) {
+      await this.coverageModel.updateOne(
+        { _id: this.streamId },
+        { $setOnInsert: {
+          generation: 0, captureToken: 0, captureOwnerId: null,
+          captureLeaseUntil: null, status: 'STOPPED', lastSequence: 0,
+        } },
+        { upsert: true },
+      );
     }
-    if (!coverage) return false;
+    const conditions = previousToken == null
+      ? [ { captureLeaseUntil: { $lte: now } }, { captureLeaseUntil: null } ]
+      : [ { captureOwnerId: this.ownerId, captureToken: previousToken,
+          generation: previousGeneration } ];
+    const coverage = await this.coverageModel.findOneAndUpdate(
+      { _id: this.streamId, $or: conditions },
+      {
+        $inc: { generation: 1, captureToken: 1 },
+        $set: {
+          captureOwnerId: this.ownerId, captureLeaseUntil: leaseUntil,
+          status: 'STARTING', lastReason: reason, lastSequence: 0,
+        },
+      },
+      { new: true, upsert: false },
+    ).lean();
+    if (!coverage) {
+      // A competing capture owns the still-valid lease. Do not rotate its
+      // generation; a previously fenced owner must never reclaim it.
+      if (previousToken != null) this.standDown('CAPTURE_LEASE_SUPERSEDED');
+      else this.standby = true;
+      return false;
+    }
     this.generation = coverage.generation;
     this.captureToken = coverage.captureToken;
     this.sequence = 0;
