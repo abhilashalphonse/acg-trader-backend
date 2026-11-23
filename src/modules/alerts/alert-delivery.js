@@ -18,9 +18,10 @@ async function dispatchPush() {
     const rule=await AlertRule.findOne({_id:trigger.alertId,tenantId:trigger.tenantId,ownerId:trigger.ownerId}).lean();
     const subscriptions=await AlertSubscription.find({tenantId:trigger.tenantId,ownerId:trigger.ownerId}).limit(10).lean();
     if(!subscriptions.length)throw new Error('NO_SUBSCRIBED_DEVICE');
-    const payload=JSON.stringify({eventId:String(trigger._id),title:rule?.name||`${rule?.symbol||'Market'} alert`,
-      body:`${rule?.symbol||trigger.evidence.streamId} � ${trigger.evidence.condition.type.replaceAll('_',' ')} � ${rule?.note||'Open the chart to review.'}`,
-      symbol:rule?.symbol,timeframe:trigger.evidence.timeframe});
+    const evidence=trigger.evidence;
+    const payload=JSON.stringify({eventId:String(trigger._id),title:evidence.name||`${evidence.symbol||rule?.symbol||'Market'} alert`,
+      body:`${evidence.symbol||rule?.symbol||evidence.streamId} � ${evidence.condition.type.replaceAll('_',' ')} � ${evidence.observedPrice||''} � ${evidence.note||'Open the chart to review.'}`,
+      symbol:evidence.symbol||rule?.symbol,timeframe:evidence.timeframe});
     for(const sub of subscriptions) {
       try { await webpush.sendNotification({endpoint:sub.endpoint,keys:sub.keys},payload,{
         TTL:300,timeout:8000,vapidDetails:{subject:process.env.ACG_ALERTS_VAPID_SUBJECT||'mailto:support@acgtrader.com',

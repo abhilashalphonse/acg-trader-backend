@@ -173,6 +173,7 @@ function evaluateAlert(rule, previous, event) {
       eventId: event.eventId, ruleVersion: rule.version, alertId: String(rule._id || rule.id),
       streamId: event.streamId, marketTimeMs: event.marketTimeMs, acceptedAtMs: event.acceptedAtMs,
       observedTicks: current, previousTicks: prev, condition: { ...rule.condition },
+      observedPrice: String(raw), symbol: rule.symbol, name: rule.name || '', note: rule.note || '', tickSize: rule.tickSize,
       priceSource: rule.priceSource, timeframe: candle ? rule.timeframe : null,
       quality: event.quality || 'LIVE',
     },
