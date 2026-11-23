@@ -59,10 +59,12 @@ if (!enabled) {
   async function killAt(point, ruleId) {
     const child = fork(path.join(__dirname, 'helpers/alerts-kill-child.js'), [], {
       stdio: ['ignore','pipe','pipe','ipc'],
+      execArgv: [], // Never inherit Node's --test runner flags into the fixture child.
       env: { ...process.env, ACG_ALERTS_KILL_AT:point,
         ACG_ALERTS_KILL_RULE_ID:String(ruleId) },
     });
     let output = '';
+    const exited = new Promise(resolve => child.once('exit', resolve));
     child.stderr.on('data', chunk => { output += String(chunk).slice(-3000); });
     try {
       await new Promise((resolve,reject) => {
@@ -71,7 +73,7 @@ if (!enabled) {
           if (done) return;
           done = true;
           reject(new Error('Timed out awaiting ' + point + ': ' + output));
-        }, 20000);
+        }, 15000);
         child.on('message', msg => {
           if (done) return;
           if (msg.kind === 'ERROR') {
@@ -94,10 +96,9 @@ if (!enabled) {
       });
     } finally {
       child.kill('SIGKILL'); // Actual OS-level termination, no graceful shutdown.
-      await new Promise(resolve => {
-        if (child.exitCode != null || child.signalCode != null) resolve();
-        else child.once('exit',resolve);
-      });
+      // Register 'exit' before any other listener to avoid a lost event race.
+      await Promise.race([exited,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('SIGKILL child failed to terminate: '+point)), 5000))]);
     }
   }
 
