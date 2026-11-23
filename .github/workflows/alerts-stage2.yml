@@ -18,6 +18,8 @@ jobs:
     env:
       # Isolated, intentionally unreachable test URI. No external DB credentials.
       MONGODB_URI: mongodb://127.0.0.1:27017/acg_alerts_ci
+      # Fake validation-only key; no market provider is contacted by these tests.
+      TWELVE_DATA_API_KEY: acg-ci-only-invalid-api-key
       NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
