@@ -9,10 +9,12 @@ const LEASE_ID = 'stage2-alert-evaluator';
 const LEASE_TTL_MS = 15000;
 
 class AlertShadowWorker {
-  constructor({ ownerId = crypto.randomUUID(), logger = null, leaseTtlMs = LEASE_TTL_MS } = {}) {
+  constructor({ ownerId = crypto.randomUUID(), logger = null, leaseTtlMs = LEASE_TTL_MS,
+    ruleModel = AlertRule } = {}) {
     this.ownerId = ownerId;
     this.logger = logger;
     this.leaseTtlMs = leaseTtlMs;
+    this.ruleModel = ruleModel;
     this.token = null;
     this.processedBatches = 0;
     this.committedTriggers = 0;
@@ -116,7 +118,7 @@ class AlertShadowWorker {
           expiresAt: { $gt: new Date() },
         }, { $set: { lastFenceAt: new Date() } }, { session });
         if (fenced.matchedCount !== 1) throw new Error('ALERT_LEASE_FENCED');
-        const updated = await AlertRule.updateOne({
+        const updated = await this.ruleModel.updateOne({
           _id: rule._id, version: rule.version,
           status: { $in: ['STARTING','MONITORING'] },
           checkpoint: cursor,
@@ -150,10 +152,10 @@ class AlertShadowWorker {
 
     const query = { status: { $in: ['STARTING', 'MONITORING'] } };
     if (this.scanCursorId) query._id = { $gt: this.scanCursorId };
-    let rules = await AlertRule.find(query).sort({ _id: 1 }).limit(maxRules).lean();
+    let rules = await this.ruleModel.find(query).sort({ _id: 1 }).limit(maxRules).lean();
     if (!rules.length && this.scanCursorId) {
       this.scanCursorId = null;
-      rules = await AlertRule.find({ status: { $in: ['STARTING', 'MONITORING'] } })
+      rules = await this.ruleModel.find({ status: { $in: ['STARTING', 'MONITORING'] } })
         .sort({ _id: 1 }).limit(maxRules).lean();
     }
     let advanced = 0, conflicts = 0;
