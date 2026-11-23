@@ -12,7 +12,7 @@ An alert input becomes **accepted** only when its ordered `AlertStage2MarketBatc
 
 Events contain a schema version, instrument/feed stream identity, `generation:sequence` position, event ID, kind, provider/market and received timestamps, explicit Bid/Ask/Last values or candle OHLC/timeframe, quality and synthetic-spread markers. Inputs are stored in generation order; the evaluator must never infer continuous price action across a `coverage_gap` or a missing replay sequence.
 
-Each stream has a Mongo `AlertStage2Coverage` record. Capture begins only for streams with active shadow rules, creates a new monotonically increasing generation and records an explicit initial gap. A first valid persisted quote is required before the coverage record becomes MONITORING. Streams are marked INTERRUPTED on provider status errors, persistence failures, or in-process buffer overflow. On successful recovery capture starts a fresh generation rather than bridging an unknown interval.
+Each stream has a Mongo `AlertStage2Coverage` record. Capture begins only for streams with active shadow rules, creates a new monotonically increasing generation and records an explicit initial gap. A first persisted quote is required before the capture coverage record becomes MONITORING; source-specific availability is separately enforced by the evaluator. Streams are marked INTERRUPTED on provider status errors, persistence failures, or in-process buffer overflow. On successful recovery capture starts a fresh generation rather than bridging an unknown interval.
 
 **Limits:** This stage does not reconstruct ticks the provider never supplied or that could not be persisted before a crash. In those cases coverage is explicitly incomplete. The client must not describe gaps as monitored. The code records the provider's identity and labels derived bid/ask; it does not substitute unavailable sources.
 
@@ -24,7 +24,7 @@ Alert-eligible candles are ACG-finalised **non-synthetic** candles, currently ba
 
 ## Pure condition evaluator
 
-`evaluateAlert(rule, previousState, durableEvent)` performs no IO and no clock reads. It supports `crosses`, `crosses_above`, `crosses_below`, `enters_range`, `exits_range`, `candle_close_above`, and `candle_close_below`. Price is rounded deterministically to the configured tick size using decimal integer math. It supports once/repeat, reset before repeat, optional cooldown, UTC/IANA-timezone daily schedule and expiry.
+`evaluateAlert(rule, previousState, durableEvent)` performs no IO and no clock reads. An either-direction repeating crossing rearms on the reverse crossing itself; for example `99 → 101 → 99 → 101` across level `100` produces three triggers with no cooldown. It supports `crosses`, `crosses_above`, `crosses_below`, `enters_range`, `exits_range`, `candle_close_above`, and `candle_close_below`. Price is rounded deterministically to the configured tick size using decimal integer math. It supports once/repeat, reset before repeat, optional cooldown, UTC/IANA-timezone daily schedule and expiry.
 
 For quote crossings the first valid observation establishes a baseline, not a trigger. Unknown price source resets the baseline and sets SOURCE_UNAVAILABLE. A gap resets the baseline. A repeat cooldown suppresses the eligible crossing without queuing it for later.
 
@@ -32,16 +32,16 @@ The first complete real candle after creation may satisfy a candle-close conditi
 
 ## Persistence, fencing and failure boundaries
 
-`AlertShadowWorker` acquires a renewable singleton Mongo lease. Every progress transaction writes to that lease with `ownerId + token + expiry` as a predicate, preventing stale worker commits. In the same transaction it writes the rule runtime state and durable cursor, plus any immutable trigger records and `shadow` outbox jobs. Rule `version`, activation state, previous cursor and unexpired condition are checked in the transaction. A failure rolls back the checkpoint, events and outbox.
+`AlertShadowWorker` acquires a renewable singleton Mongo lease. Rules are scanned using a bounded `_id` keyset cursor that wraps to the beginning, preventing starvation of rules beyond the first 200. The cursor rotates even when individual rules have no events. Every progress transaction writes to that lease with `ownerId + token + expiry` as a predicate, preventing stale worker commits. In the same transaction it writes the rule runtime state and durable cursor, plus any immutable trigger records and `shadow` outbox jobs. Rule `version`, activation state and previous cursor are checked in the transaction. **Rule expiry is not checked against the processing wall-clock**: the evaluator uses the event's observation/receipt timestamp, then advances to EXPIRED only after a durably ordered post-expiry observation or `expiry_watermark` has been replayed. Capture remains active for expired-but-unprocessed rules until this barrier is committed. A failure rolls back the checkpoint, events and outbox.
 
 The unique trigger index uses `(alertId, ruleVersion, eventId)`. Rules carry a stable effective-from timestamp: retained events accepted before activation are skipped (but checkpointed). Rule edits must increment version, reset evaluation state, and set a new effective-from timestamp; paused/deleted rules must not match the trigger commit predicate. Every outbox job is **shadow-only**, never dispatched.
 
-The capture writer also fences each persisted batch against its current stream generation in a Mongo transaction, so a superseded capture process cannot accept new events under an obsolete epoch.
+The capture writer also fences each persisted batch against its current stream generation **and** a renewable per-stream Mongo ownership lease (`captureOwnerId`, `captureToken`, `captureLeaseUntil`) in a transaction. Starting a second process cannot rotate generations while the first lease is valid. Superseded owners stand down permanently; a legitimate, unfenced owner may restart its generation when recovering from interruption.
 
 ## Safe testing and commands
 
 ```bash
-npm test                           # includes pure evaluator and event contract tests
+npm test                           # includes pure evaluator, fairness and capture-lease tests
 npm run alerts:stage2:benchmark    # synthetic sizing only; NOT a Railway bill
 ```
 
@@ -63,14 +63,14 @@ The replay log has a capped **12-hour default TTL** (configurable between 2 and 
 
 | Test | Required result | Status |
 |---|---|---|
-| Pure crossing, zone, candle, source, reset, cooldown tests | Deterministic | Automated tests added; CI outcome pending |
-| Market ingestion continues during evaluator restart | Replay accepted batches | Needs staging |
-| Kill process during transaction | All-or-nothing trigger/state/outbox | Needs staging |
-| Reprocess same batch | One trigger and one outbox logical job | Needs staging |
-| Run two evaluators | Old fencing token cannot write | Needs staging |
+| Pure crossing, zone, candle, source, reset, cooldown tests | Deterministic | Passed GitHub Actions |
+| Market ingestion continues during evaluator restart | Replay accepted batches | Isolated Mongo replay verified; real provider restart still needs staging |
+| Kill process during transaction | All-or-nothing trigger/state/outbox | Injected outbox-write rollback passed; true SIGKILL pending |
+| Reprocess same batch | One trigger and one outbox logical job | Passed isolated Mongo replay |
+| Run two evaluators | Old fencing token cannot write | Passed isolated Mongo takeover |
 | Pause or increment rule version mid-evaluation | Outdated transaction aborts | Needs staging |
-| Disconnect provider or force DB failure | Health interrupted, next observation is fresh baseline | Needs staging |
-| Expire replay while worker offline | Explicit gap and no inferred crossing | Needs staging |
+| Disconnect provider or force DB failure | Health interrupted, next observation is fresh baseline | Pure gap baseline and isolated Mongo segment-gap tests passed; live provider fault pending |
+| Expire replay while worker offline | Explicit gap and no inferred crossing | Missing-sequence test passed; true TTL expiration pending |
 | Force notification provider failure | Not applicable; Stage 2 has no sending | Stage 3 |
 | Measure market events/s, batches/s, DB CPU/RAM/disk, write latency | Published cost report | Needs staging |
 
@@ -82,14 +82,17 @@ The replay log has a capped **12-hour default TTL** (configurable between 2 and 
 - **Live market-event sample:** Not collected.
 - **Verified active database target/topology:** Unconfirmed through redacted Railway variables.
 - **Measured Railway cost delta:** Unavailable; must not be inferred from synthetic JSON sizing.
-- **Release recommendation:** Keep PR as DRAFT. Complete safe staging topology verification, unit/CI checks, fault injection and live cost measurements before enabling or integrating UI.
+- **CI validation:** Dedicated full-suite checks and isolated MongoDB replica-set fault injection passed on PR #101 (2026-11-23).
+- **Isolated Mongo checks:** Pre-expiry backlog, atomic rollback on injected failure, capture fencing, evaluator fencing and missing-sequence replay passed.
+- **Railway staging:** Not deployed. The existing STAGING environment has unrelated legacy work and pending changes; deliberately left untouched.
+- **Release recommendation:** Keep PR as DRAFT. Complete safe staging topology verification, true process-kill/failure testing and live cost measurements before enabling or integrating UI.
 
 ## Known limitations before implementation is considered complete
 
 1. Need a controlled staging integration test against the actual MongoDB topology and event rates. Unit tests do not prove process-crash atomicity.
 2. No public alert create/edit/pause API is exposed. Rule lifecycle and validation will require dedicated authenticated endpoints after Stage 2.
 3. Source cadence and provider gaps cannot be reconstructed from candle high/low alone.
-4. The initial worker scans a bounded number of rules per iteration; tenant-scale scheduling and starvation-free pagination must be designed and load-tested before broad activation.
+4. Keyset pagination passes a 475-rule fairness regression. Production-scale performance and long-running per-rule processing still require load tests.
 5. Persisted stream health is updated on event commits/failures; downstream UI needs a staleness threshold and explicit source-health handling, not merely the last saved status.
 6. Event-batch retention, outbox history and indexing need measured disk/transaction overhead on Railway.
 
