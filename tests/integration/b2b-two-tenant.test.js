@@ -127,6 +127,18 @@ test('B2B Mongo/HTTP/WS: two firms, same external references, independent creden
     await PlatformEventOutbox.updateMany({tenantId:a.id,status:'PENDING'},{$set:{nextAttemptAt:new Date(0)}});
     failA=false;await relay.flush();
     assert.equal(await PlatformEventOutbox.countDocuments({eventType:'DEAL_CREATED',status:'DELIVERED'}),2);
+    // A forged supplied tenant must fail, not be silently accepted by the model.
+    await assert.rejects(PlatformEventOutbox.create({tenantId:b.id,accountId:aid,aggregateId:'wrong-owner',eventType:'DEAL_CREATED',occurredAt:new Date(),payload:{dealId:'invalid'}}), /different tenant/);
+    const originalDeal=await Deal.findOne({tenantId:a.id,accountId:aid}).lean();
+    const { _id, dealId, createdAt, updatedAt, ...dealFields }=originalDeal;
+    await assert.rejects(Deal.create({...dealFields,tenantId:b.id}), /different tenant/);
+    // Two candidate workers compete for one pending record; only one may send it.
+    const retry=await relay.enqueueDeal({account:await TradingAccount.findById(aid),deal:{dealId:'claim-race'}});
+    const sends=[];
+    const config={enabled:true,legacyTenantId:a.id,webhookUrl:'https://reference.example.test/hook',webhookSecret:secrets[0],fetchImpl:async(_url,req)=>{sends.push(JSON.parse(req.body).eventId);await new Promise(resolve=>setTimeout(resolve,100));return {ok:true,status:202};}};
+    await Promise.all([new PlatformEventRelay(config).flush(),new PlatformEventRelay(config).flush()]);
+    assert.equal(sends.filter(id=>id==='acg-trader:'+retry.eventId).length,1);
+    assert.equal((await PlatformEventOutbox.findById(retry._id)).status,'DELIVERED');
     for(const item of sent){
       const isA=item.url.includes('reference.');assert.equal(item.body.metadata.tenantId,isA?a.id:b.id);
       assert.equal(item.body.aggregateId,isA?'funded-legacy-id':'same-ref');

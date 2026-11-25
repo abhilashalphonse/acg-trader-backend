@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const { enforceAccountOwnership } = require('../trading/tenant-scope.plugin');
 
 const { Schema } = mongoose;
 
@@ -21,8 +22,11 @@ const platformEventOutboxSchema = new Schema({
   deliveredAt: { type: Date, default: null },
   lastError: { type: String, default: null, maxlength: 2000 },
   expiresAt: { type: Date, default: null },
+  deliveryLeaseToken: { type: String, default: null },
+  deliveryLeaseUntil: { type: Date, default: null },
 }, { timestamps: true, versionKey: false });
 
+enforceAccountOwnership(platformEventOutboxSchema);
 platformEventOutboxSchema.index({ status: 1, nextAttemptAt: 1, createdAt: 1 });
 platformEventOutboxSchema.index({ tenantId: 1, status: 1, nextAttemptAt: 1, createdAt: 1 });
 platformEventOutboxSchema.index({ tenantId: 1, accountId: 1, createdAt: -1 });

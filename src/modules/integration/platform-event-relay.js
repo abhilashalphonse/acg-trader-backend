@@ -215,7 +215,9 @@ class PlatformEventRelay {
     for (const tenantId of this.routes.keys()) {
       if (this.tenantFlushes.has(tenantId)) continue;
       const task = Promise.resolve().then(async () => {
-        const due = await this.outboxModel.find({ tenantId, status: 'PENDING', nextAttemptAt: mongoose.trusted({ $lte: this.now() }) })
+        const now = this.now();
+        const due = await this.outboxModel.find({ tenantId, status: 'PENDING', nextAttemptAt: mongoose.trusted({ $lte: now }),
+          ...(this.outboxModel.collection ? { $or: [{ deliveryLeaseUntil: null }, { deliveryLeaseUntil: mongoose.trusted({ $lte: now }) }] } : {}) })
           .sort({ createdAt: 1, _id: 1 })
           .limit(this.batchSize);
         for (const record of due) {
@@ -448,6 +450,34 @@ class PlatformEventRelay {
   }
 
   async #deliver(record) {
+    // Production always uses the native collection for compare-and-set claims.
+    // Injected in-memory test doubles keep their existing save() contract.
+    const collection = this.outboxModel.collection;
+    const token = collection ? crypto.randomUUID() : null;
+    if (collection) {
+      const now = this.now();
+      const claim = await collection.updateOne({
+        _id: record._id, tenantId: record.tenantId, status: 'PENDING',
+        nextAttemptAt: { $lte: now }, attempts: record.attempts,
+        $or: [{ deliveryLeaseUntil: null }, { deliveryLeaseUntil: { $lte: now } }],
+      }, { $set: {
+        deliveryLeaseToken: token,
+        deliveryLeaseUntil: new Date(now.getTime() + Math.max(30000, this.timeoutMs * 3)),
+      } });
+      if (claim.modifiedCount !== 1) return true;
+    }
+    const persist = async () => {
+      if (!collection) { await record.save(); return true; }
+      const result = await collection.updateOne({
+        _id: record._id, tenantId: record.tenantId, status: 'PENDING', deliveryLeaseToken: token,
+      }, { $set: {
+        status: record.status, attempts: record.attempts, lastAttemptAt: record.lastAttemptAt,
+        deliveredAt: record.deliveredAt ?? null, lastError: record.lastError ?? null,
+        nextAttemptAt: record.nextAttemptAt, expiresAt: record.expiresAt ?? null,
+        updatedAt: this.now(),
+      }, $unset: { deliveryLeaseToken: '', deliveryLeaseUntil: '' } });
+      return result.modifiedCount === 1;
+    };
     const envelope = {
       eventId: `acg-trader:${record.eventId}`,
       eventType: `ACG_TRADER_${record.eventType}`,
@@ -464,7 +494,7 @@ class PlatformEventRelay {
       record.attempts += 1;
       record.lastError = null;
       record.expiresAt = new Date(this.now().getTime() + this.retentionMs);
-      await record.save();
+      if (!await persist()) return false;
       if (record.eventType === 'ACCOUNT_SNAPSHOT') {
         this.snapshotRetryPending.delete(String(record.accountId || ''));
       }
@@ -486,7 +516,7 @@ class PlatformEventRelay {
       } else {
         record.nextAttemptAt = new Date(this.now().getTime() + retryDelayMs(record.attempts));
       }
-      await record.save();
+      if (!await persist()) return false;
       this.deliveryFailures += 1;
       this.lastDeliveryFailureAt = this.now().toISOString();
       this.logger?.warn({ err: error, eventId: record.eventId, attempts: record.attempts }, 'Platform event delivery failed');
