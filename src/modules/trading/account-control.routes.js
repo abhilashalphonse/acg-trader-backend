@@ -3,7 +3,7 @@
 const express = require('express');
 const { z } = require('zod');
 const { AppError } = require('../../shared/errors/app-error');
-const { requireServicePrincipal } = require('../auth/auth.middleware');
+const { requireServicePrincipal, requireConfiguredLegacyTenant } = require('../auth/auth.middleware');
 const { serializeAccount } = require('./trading.serializer');
 const { applyPermissionUpdate } = require('./trading-permission-contract');
 
@@ -161,7 +161,7 @@ function createAccountControlRouter(runtime, authService) {
     });
   });
 
-  router.post('/:accountId/policy-transitions', requireServicePrincipal(authService, ["funded:policy-migration","accounts:write"]), async (req, res) => {
+  router.post('/:accountId/policy-transitions', requireServicePrincipal(authService, ["funded:policy-migration","accounts:write"]), requireConfiguredLegacyTenant(runtime), async (req, res) => {
     const accountId = parseId(req.params.accountId);
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const command = parse(policyTransitionSchema, req.body || {});

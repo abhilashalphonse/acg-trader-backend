@@ -3,7 +3,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { z } = require('zod');
-const { requireServicePrincipal } = require('../auth/auth.middleware');
+const { requireServicePrincipal, requireConfiguredLegacyTenant } = require('../auth/auth.middleware');
 const { AppError } = require('../../shared/errors/app-error');
 const { Deal } = require('../trading/deal.model');
 const { TradingAccount } = require('../accounts/trading-account.model');
@@ -59,7 +59,7 @@ function createOperationsRouter(runtime, authService) {
     res.json(await runtime.policyMetricsService.summary(req.servicePrincipal.tenantId, query));
   });
 
-  router.get('/health', requireServicePrincipal(authService, 'accounts:write'), (_req, res) => {
+  router.get('/health', requireServicePrincipal(authService, 'accounts:write'), requireConfiguredLegacyTenant(runtime), (_req, res) => {
     res.json({
       trading: runtime.health(),
       reconciliation: runtime.reconciliationService.health(),
@@ -67,7 +67,7 @@ function createOperationsRouter(runtime, authService) {
     });
   });
 
-  router.get('/recovery', requireServicePrincipal(authService, 'accounts:write'), (_req, res) => {
+  router.get('/recovery', requireServicePrincipal(authService, 'accounts:write'), requireConfiguredLegacyTenant(runtime), (_req, res) => {
     res.json({ recovery: runtime.reconciliationService.health().recovery });
   });
 

@@ -58,10 +58,12 @@ async function safePartnerFetch(value, options, { lookup = dns.lookup, request =
       lookup: (_host, opts, cb) => opts?.all
         ? cb(null, [pinned]) : cb(null, pinned.address, 4),
     }, response => {
-      // Drain the response without storing untrusted body content.
+      // HTTP status is the contract. Close the untrusted response body
+      // immediately so a slow/infinite stream cannot outlive our deadline.
       response.on('error', reject);
-      response.resume();
-      resolve({ ok: response.statusCode >= 200 && response.statusCode < 300, status: response.statusCode });
+      const result = { ok: response.statusCode >= 200 && response.statusCode < 300, status: response.statusCode };
+      response.destroy();
+      resolve(result);
     });
     req.on('error', reject);
     req.end(body);

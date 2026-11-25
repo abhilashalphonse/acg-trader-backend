@@ -21,7 +21,7 @@ test('partner egress pins validated DNS address and never follows a redirect',as
   const response=await safePartnerFetch('https://partner.example.test/h',{headers:{},body:'{}'},{lookup:async()=>[{family:4,address:'8.8.8.8'}],request(url,options,callback){
     count++;assert.equal(url.hostname,'partner.example.test');assert.equal(options.agent,false);
     options.lookup(url.hostname,{all:false},(error,ip,family)=>{assert.ifError(error);assert.equal(ip,'8.8.8.8');assert.equal(family,4);});
-    const req=new EventEmitter();req.end=()=>{const res=new EventEmitter();res.statusCode=302;res.resume=()=>{};callback(res);};return req;
+    const req=new EventEmitter();req.end=()=>{const res=new EventEmitter();res.statusCode=302;res.destroy=()=>{};callback(res);};return req;
   }});
   assert.equal(count,1);assert.equal(response.ok,false);
 });

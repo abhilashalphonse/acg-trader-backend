@@ -29,6 +29,16 @@ function requireServicePrincipal(authService, requiredScope = null) {
   };
 }
 
+function requireConfiguredLegacyTenant(runtime) {
+  return (req, _res, next) => {
+    const id = runtime.legacyFundedTenantId;
+    if (!id || String(id) !== String(req.servicePrincipal?.tenantId || '')) {
+      return next(new AppError('Legacy platform operation is not available to this tenant', { statusCode: 403, code: 'LEGACY_TENANT_FORBIDDEN' }));
+    }
+    next();
+  };
+}
+
 function requireAccountGrant(principal, accountId) {
   const target = String(accountId);
   if (!principal?.accountIds?.includes(target)) {
@@ -44,4 +54,4 @@ function bearerToken(req) {
   return match[1].trim();
 }
 
-module.exports = { requireTraderSession, requireServicePrincipal, requireAccountGrant, bearerToken };
+module.exports = { requireTraderSession, requireServicePrincipal, requireConfiguredLegacyTenant, requireAccountGrant, bearerToken };
