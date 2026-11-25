@@ -447,3 +447,48 @@ test('direct snapshots route by authoritative tenant and unknown tenants never s
     assert.equal(sent.find(x=>x.url.includes('partner.')).body.aggregateId,'external-1');
   } finally { await relay.stop(); }
 });
+
+
+test('healthy tenant can flush a second batch while a slow tenant is still in flight', async () => {
+  const a = '64a000000000000000000001', b = '64a000000000000000000002';
+  const record = (tenantId, eventId) => ({
+    tenantId, eventId, eventType: 'DEAL_CREATED', aggregateId: eventId,
+    occurredAt: new Date(), payload: {}, metadata: { tenantId },
+    attempts: 0, status: 'PENDING', async save() {},
+  });
+  const slow = record(a, 'slow'), first = record(b, 'first'), second = record(b, 'second');
+  const records = [slow, first];
+  let releaseSlow, slowStarted;
+  const waitForSlow = new Promise(resolve => { slowStarted = resolve; });
+  const slowResponse = new Promise(resolve => { releaseSlow = resolve; });
+  const relay = new PlatformEventRelay({
+    enabled: true, legacyTenantId: a, webhookUrl: 'https://funded.example.test/webhook',
+    webhookSecret: SECRET,
+    partnerRoutes: [{ tenantId: b, url: 'https://partner.example.test/webhook', secret: 'distinct-partner-secret' }],
+    outboxModel: { find(query) { return { sort() { return { async limit() {
+      return records.filter(r => r.tenantId === query.tenantId && r.status === 'PENDING');
+    } }; } }; } },
+    fetchImpl: async url => {
+      if (url.includes('funded.')) { slowStarted(); return slowResponse; }
+      return { ok: true, status: 200 };
+    },
+  });
+  const cycle = relay.flush();
+  try {
+    await waitForSlow;
+    for (let i = 0; i < 100 && relay.tenantFlushes.has(b); i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(first.status, 'DELIVERED');
+    records.push(second);
+    await relay.flush();
+    assert.equal(second.status, 'DELIVERED');
+    assert.equal(slow.status, 'PENDING');
+    assert.equal(relay.tenantFlushes.has(a), true);
+  } finally {
+    releaseSlow({ ok: false, status: 503 });
+    await cycle;
+  }
+  assert.equal(slow.attempts, 1);
+  assert.equal(relay.running, false);
+});

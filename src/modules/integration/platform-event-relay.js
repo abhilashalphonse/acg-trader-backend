@@ -32,6 +32,7 @@ class PlatformEventRelay {
     this.timer = null;
     this.started = false;
     this.running = false;
+    this.tenantFlushes = new Map();
     this.listeners = [];
     this.snapshotPending = new Map();
     this.snapshotTimers = new Map();
@@ -108,6 +109,7 @@ class PlatformEventRelay {
     this.snapshotPending.clear();
     await Promise.allSettled(pendingSnapshots.map(payload => this.#captureSnapshot(payload, 'VALUATION')));
 
+    await Promise.allSettled([...this.tenantFlushes.values()]);
     await this.flush();
     this.started = false;
   }
@@ -205,25 +207,34 @@ class PlatformEventRelay {
   }
 
   async flush() {
-    if (!this.enabled || this.running) return;
-    this.running = true;
-    try {
-      // A slow partner must not block another partner's due events.
-      const results = await Promise.allSettled([...this.routes.keys()].map(async tenantId => {
+    if (!this.enabled) return;
+    // Only one in-flight batch per tenant, never one global batch lock.
+    // A healthy tenant can start its next cycle while a different tenant
+    // is still waiting on a network timeout.
+    const work = [];
+    for (const tenantId of this.routes.keys()) {
+      if (this.tenantFlushes.has(tenantId)) continue;
+      const task = Promise.resolve().then(async () => {
         const due = await this.outboxModel.find({ tenantId, status: 'PENDING', nextAttemptAt: mongoose.trusted({ $lte: this.now() }) })
           .sort({ createdAt: 1, _id: 1 })
           .limit(this.batchSize);
         for (const record of due) {
-          // Defense in depth: never send a record outside this query's tenant.
           if (String(record.tenantId) !== tenantId) continue;
-          await this.#deliver(record);
+          // Every record for this tenant shares one destination. On failure,
+          // yield to the next cycle rather than serially timing out the batch.
+          if (!await this.#deliver(record)) break;
         }
-      }));
-      const failure = results.find(result => result.status === 'rejected');
-      if (failure) throw failure.reason;
-    } finally {
-      this.running = false;
+      }).finally(() => {
+        this.tenantFlushes.delete(tenantId);
+        this.running = this.tenantFlushes.size > 0;
+      });
+      this.tenantFlushes.set(tenantId, task);
+      this.running = true;
+      work.push(task);
     }
+    const results = await Promise.allSettled(work);
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure) throw failure.reason;
   }
 
   #aggregateId(account, eventType) {
@@ -458,13 +469,15 @@ class PlatformEventRelay {
         this.snapshotRetryPending.delete(String(record.accountId || ''));
       }
       this.lastSuccessfulDeliveryAt = this.now().toISOString();
+      return true;
     } catch (error) {
       record.attempts += 1;
       record.lastAttemptAt = this.now();
       record.lastError = String(error?.message || error).slice(0, 2000);
       if (record.attempts >= this.maxAttempts) {
         record.status = 'DEAD';
-        record.expiresAt = new Date(this.now().getTime() + this.retentionMs);
+        // Keep undelivered immutable facts until explicit operator resolution.
+        record.expiresAt = record.eventType === 'ACCOUNT_SNAPSHOT' ? new Date(this.now().getTime() + this.retentionMs) : null;
         if (record.eventType === 'ACCOUNT_SNAPSHOT') {
           this.snapshotRetryPending.delete(String(record.accountId || ''));
         }
@@ -477,6 +490,7 @@ class PlatformEventRelay {
       this.deliveryFailures += 1;
       this.lastDeliveryFailureAt = this.now().toISOString();
       this.logger?.warn({ err: error, eventId: record.eventId, attempts: record.attempts }, 'Platform event delivery failed');
+      return false;
     }
   }
 
