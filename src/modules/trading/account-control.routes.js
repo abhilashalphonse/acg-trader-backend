@@ -65,7 +65,10 @@ const challengeSyncSchema = z.object({
 function createAccountControlRouter(runtime, authService) {
   const router = express.Router();
   router.use(requireEnabled(runtime));
-  router.use(requireServicePrincipal(authService, 'accounts:write'));
+  // Read-only integrations must not receive account mutation permissions.
+  router.use((req, res, next) => requireServicePrincipal(authService,
+    ['GET', 'HEAD'].includes(req.method) && !req.path.endsWith('/admin-observability')
+      ? ['accounts:read', 'accounts:write'] : 'accounts:write')(req, res, next));
 
   router.post('/provision', async (req, res) => { const result = await runtime.accountControlService.provision({ ...parse(provisionSchema, req.body), tenantId: req.servicePrincipal.tenantId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
   router.get('/:accountId', async (req, res) => { const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); res.json({ account: await runtime.accountControlService.getById(accountId) }); });

@@ -39,7 +39,9 @@ const tradeListSchema = z.object({
 function createOperationsRouter(runtime, authService) {
   const router = express.Router();
   router.use(requireEnabled(runtime));
-  router.use(requireServicePrincipal(authService, 'accounts:write'));
+  router.use((req, res, next) => requireServicePrincipal(authService,
+    ['GET', 'HEAD'].includes(req.method) && /^\/trades\/?$/i.test(req.path)
+      ? ['trades:read', 'accounts:write'] : 'accounts:write')(req, res, next));
 
   router.get('/enforcement-control', async (req, res) => {
     res.json(await runtime.policyControlService.read(req.servicePrincipal.tenantId));

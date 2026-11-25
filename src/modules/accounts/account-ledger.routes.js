@@ -26,7 +26,8 @@ const listSchema = z.object({
 function createAccountLedgerRouter(runtime, authService) {
   const router = express.Router({ mergeParams: true });
   router.use(requireEnabled(runtime));
-  router.use(requireServicePrincipal(authService, 'accounts:write'));
+  router.use((req, res, next) => requireServicePrincipal(authService,
+    ['GET', 'HEAD'].includes(req.method) ? ['ledger:read', 'accounts:write'] : 'accounts:write')(req, res, next));
 
   router.get('/', async (req, res) => {
     const accountId = parseId(req.params.accountId);

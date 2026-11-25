@@ -422,3 +422,28 @@ test('enabled relay rejects missing tenant binding and duplicate tenant routes',
   const tenantId = '64a000000000000000000001';
   assert.throws(() => new PlatformEventRelay({ ...config, legacyTenantId: tenantId, partnerRoutes: [{ tenantId, url: 'https://other.example.test/webhook', secret: 'distinct-partner-secret' }] }), /duplicate/);
 });
+
+test('direct snapshots route by authoritative tenant and unknown tenants never send', async () => {
+  const eventBus = new EventEmitter();
+  const a = '64a000000000000000000001', b = '64a000000000000000000002', c = '64a000000000000000000003';
+  const ids = ['64b000000000000000000001', '64b000000000000000000002', '64b000000000000000000003'];
+  const accounts = [a,b,c].map((tenantId,i) => ({ _id: ids[i], tenantId, externalRef: 'external-'+i, metadata: {fundedAccountId:'funded-'+i}, state: {} }));
+  const sent = [];
+  const relay = new PlatformEventRelay({
+    enabled:true, legacyTenantId:a, webhookUrl:'https://funded.example.test/webhook', webhookSecret:SECRET,
+    partnerRoutes:[{tenantId:b,url:'https://partner.example.test/webhook',secret:'distinct-partner-secret'}],
+    eventBus, snapshotCoalesceMs:1,
+    accountModel:{findById(id){return {lean:async()=>accounts.find(x=>x._id===id)};}},
+    outboxModel:{find(){return {sort(){return {limit:async()=>[]};}};}},
+    fetchImpl:async(url,request)=>{sent.push({url,body:JSON.parse(request.body)});return {ok:true,status:200};},
+  });
+  await relay.start();
+  try {
+    for(const accountId of ids) eventBus.emit('valuation.account.updated',{accountId,sequence:1,equity:'100'});
+    for(let i=0;i<30&&sent.length<2;i++) await new Promise(resolve=>setTimeout(resolve,10));
+    await new Promise(resolve=>setTimeout(resolve,10));
+    assert.equal(sent.length,2);
+    assert.equal(sent.find(x=>x.url.includes('funded.')).body.aggregateId,'funded-0');
+    assert.equal(sent.find(x=>x.url.includes('partner.')).body.aggregateId,'external-1');
+  } finally { await relay.stop(); }
+});
