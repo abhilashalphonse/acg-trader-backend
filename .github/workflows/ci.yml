@@ -47,3 +47,8 @@ jobs:
 
       - name: Run MongoDB runtime smoke
         run: npm run test:runtime
+
+      - name: Run B2B two-tenant Mongo HTTP and WebSocket acceptance
+        env:
+          B2B_TEST_MONGODB_URI: mongodb://127.0.0.1:27017/acg_b2b_isolation_test?replicaSet=rs0
+        run: node --test tests/integration/b2b-two-tenant.test.js
