@@ -49,9 +49,9 @@ test('snapshotAccount enforces tenant scope and returns reconnect-complete state
   const snapshot = await service.snapshotAccount({ tenantId: TENANT_ID, accountId: ACCOUNT_ID });
 
   assert.deepEqual(f.calls.accountQuery, { _id: ACCOUNT_ID, tenantId: TENANT_ID });
-  assert.deepEqual(f.calls.orderQuery, { accountId: ACCOUNT_ID });
-  assert.deepEqual(f.calls.positionQuery, { accountId: ACCOUNT_ID, status: 'OPEN' });
-  assert.deepEqual(f.calls.dealQuery, { accountId: ACCOUNT_ID });
+  assert.deepEqual(f.calls.orderQuery, { tenantId: TENANT_ID, accountId: ACCOUNT_ID });
+  assert.deepEqual(f.calls.positionQuery, { tenantId: TENANT_ID, accountId: ACCOUNT_ID, status: 'OPEN' });
+  assert.deepEqual(f.calls.dealQuery, { tenantId: TENANT_ID, accountId: ACCOUNT_ID });
   assert.equal(f.calls.valuationAccountId, ACCOUNT_ID);
   assert.equal(snapshot.account.id, ACCOUNT_ID);
   assert.equal(snapshot.valuation.equity, '100125');

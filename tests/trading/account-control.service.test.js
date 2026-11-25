@@ -503,7 +503,8 @@ test('Funded provision replay accepts the repaired official policy without rewri
   };
 
   assert.notEqual(existing.provisioningContractHash, repaired.provisioningContractHash);
-  assert.equal(assertProvisionReplay(existing, repaired), existing);
+  assert.throws(() => assertProvisionReplay(existing, repaired), { code: 'ACCOUNT_PROVISIONING_CONFLICT' });
+  assert.equal(assertProvisionReplay(existing, repaired, repaired.tenantId), existing);
 });
 
 test('stale provisioning hash remains strict when a Funded account does not match the incoming repaired policy', () => {
@@ -921,7 +922,7 @@ test('migrated V1 provisioning replay accepts V2 only when an authorized transit
     provisioningContractHash: legacy.provisioningContractHash,
   };
 
-  assert.equal(assertProvisionReplay(transitioned, incomingV2), transitioned);
+  assert.equal(assertProvisionReplay(transitioned, incomingV2, incomingV2.tenantId), transitioned);
 
   transitioned.metadata.delete('policyTransitionMigrationId');
   assert.throws(

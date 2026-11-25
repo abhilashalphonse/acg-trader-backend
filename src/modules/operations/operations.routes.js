@@ -3,7 +3,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { z } = require('zod');
-const { requireServicePrincipal } = require('../auth/auth.middleware');
+const { requireServicePrincipal, requireConfiguredLegacyTenant } = require('../auth/auth.middleware');
 const { AppError } = require('../../shared/errors/app-error');
 const { Deal } = require('../trading/deal.model');
 const { TradingAccount } = require('../accounts/trading-account.model');
@@ -39,28 +39,27 @@ const tradeListSchema = z.object({
 function createOperationsRouter(runtime, authService) {
   const router = express.Router();
   router.use(requireEnabled(runtime));
-  router.use(requireServicePrincipal(authService, 'accounts:write'));
 
-  router.get('/enforcement-control', async (req, res) => {
+  router.get('/enforcement-control', requireServicePrincipal(authService, ["risk:read","accounts:write"]), async (req, res) => {
     res.json(await runtime.policyControlService.read(req.servicePrincipal.tenantId));
   });
-  router.patch('/enforcement-control', async (req, res) => {
+  router.patch('/enforcement-control', requireServicePrincipal(authService, ["risk:control","accounts:write"]), async (req, res) => {
     const body = parse(policyControlSchema, req.body || {});
     res.json(await runtime.policyControlService.update({ ...body, tenantId: req.servicePrincipal.tenantId, actor: req.servicePrincipal.clientId }));
   });
-  router.get('/weekend-actions/summary', async (req, res) => {
+  router.get('/weekend-actions/summary', requireServicePrincipal(authService, ["risk:read","accounts:write"]), async (req, res) => {
     const query = parse(weekendSummarySchema, req.query || {});
     res.json(await runtime.weekendActionService.summary(req.servicePrincipal.tenantId, {
       lookbackHours: query.hours,
       retryAttentionAttempt: query.retryAttentionAttempt,
     }));
   });
-  router.get('/policy-metrics', async (req, res) => {
+  router.get('/policy-metrics', requireServicePrincipal(authService, ["risk:read","accounts:write"]), async (req, res) => {
     const query = parse(policyMetricsSchema, req.query || {});
     res.json(await runtime.policyMetricsService.summary(req.servicePrincipal.tenantId, query));
   });
 
-  router.get('/health', (_req, res) => {
+  router.get('/health', requireServicePrincipal(authService, 'accounts:write'), requireConfiguredLegacyTenant(runtime), (_req, res) => {
     res.json({
       trading: runtime.health(),
       reconciliation: runtime.reconciliationService.health(),
@@ -68,11 +67,11 @@ function createOperationsRouter(runtime, authService) {
     });
   });
 
-  router.get('/recovery', (_req, res) => {
+  router.get('/recovery', requireServicePrincipal(authService, 'accounts:write'), requireConfiguredLegacyTenant(runtime), (_req, res) => {
     res.json({ recovery: runtime.reconciliationService.health().recovery });
   });
 
-  router.get('/trades', async (req, res) => {
+  router.get('/trades', requireServicePrincipal(authService, ["trades:read","accounts:write"]), async (req, res) => {
     const query = parse(tradeListSchema, req.query || {});
     const filter = { tenantId: req.servicePrincipal.tenantId };
     if (query.accountId) filter.accountId = query.accountId;
@@ -122,7 +121,7 @@ function createOperationsRouter(runtime, authService) {
     });
   });
 
-  router.post('/reconcile', async (req, res) => {
+  router.post('/reconcile', requireServicePrincipal(authService, ["reports:reconcile","accounts:write"]), async (req, res) => {
     const body = parse(reconcileSchema, req.body || {});
     const report = await runtime.reconciliationService.run({
       tenantId: req.servicePrincipal.tenantId,
@@ -133,7 +132,7 @@ function createOperationsRouter(runtime, authService) {
     res.status(report.issueCount ? 409 : 200).json({ report: serializeReport(report) });
   });
 
-  router.get('/reconciliation', async (req, res) => {
+  router.get('/reconciliation', requireServicePrincipal(authService, ["reports:read","accounts:write"]), async (req, res) => {
     const { limit } = parse(listSchema, req.query || {});
     const reports = await runtime.reconciliationService.listReports({ tenantId: req.servicePrincipal.tenantId, limit });
     res.json({ reports: reports.map(serializeReport) });

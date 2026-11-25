@@ -1,6 +1,7 @@
 'use strict';
 
 const { z } = require('zod');
+const { parsePartnerRoutes, buildTenantWebhookRoutes } = require('../modules/integration/tenant-webhook-routes');
 require('dotenv').config();
 
 const REQUIRED_TIMEFRAMES = Object.freeze(['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']);
@@ -64,6 +65,8 @@ const schema = z.object({
   PLATFORM_EVENTS_ENABLED: booleanFromEnv.default(false),
   ACG_FUNDED_WEBHOOK_URL: z.string().url().optional(),
   ACG_FUNDED_WEBHOOK_SECRET: z.string().min(16).optional(),
+  ACG_FUNDED_WEBHOOK_TENANT_ID: z.string().regex(/^[0-9a-f]{24}$/).optional(),
+  PARTNER_WEBHOOK_ROUTES_JSON: z.string().optional(),
   PLATFORM_EVENT_POLL_INTERVAL_MS: positiveInt(1000),
   PLATFORM_EVENT_TIMEOUT_MS: positiveInt(5000),
   PLATFORM_EVENT_BATCH_SIZE: positiveInt(100),
@@ -162,19 +165,13 @@ if (!raw.MARKET_WS_PATH.startsWith('/')) throw new Error('MARKET_WS_PATH must st
 if (raw.INDIA_MARKET_ENABLED && raw.MARKET_PROVIDER !== 'multi') throw new Error('INDIA_MARKET_ENABLED requires MARKET_PROVIDER=multi');
 if (raw.TWELVE_DATA_RECONNECT_MAX_MS < raw.TWELVE_DATA_RECONNECT_MIN_MS) throw new Error('TWELVE_DATA_RECONNECT_MAX_MS must be >= TWELVE_DATA_RECONNECT_MIN_MS');
 if (raw.ACCELPIX_RECONNECT_MAX_MS < raw.ACCELPIX_RECONNECT_MIN_MS) throw new Error('ACCELPIX_RECONNECT_MAX_MS must be >= ACCELPIX_RECONNECT_MIN_MS');
+const partnerRoutes = parsePartnerRoutes(raw.PARTNER_WEBHOOK_ROUTES_JSON);
 const resolvedPlatformEventsEnabled = platformEventsExplicitlyConfigured
   ? raw.PLATFORM_EVENTS_ENABLED
-  : Boolean(raw.ACG_FUNDED_WEBHOOK_URL && raw.ACG_FUNDED_WEBHOOK_SECRET);
-if (
-  resolvedPlatformEventsEnabled
-  && (
-    !raw.ACG_FUNDED_WEBHOOK_URL
-    || !raw.ACG_FUNDED_WEBHOOK_SECRET
-    || /^</.test(raw.ACG_FUNDED_WEBHOOK_SECRET)
-    || /example\.com/i.test(raw.ACG_FUNDED_WEBHOOK_URL)
-  )
-) {
-  throw new Error('A real ACG_FUNDED_WEBHOOK_URL and ACG_FUNDED_WEBHOOK_SECRET are required when platform events are enabled');
+  : Boolean(raw.ACG_FUNDED_WEBHOOK_URL && raw.ACG_FUNDED_WEBHOOK_SECRET) || partnerRoutes.length > 0;
+if (resolvedPlatformEventsEnabled) {
+  buildTenantWebhookRoutes({ enabled: true, legacyTenantId: raw.ACG_FUNDED_WEBHOOK_TENANT_ID,
+    webhookUrl: raw.ACG_FUNDED_WEBHOOK_URL, webhookSecret: raw.ACG_FUNDED_WEBHOOK_SECRET, partnerRoutes });
 }
 if (/</.test(raw.MONGODB_URI)) throw new Error('MONGODB_URI still contains an example placeholder');
 if (raw.ACG_MONGO_RAILWAY_CUTOVER && (!raw.RAILWAY_MONGODB_URI || /</.test(raw.RAILWAY_MONGODB_URI))) {
@@ -242,6 +239,8 @@ const env = Object.freeze({
     enabled: resolvedPlatformEventsEnabled,
     webhookUrl: raw.ACG_FUNDED_WEBHOOK_URL || null,
     webhookSecret: raw.ACG_FUNDED_WEBHOOK_SECRET || null,
+    legacyTenantId: raw.ACG_FUNDED_WEBHOOK_TENANT_ID || null,
+    partnerRoutes,
     pollIntervalMs: raw.PLATFORM_EVENT_POLL_INTERVAL_MS,
     timeoutMs: raw.PLATFORM_EVENT_TIMEOUT_MS,
     batchSize: raw.PLATFORM_EVENT_BATCH_SIZE,

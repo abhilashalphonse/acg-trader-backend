@@ -4,14 +4,18 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { PlatformEventOutbox } = require('./platform-event-outbox.model');
+const { buildTenantWebhookRoutes } = require('./tenant-webhook-routes');
+const { safePartnerFetch } = require('./safe-partner-fetch');
 
 class PlatformEventRelay {
   constructor({
     eventBus,
     webhookUrl,
     webhookSecret,
+    legacyTenantId = null,
+    partnerRoutes = [],
     enabled = false,
-    fetchImpl = globalThis.fetch,
+    fetchImpl = null,
     accountModel = TradingAccount,
     outboxModel = PlatformEventOutbox,
     logger = null,
@@ -24,9 +28,11 @@ class PlatformEventRelay {
     now = () => new Date(),
   } = {}) {
     Object.assign(this, { eventBus, webhookUrl, webhookSecret, enabled, fetchImpl, accountModel, outboxModel, logger, pollIntervalMs, timeoutMs, batchSize, maxAttempts, snapshotCoalesceMs, retentionMs, now });
+    this.routes = buildTenantWebhookRoutes({ legacyTenantId, webhookUrl, webhookSecret, partnerRoutes, enabled });
     this.timer = null;
     this.started = false;
     this.running = false;
+    this.tenantFlushes = new Map();
     this.listeners = [];
     this.snapshotPending = new Map();
     this.snapshotTimers = new Map();
@@ -43,8 +49,8 @@ class PlatformEventRelay {
     if (this.started) return;
     this.started = true;
     if (!this.enabled) return;
-    if (!this.webhookUrl || !this.webhookSecret) throw new Error('Platform event relay requires webhookUrl and webhookSecret');
-    if (typeof this.fetchImpl !== 'function') throw new Error('Platform event relay requires fetch');
+    if (!this.routes.size) throw new Error('Platform event relay requires explicit tenant routes');
+    if (this.fetchImpl != null && typeof this.fetchImpl !== 'function') throw new Error('Invalid webhook transport');
     // Realtime account snapshots are reconstructable and intentionally
     // coalesced. Immutable DEAL_CREATED and ACCOUNT_CONTROLLED facts are
     // enqueued transactionally by the trading/account services themselves.
@@ -103,6 +109,7 @@ class PlatformEventRelay {
     this.snapshotPending.clear();
     await Promise.allSettled(pendingSnapshots.map(payload => this.#captureSnapshot(payload, 'VALUATION')));
 
+    await Promise.allSettled([...this.tenantFlushes.values()]);
     await this.flush();
     this.started = false;
   }
@@ -112,7 +119,7 @@ class PlatformEventRelay {
       enabled: this.enabled,
       started: this.started,
       running: this.running,
-      webhookConfigured: Boolean(this.webhookUrl && this.webhookSecret),
+      webhookConfigured: this.routes.size > 0,
       pendingSnapshots: this.snapshotPending.size,
       snapshotRetryPending: this.snapshotRetryPending.size,
       snapshotCoalesceMs: this.snapshotCoalesceMs,
@@ -126,7 +133,7 @@ class PlatformEventRelay {
 
   async enqueueDeal({ account, deal, session = null } = {}) {
     if (!this.enabled || !account || !deal) return null;
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account, 'DEAL_CREATED');
     if (!fundedAccountId) return null;
 
     return this.#enqueue(account, fundedAccountId, 'DEAL_CREATED', {
@@ -157,7 +164,7 @@ class PlatformEventRelay {
 
   async enqueueControl({ account, sourceEvent, session = null, evidence = null } = {}) {
     if (!this.enabled || !account) return null;
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account, 'ACCOUNT_CONTROLLED');
     if (!fundedAccountId) return null;
 
     return this.#enqueue(account, fundedAccountId, 'ACCOUNT_CONTROLLED', {
@@ -200,16 +207,42 @@ class PlatformEventRelay {
   }
 
   async flush() {
-    if (!this.enabled || this.running) return;
-    this.running = true;
-    try {
-      const due = await this.outboxModel.find({ status: 'PENDING', nextAttemptAt: mongoose.trusted({ $lte: this.now() }) })
-        .sort({ createdAt: 1, _id: 1 })
-        .limit(this.batchSize);
-      for (const record of due) await this.#deliver(record);
-    } finally {
-      this.running = false;
+    if (!this.enabled) return;
+    // Only one in-flight batch per tenant, never one global batch lock.
+    // A healthy tenant can start its next cycle while a different tenant
+    // is still waiting on a network timeout.
+    const work = [];
+    for (const tenantId of this.routes.keys()) {
+      if (this.tenantFlushes.has(tenantId)) continue;
+      const task = Promise.resolve().then(async () => {
+        const now = this.now();
+        const due = await this.outboxModel.find({ tenantId, status: 'PENDING', nextAttemptAt: mongoose.trusted({ $lte: now }),
+          ...(this.outboxModel.collection ? { $or: [{ deliveryLeaseUntil: null }, { deliveryLeaseUntil: mongoose.trusted({ $lte: now }) }] } : {}) })
+          .sort({ createdAt: 1, _id: 1 })
+          .limit(this.batchSize);
+        for (const record of due) {
+          if (String(record.tenantId) !== tenantId) continue;
+          // Every record for this tenant shares one destination. On failure,
+          // yield to the next cycle rather than serially timing out the batch.
+          if (!await this.#deliver(record)) break;
+        }
+      }).finally(() => {
+        this.tenantFlushes.delete(tenantId);
+        this.running = this.tenantFlushes.size > 0;
+      });
+      this.tenantFlushes.set(tenantId, task);
+      this.running = true;
+      work.push(task);
     }
+    const results = await Promise.allSettled(work);
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure) throw failure.reason;
+  }
+
+  #aggregateId(account, eventType) {
+    const route = this.routes.get(String(account?.tenantId || ''));
+    if (!route || !route.eventTypes.includes(eventType)) return null;
+    return route.legacy ? metadataValue(account.metadata, 'fundedAccountId') : account.externalRef || null;
   }
 
   #listen(event, handler) {
@@ -253,7 +286,7 @@ class PlatformEventRelay {
     const latest = this.latestSnapshotSequence.get(accountId);
     if (Number.isFinite(sequence) && Number.isFinite(latest) && sequence < latest) return;
 
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account, 'ACCOUNT_SNAPSHOT');
     if (!fundedAccountId) return;
     const state = payload?.state || account.state || {};
     const snapshotPayload = {
@@ -294,7 +327,7 @@ class PlatformEventRelay {
     };
 
     try {
-      await this.#postEnvelope(envelope);
+      await this.#postEnvelope(String(account.tenantId), envelope);
       this.lastSuccessfulDeliveryAt = this.now().toISOString();
     } catch (error) {
       this.deliveryFailures += 1;
@@ -314,6 +347,7 @@ class PlatformEventRelay {
       if (typeof this.outboxModel.findOne === 'function') {
         pending = await this.outboxModel
           .findOne({
+            tenantId: account.tenantId,
             accountId: account._id,
             eventType: 'ACCOUNT_SNAPSHOT',
             status: 'PENDING',
@@ -344,7 +378,7 @@ class PlatformEventRelay {
     if (!accountId) return;
     const account = await this.accountModel.findById(accountId).lean();
     if (!account) return;
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account, 'DEAL_CREATED');
     if (!fundedAccountId) return;
     await this.#enqueue(account, fundedAccountId, 'DEAL_CREATED', {
       provider: 'acg-trader',
@@ -375,7 +409,7 @@ class PlatformEventRelay {
     if (!accountId) return;
     const account = await this.accountModel.findById(accountId).lean();
     if (!account) return;
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account, 'ACCOUNT_CONTROLLED');
     if (!fundedAccountId) return;
     await this.#enqueue(account, fundedAccountId, 'ACCOUNT_CONTROLLED', {
       provider: 'acg-trader',
@@ -416,6 +450,34 @@ class PlatformEventRelay {
   }
 
   async #deliver(record) {
+    // Production always uses the native collection for compare-and-set claims.
+    // Injected in-memory test doubles keep their existing save() contract.
+    const collection = this.outboxModel.collection;
+    const token = collection ? crypto.randomUUID() : null;
+    if (collection) {
+      const now = this.now();
+      const claim = await collection.updateOne({
+        _id: record._id, tenantId: record.tenantId, status: 'PENDING',
+        nextAttemptAt: { $lte: now }, attempts: record.attempts,
+        $or: [{ deliveryLeaseUntil: null }, { deliveryLeaseUntil: { $lte: now } }],
+      }, { $set: {
+        deliveryLeaseToken: token,
+        deliveryLeaseUntil: new Date(now.getTime() + Math.max(30000, this.timeoutMs * 3)),
+      } });
+      if (claim.modifiedCount !== 1) return true;
+    }
+    const persist = async () => {
+      if (!collection) { await record.save(); return true; }
+      const result = await collection.updateOne({
+        _id: record._id, tenantId: record.tenantId, status: 'PENDING', deliveryLeaseToken: token,
+      }, { $set: {
+        status: record.status, attempts: record.attempts, lastAttemptAt: record.lastAttemptAt,
+        deliveredAt: record.deliveredAt ?? null, lastError: record.lastError ?? null,
+        nextAttemptAt: record.nextAttemptAt, expiresAt: record.expiresAt ?? null,
+        updatedAt: this.now(),
+      }, $unset: { deliveryLeaseToken: '', deliveryLeaseUntil: '' } });
+      return result.modifiedCount === 1;
+    };
     const envelope = {
       eventId: `acg-trader:${record.eventId}`,
       eventType: `ACG_TRADER_${record.eventType}`,
@@ -424,59 +486,74 @@ class PlatformEventRelay {
       payload: record.payload,
       metadata: record.metadata || {},
     };
+    let deliveryError = null;
     try {
-      await this.#postEnvelope(envelope);
+      await this.#postEnvelope(String(record.tenantId), envelope);
+    } catch (error) {
+      deliveryError = error;
+    }
+    // A database acknowledgement failure is not a transport failure. Leave
+    // the pending claim to expire and retry the same immutable event ID.
+    record.attempts += 1;
+    record.lastAttemptAt = this.now();
+    if (!deliveryError) {
       record.status = 'DELIVERED';
       record.deliveredAt = this.now();
-      record.lastAttemptAt = this.now();
-      record.attempts += 1;
       record.lastError = null;
       record.expiresAt = new Date(this.now().getTime() + this.retentionMs);
-      await record.save();
+      if (!await persist()) return false;
       if (record.eventType === 'ACCOUNT_SNAPSHOT') {
         this.snapshotRetryPending.delete(String(record.accountId || ''));
       }
       this.lastSuccessfulDeliveryAt = this.now().toISOString();
-    } catch (error) {
-      record.attempts += 1;
-      record.lastAttemptAt = this.now();
-      record.lastError = String(error?.message || error).slice(0, 2000);
-      if (record.attempts >= this.maxAttempts) {
-        record.status = 'DEAD';
-        record.expiresAt = new Date(this.now().getTime() + this.retentionMs);
-        if (record.eventType === 'ACCOUNT_SNAPSHOT') {
-          this.snapshotRetryPending.delete(String(record.accountId || ''));
-        }
-        this.deadEvents += 1;
-        this.deadEventsByType[record.eventType] = Number(this.deadEventsByType[record.eventType] || 0) + 1;
-      } else {
-        record.nextAttemptAt = new Date(this.now().getTime() + retryDelayMs(record.attempts));
-      }
-      await record.save();
-      this.deliveryFailures += 1;
-      this.lastDeliveryFailureAt = this.now().toISOString();
-      this.logger?.warn({ err: error, eventId: record.eventId, attempts: record.attempts }, 'Platform event delivery failed');
+      return true;
     }
+    record.lastError = String(deliveryError?.message || deliveryError).slice(0, 2000);
+    if (record.attempts >= this.maxAttempts) {
+      record.status = 'DEAD';
+      record.expiresAt = record.eventType === 'ACCOUNT_SNAPSHOT' ? new Date(this.now().getTime() + this.retentionMs) : null;
+    } else {
+      record.nextAttemptAt = new Date(this.now().getTime() + retryDelayMs(record.attempts));
+    }
+    if (!await persist()) return false;
+    if (record.status === 'DEAD') {
+      if (record.eventType === 'ACCOUNT_SNAPSHOT') {
+        this.snapshotRetryPending.delete(String(record.accountId || ''));
+      }
+      this.deadEvents += 1;
+      this.deadEventsByType[record.eventType] = Number(this.deadEventsByType[record.eventType] || 0) + 1;
+    }
+    this.deliveryFailures += 1;
+    this.lastDeliveryFailureAt = this.now().toISOString();
+    this.logger?.warn({ err: deliveryError, eventId: record.eventId, attempts: record.attempts }, 'Platform event delivery failed');
+    return false;
   }
 
-  async #postEnvelope(envelope) {
+  async #postEnvelope(tenantId, envelope) {
+    const route = this.routes.get(tenantId);
+    if (!route || (envelope.metadata?.tenantId != null && String(envelope.metadata.tenantId) !== tenantId)) {
+      throw new Error('Platform event tenant routing mismatch');
+    }
     const timestamp = String(Date.now());
-    const signature = signEnvelope(this.webhookSecret, timestamp, envelope);
+    const signature = signEnvelope(route.secret, timestamp, envelope);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchImpl(this.webhookUrl, {
+      const transport = this.fetchImpl || (route.legacy ? globalThis.fetch : safePartnerFetch);
+      const response = await transport(route.url, {
         method: 'POST',
+        redirect: 'error',
         headers: {
           'content-type': 'application/json',
           'x-acg-event-timestamp': timestamp,
           'x-acg-event-signature': signature,
           'x-acg-event-id': envelope.eventId,
+          ...(route.keyId ? { 'x-acg-key-id': route.keyId } : {}),
         },
         body: JSON.stringify(envelope),
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`ACG Funded webhook returned HTTP ${response.status}`);
+      if (!response.ok) throw new Error(`Partner webhook returned HTTP ${response.status}`);
       return response;
     } finally {
       clearTimeout(timer);

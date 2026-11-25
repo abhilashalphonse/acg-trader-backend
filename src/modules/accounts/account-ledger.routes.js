@@ -26,9 +26,8 @@ const listSchema = z.object({
 function createAccountLedgerRouter(runtime, authService) {
   const router = express.Router({ mergeParams: true });
   router.use(requireEnabled(runtime));
-  router.use(requireServicePrincipal(authService, 'accounts:write'));
 
-  router.get('/', async (req, res) => {
+  router.get('/', requireServicePrincipal(authService, ["ledger:read","accounts:write"]), async (req, res) => {
     const accountId = parseId(req.params.accountId);
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const query = parse(listSchema, req.query || {});
@@ -40,7 +39,7 @@ function createAccountLedgerRouter(runtime, authService) {
     res.json({ entries });
   });
 
-  router.post('/', async (req, res) => {
+  router.post('/', requireServicePrincipal(authService, ["ledger:write","accounts:write"]), async (req, res) => {
     const accountId = parseId(req.params.accountId);
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const command = parse(mutationSchema, req.body || {});

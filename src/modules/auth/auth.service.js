@@ -569,7 +569,8 @@ class AuthService {
     const keyRecord = await this.serviceApiKeyModel.findOne({ clientId: requiredString(clientId, 'clientId'), status: 'ACTIVE' });
     if (!keyRecord || !safeHashEquals(keyRecord.keyHash, hashToken(requiredString(apiKey, 'apiKey')))) throw invalidServiceCredentials();
     if (keyRecord.expiresAt && keyRecord.expiresAt <= this.now()) throw invalidServiceCredentials();
-    if (requiredScope && !keyRecord.scopes.includes(requiredScope) && !keyRecord.scopes.includes('*')) {
+    const acceptedScopes = Array.isArray(requiredScope) ? requiredScope : requiredScope ? [requiredScope] : [];
+    if (requiredScope && !acceptedScopes.some(scope => keyRecord.scopes.includes(scope)) && !keyRecord.scopes.includes('*')) {
       throw new AppError('Service credential lacks required scope', { statusCode: 403, code: 'SERVICE_SCOPE_FORBIDDEN', details: { requiredScope } });
     }
     const tenant = await this.tenantModel.findOne({ _id: keyRecord.tenantId, status: 'ACTIVE' }).lean();

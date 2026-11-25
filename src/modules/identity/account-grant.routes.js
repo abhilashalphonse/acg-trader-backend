@@ -14,7 +14,7 @@ const payloadSchema = z.object({
 
 function createAccountGrantRouter({ authService, managementService }) {
   const router = express.Router();
-  router.use(requireServicePrincipal(authService, 'accounts:write'));
+  router.use(requireServicePrincipal(authService, ['grants:write', 'accounts:write']));
   router.put('/accounts/:accountId/access/:userId', async (req, res) => {
     const params = parse(paramsSchema, req.params);
     const { permissions } = parse(payloadSchema, req.body);

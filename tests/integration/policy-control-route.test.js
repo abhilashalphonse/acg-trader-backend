@@ -13,7 +13,7 @@ test('operator control route requires service authentication and derives tenant/
     policyMetricsService: { summary: async (...args) => { metricCalls.push(args); return { groups: [] }; } },
     policyControlService: { update: async input => { calls.push(input); return { revision: 1 }; } } }, {
     authenticateServiceKey: async ({ clientId, apiKey, requiredScope }) => {
-      assert.equal(requiredScope, 'accounts:write');
+      assert.ok(Array.isArray(requiredScope) && requiredScope.includes('accounts:write'));
       if (clientId !== 'operator' || apiKey !== 'test-key') throw Object.assign(new Error('Unauthorized'), { statusCode: 401, code: 'INVALID_SERVICE_KEY' });
       return { tenantId: '000000000000000000000001', clientId };
     },

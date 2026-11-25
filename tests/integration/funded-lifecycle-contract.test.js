@@ -33,7 +33,7 @@ test('ecosystem Mongo/HTTP: Funded permission contract persists through Phase 1,
     const app = express(); app.use(express.json());
     app.use('/v1/internal/trading/accounts', createAccountControlRouter({ enabled: true, accountControlService: controls, commandQueue: controls.commandQueue }, {
       authenticateServiceKey: async ({ clientId, apiKey, requiredScope }) => {
-        assert.equal(clientId, 'local-contract-client'); assert.equal(apiKey, 'local-contract-key'); assert.equal(requiredScope, 'accounts:write');
+        assert.equal(clientId, 'local-contract-client'); assert.equal(apiKey, 'local-contract-key'); assert.ok(Array.isArray(requiredScope) && requiredScope.includes('accounts:write'));
         return { tenantId, clientId };
       },
     }));

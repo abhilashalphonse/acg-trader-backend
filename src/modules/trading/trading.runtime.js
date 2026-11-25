@@ -50,6 +50,8 @@ function createTradingRuntime({ marketRuntime }) {
     enabled: env.platformEvents.enabled,
     webhookUrl: env.platformEvents.webhookUrl,
     webhookSecret: env.platformEvents.webhookSecret,
+    legacyTenantId: env.platformEvents.legacyTenantId,
+    partnerRoutes: env.platformEvents.partnerRoutes,
     pollIntervalMs: env.platformEvents.pollIntervalMs,
     timeoutMs: env.platformEvents.timeoutMs,
     batchSize: env.platformEvents.batchSize,
@@ -65,7 +67,7 @@ function createTradingRuntime({ marketRuntime }) {
   const marketOrderService = new MarketOrderService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
   const atomicReverseService = new AtomicReverseService({ quoteStore: marketRuntime.quoteStore, eventBus, commandQueue, idempotencyService, valuationEngine, platformEventRelay, postFillRiskService, tradingPermissionPolicyService, quoteRecovery: marketRuntime.ensureFreshQuote, logger });
   const tradingCommandService = new TradingCommandService({ marketOrderService, atomicReverseService, logger });
-  const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger });
+  const accountControlService = new AccountControlService({ eventBus, commandQueue, marketOrderService, platformEventRelay, logger, legacyFundedTenantId: env.platformEvents.legacyTenantId });
   const breachCleanupEngine = new BreachCleanupEngine({ accountControlService, logger });
   const marginStopOutEngine = new MarginStopOutEngine({
     eventBus,
@@ -268,6 +270,7 @@ function createTradingRuntime({ marketRuntime }) {
   }
 
   return {
+    legacyFundedTenantId: env.platformEvents.legacyTenantId,
     enabled: env.tradingApiEnabled,
     eventBus,
     marketOrderService,

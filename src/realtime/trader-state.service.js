@@ -52,9 +52,9 @@ class TraderStateService {
       }
 
       // Use one database snapshot. Parallel commands on the same session are unsupported.
-      const orders = await this.orderModel.find({ accountId: id }).sort({ createdAt: -1, _id: -1 }).limit(this.recentOrderLimit).session(session).lean();
-      const positions = await this.positionModel.find({ accountId: id, status: 'OPEN' }).sort({ openedAt: 1, _id: 1 }).session(session).lean();
-      const deals = await this.dealModel.find({ accountId: id }).sort({ executedAt: -1, _id: -1 }).limit(this.recentDealLimit).session(session).lean();
+      const orders = await this.orderModel.find({ tenantId: tenant, accountId: id }).sort({ createdAt: -1, _id: -1 }).limit(this.recentOrderLimit).session(session).lean();
+      const positions = await this.positionModel.find({ tenantId: tenant, accountId: id, status: 'OPEN' }).sort({ openedAt: 1, _id: 1 }).session(session).lean();
+      const deals = await this.dealModel.find({ tenantId: tenant, accountId: id }).sort({ executedAt: -1, _id: -1 }).limit(this.recentDealLimit).session(session).lean();
       return { account, orders, positions, deals };
     });
     const { valuation, positionValuations } = this.valuationEngine.valueAccountState(account, positions);

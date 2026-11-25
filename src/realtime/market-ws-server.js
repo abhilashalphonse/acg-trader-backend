@@ -426,6 +426,9 @@ function createMarketWebSocketServer({ server, runtime, tradingRuntime, authServ
     for (const socket of wss.clients) {
       const state = subscriptions.get(socket);
       if (!state?.accounts.has(accountId)) continue;
+      // If a producer supplies tenant identity, never deliver a contradictory envelope.
+      const eventTenant = payload?.tenantId ?? payload?.account?.tenantId ?? payload?.order?.tenantId ?? payload?.position?.tenantId ?? payload?.fill?.tenantId;
+      if (eventTenant != null && String(eventTenant) !== String(socket.traderPrincipal.tenantId)) continue;
       if (state.syncingAccounts.has(accountId)) {
         if (state.pendingAccountEvents.length >= MAX_SYNC_BUFFER_EVENTS) { socket.close(1013, 'State synchronization overflow'); continue; }
         state.pendingAccountEvents.push({ accountId, type, data: payload });

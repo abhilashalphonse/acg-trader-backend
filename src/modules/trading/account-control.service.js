@@ -34,6 +34,7 @@ class AccountControlService {
     logger = null,
     marketOrderService = null,
     platformEventRelay = null,
+    legacyFundedTenantId = null,
     accountModel = TradingAccount,
     orderModel = Order,
     positionModel = Position,
@@ -50,6 +51,7 @@ class AccountControlService {
       logger,
       marketOrderService,
       platformEventRelay,
+      legacyFundedTenantId,
       accountModel,
       orderModel,
       positionModel,
@@ -70,13 +72,13 @@ class AccountControlService {
     return this.commandQueue.run(queueKey, async () => {
       const scope = { tenantId: input.tenantId, externalRef: input.externalRef };
       const existing = await this.accountModel.findOne(scope);
-      if (existing) return provisionResult(assertProvisionReplay(existing, input), true);
+      if (existing) return provisionResult(assertProvisionReplay(existing, input, this.legacyFundedTenantId), true);
       if (input.accountType !== 'DEMO') assertPermissionContract(command.tradingPermissions, command.tradingPermissionsVersion);
 
       try {
         const account = await this.runTransaction(async session => {
           const raced = await this.accountModel.findOne(scope).session(session);
-          if (raced) return assertProvisionReplay(raced, input);
+          if (raced) return assertProvisionReplay(raced, input, this.legacyFundedTenantId);
 
           const activateImmediately = input.activate !== false;
           const created = new this.accountModel({
@@ -137,7 +139,7 @@ class AccountControlService {
         if (error?.code !== 11000) throw error;
         const raced = await this.accountModel.findOne(scope);
         if (!raced) throw error;
-        return provisionResult(assertProvisionReplay(raced, input), true);
+        return provisionResult(assertProvisionReplay(raced, input, this.legacyFundedTenantId), true);
       }
     });
   }
@@ -923,7 +925,7 @@ function buildInitialState(initialBalance) {
   };
 }
 
-function assertProvisionReplay(account, input) {
+function assertProvisionReplay(account, input, legacyFundedTenantId = null) {
   const mismatches = [];
   if (input.tradingPermissionsVersion > 0 && Number(account.tradingPermissionsVersion || 0) > 0) {
     if (input.tradingPermissionsVersion !== account.tradingPermissionsVersion
@@ -945,7 +947,7 @@ function assertProvisionReplay(account, input) {
     // migration incorrectly cleared official account-level limits. Preserve
     // immutable provisioning hashes, but allow an idempotent replay when the
     // live account state now exactly matches the incoming Funded contract.
-    if (!isCompatibleFundedPolicyRepairReplay(account, input)) {
+    if (!legacyFundedTenantId || String(input.tenantId) !== String(legacyFundedTenantId) || !isCompatibleFundedPolicyRepairReplay(account, input)) {
       mismatches.push('provisioningContract');
     }
   } else if (!storedContractHash) {

@@ -36,6 +36,7 @@ test('deal facts are inserted into the outbox with the caller transaction sessio
   const session = { id: 'tx-1' };
   const relay = new PlatformEventRelay({
     enabled: true,
+    legacyTenantId: '64a000000000000000000001',
     eventBus: { on() {}, off() {} },
     webhookUrl: 'https://funded.example.test/webhook',
     webhookSecret: 'test-secret-at-least-16-chars',
@@ -81,6 +82,7 @@ test('account control facts are inserted transactionally', async () => {
   const session = { id: 'tx-control' };
   const relay = new PlatformEventRelay({
     enabled: true,
+    legacyTenantId: '64a000000000000000000001',
     eventBus: { on() {}, off() {} },
     webhookUrl: 'https://funded.example.test/webhook',
     webhookSecret: 'test-secret-at-least-16-chars',
@@ -176,6 +178,7 @@ test('successful realtime snapshots are delivered directly without Mongo outbox 
   };
   const relay = new PlatformEventRelay({
     enabled: true,
+    legacyTenantId: '64a000000000000000000001',
     eventBus,
     webhookUrl: 'https://funded.example.test/webhook',
     webhookSecret: 'test-secret-at-least-16-chars',
@@ -254,6 +257,7 @@ test('failed realtime snapshots keep at most one pending durable retry per accou
   };
   const relay = new PlatformEventRelay({
     enabled: true,
+    legacyTenantId: '64a000000000000000000001',
     eventBus,
     webhookUrl: 'https://funded.example.test/webhook',
     webhookSecret: 'test-secret-at-least-16-chars',
@@ -346,6 +350,7 @@ test('dead outbox health is classified by event type', async () => {
 
   const relay = new PlatformEventRelay({
     enabled: true,
+    legacyTenantId: '64a000000000000000000001',
     eventBus: new EventEmitter(),
     webhookUrl: 'https://funded.example.test/webhook',
     webhookSecret: SECRET,
@@ -365,4 +370,125 @@ test('dead outbox health is classified by event type', async () => {
   assert.equal(warnings[0].payload.deadImmutableEvents[0].eventId, 'deal-event-1');
   assert.equal(warnings[0].payload.deadImmutableEvents[0].dealId, 'deal-1');
   await relay.stop();
+});
+
+test('partner route is selected by tenant, not Funded metadata; unknown tenants cannot enqueue', async () => {
+  const calls = [];
+  const relay = new PlatformEventRelay({
+    enabled: true, legacyTenantId: '64a000000000000000000001',
+    webhookUrl: 'https://funded.example.test/webhook', webhookSecret: SECRET,
+    partnerRoutes: [{ tenantId: '64a000000000000000000002', url: 'https://partner.example.test/webhook', secret: 'distinct-partner-secret' }],
+    outboxModel: { async create(doc) { calls.push(doc); return doc; } },
+  });
+  const account = { _id: '64b000000000000000000002', tenantId: '64a000000000000000000002', externalRef: 'partner-ref', metadata: { fundedAccountId: 'spoofed' } };
+  await relay.enqueueDeal({ account, deal: { dealId: 'partner-deal' } });
+  await relay.enqueueControl({ account: { ...account, tenantId: '64a000000000000000000003' } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].aggregateId, 'partner-ref');
+  assert.equal(calls[0].metadata.tenantId, account.tenantId);
+});
+
+test('queued delivery isolates tenant endpoints and signing secrets even when another tenant fails', async () => {
+  const a = '64a000000000000000000001', b = '64a000000000000000000002';
+  const partnerSecret = 'distinct-partner-secret';
+  const records = [a, b].map((tenantId, i) => ({
+    tenantId, eventId: 'evt-' + i, eventType: 'DEAL_CREATED', aggregateId: 'ref-' + i,
+    occurredAt: new Date(), payload: { dealId: 'deal-' + i }, metadata: { tenantId }, attempts: 0,
+    async save() {},
+  }));
+  const sent = [];
+  const relay = new PlatformEventRelay({
+    enabled: true, legacyTenantId: a, webhookUrl: 'https://funded.example.test/webhook', webhookSecret: SECRET,
+    partnerRoutes: [{ tenantId: b, url: 'https://partner.example.test/webhook', secret: partnerSecret }],
+    outboxModel: { find(query) { return { sort() { return { async limit() { return records.filter(r => r.tenantId === query.tenantId); } }; } }; } },
+    fetchImpl: async (url, request) => { sent.push({ url, request }); return { ok: url.includes('partner.'), status: 503 }; },
+  });
+  await relay.flush();
+  assert.equal(sent.length, 2);
+  for (const { url, request } of sent) {
+    const body = JSON.parse(request.body);
+    const isPartner = url.includes('partner.');
+    assert.equal(body.metadata.tenantId, isPartner ? b : a);
+    assert.equal(request.redirect, 'error');
+    assert.equal(request.headers['x-acg-event-signature'], signEnvelope(isPartner ? partnerSecret : SECRET, request.headers['x-acg-event-timestamp'], body));
+  }
+  assert.equal(records[1].status, 'DELIVERED');
+  assert.equal(records[0].attempts, 1);
+});
+
+test('enabled relay rejects missing tenant binding and duplicate tenant routes', () => {
+  const config = { enabled: true, webhookUrl: 'https://funded.example.test/webhook', webhookSecret: SECRET };
+  assert.throws(() => new PlatformEventRelay(config), /tenant ID/);
+  const tenantId = '64a000000000000000000001';
+  assert.throws(() => new PlatformEventRelay({ ...config, legacyTenantId: tenantId, partnerRoutes: [{ tenantId, url: 'https://other.example.test/webhook', secret: 'distinct-partner-secret' }] }), /duplicate/);
+});
+
+test('direct snapshots route by authoritative tenant and unknown tenants never send', async () => {
+  const eventBus = new EventEmitter();
+  const a = '64a000000000000000000001', b = '64a000000000000000000002', c = '64a000000000000000000003';
+  const ids = ['64b000000000000000000001', '64b000000000000000000002', '64b000000000000000000003'];
+  const accounts = [a,b,c].map((tenantId,i) => ({ _id: ids[i], tenantId, externalRef: 'external-'+i, metadata: {fundedAccountId:'funded-'+i}, state: {} }));
+  const sent = [];
+  const relay = new PlatformEventRelay({
+    enabled:true, legacyTenantId:a, webhookUrl:'https://funded.example.test/webhook', webhookSecret:SECRET,
+    partnerRoutes:[{tenantId:b,url:'https://partner.example.test/webhook',secret:'distinct-partner-secret'}],
+    eventBus, snapshotCoalesceMs:1,
+    accountModel:{findById(id){return {lean:async()=>accounts.find(x=>x._id===id)};}},
+    outboxModel:{find(){return {sort(){return {limit:async()=>[]};}};}},
+    fetchImpl:async(url,request)=>{sent.push({url,body:JSON.parse(request.body)});return {ok:true,status:200};},
+  });
+  await relay.start();
+  try {
+    for(const accountId of ids) eventBus.emit('valuation.account.updated',{accountId,sequence:1,equity:'100'});
+    for(let i=0;i<30&&sent.length<2;i++) await new Promise(resolve=>setTimeout(resolve,10));
+    await new Promise(resolve=>setTimeout(resolve,10));
+    assert.equal(sent.length,2);
+    assert.equal(sent.find(x=>x.url.includes('funded.')).body.aggregateId,'funded-0');
+    assert.equal(sent.find(x=>x.url.includes('partner.')).body.aggregateId,'external-1');
+  } finally { await relay.stop(); }
+});
+
+
+test('healthy tenant can flush a second batch while a slow tenant is still in flight', async () => {
+  const a = '64a000000000000000000001', b = '64a000000000000000000002';
+  const record = (tenantId, eventId) => ({
+    tenantId, eventId, eventType: 'DEAL_CREATED', aggregateId: eventId,
+    occurredAt: new Date(), payload: {}, metadata: { tenantId },
+    attempts: 0, status: 'PENDING', async save() {},
+  });
+  const slow = record(a, 'slow'), first = record(b, 'first'), second = record(b, 'second');
+  const records = [slow, first];
+  let releaseSlow, slowStarted;
+  const waitForSlow = new Promise(resolve => { slowStarted = resolve; });
+  const slowResponse = new Promise(resolve => { releaseSlow = resolve; });
+  const relay = new PlatformEventRelay({
+    enabled: true, legacyTenantId: a, webhookUrl: 'https://funded.example.test/webhook',
+    webhookSecret: SECRET,
+    partnerRoutes: [{ tenantId: b, url: 'https://partner.example.test/webhook', secret: 'distinct-partner-secret' }],
+    outboxModel: { find(query) { return { sort() { return { async limit() {
+      return records.filter(r => r.tenantId === query.tenantId && r.status === 'PENDING');
+    } }; } }; } },
+    fetchImpl: async url => {
+      if (url.includes('funded.')) { slowStarted(); return slowResponse; }
+      return { ok: true, status: 200 };
+    },
+  });
+  const cycle = relay.flush();
+  try {
+    await waitForSlow;
+    for (let i = 0; i < 100 && relay.tenantFlushes.has(b); i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(first.status, 'DELIVERED');
+    records.push(second);
+    await relay.flush();
+    assert.equal(second.status, 'DELIVERED');
+    assert.equal(slow.status, 'PENDING');
+    assert.equal(relay.tenantFlushes.has(a), true);
+  } finally {
+    releaseSlow({ ok: false, status: 503 });
+    await cycle;
+  }
+  assert.equal(slow.attempts, 1);
+  assert.equal(relay.running, false);
 });

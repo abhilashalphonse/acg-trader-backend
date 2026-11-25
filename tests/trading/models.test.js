@@ -7,10 +7,30 @@ const { Order } = require('../../src/modules/trading/order.model');
 const { Deal } = require('../../src/modules/trading/deal.model');
 const { Position } = require('../../src/modules/trading/position.model');
 const { AccountLedger } = require('../../src/modules/trading/account-ledger.model');
+const { TradingAccount } = require('../../src/modules/accounts/trading-account.model');
 
 const tenantId = new mongoose.Types.ObjectId();
 const accountId = new mongoose.Types.ObjectId();
 const orderObjectId = new mongoose.Types.ObjectId();
+
+// These are isolated schema tests, not MongoDB tests. Provide the actual
+// ownership lookup's fixture; the B2B integration suite uses real Mongo.
+const originalFindById = TradingAccount.findById;
+test.before(() => {
+  TradingAccount.findById = id => ({
+    select() { return this; },
+    session() { return this; },
+    async lean() { return String(id) === String(accountId) ? { tenantId } : null; },
+  });
+});
+test.after(() => { TradingAccount.findById = originalFindById; });
+
+test('supplied tenant is checked against account ownership', async () => {
+  await assert.rejects(baseOrder({ tenantId: new mongoose.Types.ObjectId() }).validate(),
+    error => /different tenant/.test(error.errors?.tenantId?.message || ''));
+  await assert.rejects(baseOrder({ accountId: new mongoose.Types.ObjectId() }).validate(),
+    error => /does not have a tenant assignment/.test(error.errors?.tenantId?.message || ''));
+});
 
 function baseOrder(overrides = {}) {
   return new Order({
