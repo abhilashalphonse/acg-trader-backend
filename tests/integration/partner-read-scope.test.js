@@ -38,6 +38,7 @@ test('read-only partner credentials cannot mutate or read another tenant account
     assert.equal((await fetch(base+own+'/pause',{method:'POST',headers,body:'{}'})).status,403);
     assert.equal((await fetch(base+own+'/ledger',{method:'POST',headers,body:'{}'})).status,403);
     assert.equal((await fetch(base+own+'/admin-observability',{headers})).status,403);
+    assert.equal((await fetch(base+own+'/ADMIN-OBSERVABILITY/',{headers})).status,403);
     assert.equal(writes,0);
     assert.ok(queries.every(q=>q.tenantId===tenantId));
     const legacy={...headers,Authorization:'Bearer legacy-token','x-acg-client-id':'legacy'};

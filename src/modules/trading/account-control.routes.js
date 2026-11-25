@@ -67,7 +67,7 @@ function createAccountControlRouter(runtime, authService) {
   router.use(requireEnabled(runtime));
   // Read-only integrations must not receive account mutation permissions.
   router.use((req, res, next) => requireServicePrincipal(authService,
-    ['GET', 'HEAD'].includes(req.method) && !req.path.endsWith('/admin-observability')
+    ['GET', 'HEAD'].includes(req.method) && /^\/[0-9a-f]{24}(?:\/lifecycle)?\/?$/i.test(req.path)
       ? ['accounts:read', 'accounts:write'] : 'accounts:write')(req, res, next));
 
   router.post('/provision', async (req, res) => { const result = await runtime.accountControlService.provision({ ...parse(provisionSchema, req.body), tenantId: req.servicePrincipal.tenantId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
