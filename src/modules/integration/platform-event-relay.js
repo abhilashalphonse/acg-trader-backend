@@ -4,12 +4,15 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { PlatformEventOutbox } = require('./platform-event-outbox.model');
+const { buildTenantWebhookRoutes } = require('./tenant-webhook-routes');
 
 class PlatformEventRelay {
   constructor({
     eventBus,
     webhookUrl,
     webhookSecret,
+    legacyTenantId = null,
+    partnerRoutes = [],
     enabled = false,
     fetchImpl = globalThis.fetch,
     accountModel = TradingAccount,
@@ -24,6 +27,7 @@ class PlatformEventRelay {
     now = () => new Date(),
   } = {}) {
     Object.assign(this, { eventBus, webhookUrl, webhookSecret, enabled, fetchImpl, accountModel, outboxModel, logger, pollIntervalMs, timeoutMs, batchSize, maxAttempts, snapshotCoalesceMs, retentionMs, now });
+    this.routes = buildTenantWebhookRoutes({ legacyTenantId, webhookUrl, webhookSecret, partnerRoutes, enabled });
     this.timer = null;
     this.started = false;
     this.running = false;
@@ -43,7 +47,7 @@ class PlatformEventRelay {
     if (this.started) return;
     this.started = true;
     if (!this.enabled) return;
-    if (!this.webhookUrl || !this.webhookSecret) throw new Error('Platform event relay requires webhookUrl and webhookSecret');
+    if (!this.routes.size) throw new Error('Platform event relay requires explicit tenant routes');
     if (typeof this.fetchImpl !== 'function') throw new Error('Platform event relay requires fetch');
     // Realtime account snapshots are reconstructable and intentionally
     // coalesced. Immutable DEAL_CREATED and ACCOUNT_CONTROLLED facts are
@@ -112,7 +116,7 @@ class PlatformEventRelay {
       enabled: this.enabled,
       started: this.started,
       running: this.running,
-      webhookConfigured: Boolean(this.webhookUrl && this.webhookSecret),
+      webhookConfigured: this.routes.size > 0,
       pendingSnapshots: this.snapshotPending.size,
       snapshotRetryPending: this.snapshotRetryPending.size,
       snapshotCoalesceMs: this.snapshotCoalesceMs,
@@ -126,7 +130,7 @@ class PlatformEventRelay {
 
   async enqueueDeal({ account, deal, session = null } = {}) {
     if (!this.enabled || !account || !deal) return null;
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account);
     if (!fundedAccountId) return null;
 
     return this.#enqueue(account, fundedAccountId, 'DEAL_CREATED', {
@@ -157,7 +161,7 @@ class PlatformEventRelay {
 
   async enqueueControl({ account, sourceEvent, session = null, evidence = null } = {}) {
     if (!this.enabled || !account) return null;
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account);
     if (!fundedAccountId) return null;
 
     return this.#enqueue(account, fundedAccountId, 'ACCOUNT_CONTROLLED', {
@@ -203,13 +207,28 @@ class PlatformEventRelay {
     if (!this.enabled || this.running) return;
     this.running = true;
     try {
-      const due = await this.outboxModel.find({ status: 'PENDING', nextAttemptAt: mongoose.trusted({ $lte: this.now() }) })
-        .sort({ createdAt: 1, _id: 1 })
-        .limit(this.batchSize);
-      for (const record of due) await this.#deliver(record);
+      // A slow partner must not block another partner's due events.
+      const results = await Promise.allSettled([...this.routes.keys()].map(async tenantId => {
+        const due = await this.outboxModel.find({ tenantId, status: 'PENDING', nextAttemptAt: mongoose.trusted({ $lte: this.now() }) })
+          .sort({ createdAt: 1, _id: 1 })
+          .limit(this.batchSize);
+        for (const record of due) {
+          // Defense in depth: never send a record outside this query's tenant.
+          if (String(record.tenantId) !== tenantId) continue;
+          await this.#deliver(record);
+        }
+      }));
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
     } finally {
       this.running = false;
     }
+  }
+
+  #aggregateId(account) {
+    const route = this.routes.get(String(account?.tenantId || ''));
+    if (!route) return null;
+    return route.legacy ? metadataValue(account.metadata, 'fundedAccountId') : account.externalRef || null;
   }
 
   #listen(event, handler) {
@@ -253,7 +272,7 @@ class PlatformEventRelay {
     const latest = this.latestSnapshotSequence.get(accountId);
     if (Number.isFinite(sequence) && Number.isFinite(latest) && sequence < latest) return;
 
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account);
     if (!fundedAccountId) return;
     const state = payload?.state || account.state || {};
     const snapshotPayload = {
@@ -294,7 +313,7 @@ class PlatformEventRelay {
     };
 
     try {
-      await this.#postEnvelope(envelope);
+      await this.#postEnvelope(String(account.tenantId), envelope);
       this.lastSuccessfulDeliveryAt = this.now().toISOString();
     } catch (error) {
       this.deliveryFailures += 1;
@@ -314,6 +333,7 @@ class PlatformEventRelay {
       if (typeof this.outboxModel.findOne === 'function') {
         pending = await this.outboxModel
           .findOne({
+            tenantId: account.tenantId,
             accountId: account._id,
             eventType: 'ACCOUNT_SNAPSHOT',
             status: 'PENDING',
@@ -344,7 +364,7 @@ class PlatformEventRelay {
     if (!accountId) return;
     const account = await this.accountModel.findById(accountId).lean();
     if (!account) return;
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account);
     if (!fundedAccountId) return;
     await this.#enqueue(account, fundedAccountId, 'DEAL_CREATED', {
       provider: 'acg-trader',
@@ -375,7 +395,7 @@ class PlatformEventRelay {
     if (!accountId) return;
     const account = await this.accountModel.findById(accountId).lean();
     if (!account) return;
-    const fundedAccountId = metadataValue(account.metadata, 'fundedAccountId');
+    const fundedAccountId = this.#aggregateId(account);
     if (!fundedAccountId) return;
     await this.#enqueue(account, fundedAccountId, 'ACCOUNT_CONTROLLED', {
       provider: 'acg-trader',
@@ -425,7 +445,7 @@ class PlatformEventRelay {
       metadata: record.metadata || {},
     };
     try {
-      await this.#postEnvelope(envelope);
+      await this.#postEnvelope(String(record.tenantId), envelope);
       record.status = 'DELIVERED';
       record.deliveredAt = this.now();
       record.lastAttemptAt = this.now();
@@ -459,14 +479,19 @@ class PlatformEventRelay {
     }
   }
 
-  async #postEnvelope(envelope) {
+  async #postEnvelope(tenantId, envelope) {
+    const route = this.routes.get(tenantId);
+    if (!route || (envelope.metadata?.tenantId != null && String(envelope.metadata.tenantId) !== tenantId)) {
+      throw new Error('Platform event tenant routing mismatch');
+    }
     const timestamp = String(Date.now());
-    const signature = signEnvelope(this.webhookSecret, timestamp, envelope);
+    const signature = signEnvelope(route.secret, timestamp, envelope);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchImpl(this.webhookUrl, {
+      const response = await this.fetchImpl(route.url, {
         method: 'POST',
+        redirect: 'error',
         headers: {
           'content-type': 'application/json',
           'x-acg-event-timestamp': timestamp,
@@ -476,7 +501,7 @@ class PlatformEventRelay {
         body: JSON.stringify(envelope),
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`ACG Funded webhook returned HTTP ${response.status}`);
+      if (!response.ok) throw new Error(`Partner webhook returned HTTP ${response.status}`);
       return response;
     } finally {
       clearTimeout(timer);

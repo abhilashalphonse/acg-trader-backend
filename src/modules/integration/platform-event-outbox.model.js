@@ -24,6 +24,7 @@ const platformEventOutboxSchema = new Schema({
 }, { timestamps: true, versionKey: false });
 
 platformEventOutboxSchema.index({ status: 1, nextAttemptAt: 1, createdAt: 1 });
+platformEventOutboxSchema.index({ tenantId: 1, status: 1, nextAttemptAt: 1, createdAt: 1 });
 platformEventOutboxSchema.index({ tenantId: 1, accountId: 1, createdAt: -1 });
 platformEventOutboxSchema.index({ aggregateId: 1, createdAt: -1 });
 platformEventOutboxSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

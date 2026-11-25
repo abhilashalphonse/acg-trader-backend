@@ -50,6 +50,8 @@ function createTradingRuntime({ marketRuntime }) {
     enabled: env.platformEvents.enabled,
     webhookUrl: env.platformEvents.webhookUrl,
     webhookSecret: env.platformEvents.webhookSecret,
+    legacyTenantId: env.platformEvents.legacyTenantId,
+    partnerRoutes: env.platformEvents.partnerRoutes,
     pollIntervalMs: env.platformEvents.pollIntervalMs,
     timeoutMs: env.platformEvents.timeoutMs,
     batchSize: env.platformEvents.batchSize,

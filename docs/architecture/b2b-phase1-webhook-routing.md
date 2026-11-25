@@ -1,0 +1,11 @@
+# B2B phase 1 — tenant-bound webhook routing (draft)
+
+This is the first hardening slice, not external partner certification. The existing Funded event envelope and HMAC remain unchanged. Only operator-configured tenant IDs can send events. Partner aggregate IDs use the platform account externalRef, not Funded-specific metadata. There is one operator-managed destination per tenant, with bounded parallel tenant queues.
+
+## Deployment gate (do not merge before completing)
+- Verify the immutable ACG Funded tenant ID against the authoritative MongoDB tenant, service credentials, existing outbox and Funded account mapping. Set ACG_FUNDED_WEBHOOK_TENANT_ID in staging and coordinate production config with deployment. Missing/invalid binding intentionally prevents an enabled relay from starting. Never infer tenant from metadata.
+- PARTNER_WEBHOOK_ROUTES_JSON is optional, an operator secret JSON array of {tenantId,url,secret}; maximum 15 additional tenants. Validate active tenant ownership, endpoint control, DNS/egress safety and distinct signing secrets outside the app before configuring. Do not expose this mechanism to partner users. HTTPS required; redirects rejected.
+- Create/verify the compound tenant outbox index; inspect pending/dead events by tenant and reconcile pre-existing backlog. Never reassign a route to a different business or silently discard unmatched records.
+- Run full CI and isolated staging with Funded and a synthetic partner: verify provisioning, native and federated sessions, signed snapshot, deal and control events, timeout isolation, retry, restart, reconciliation and zero cross-tenant delivery. Keep production single writer; multi-replica claims/fencing are not implemented.
+- Confirm production rollout and rollback with no Funded event loss; legacy revision must never run with external tenants enabled.
+- Remaining: self-service subscriptions, per-destination delivery records and replay, secret rotation, quotas, validated egress/SSRF controls, tenant audit, fine-grained API scopes, business auth and policy generalisation. Unknown/unconfigured tenants intentionally do not enqueue partner events; do not provision an integration before its route and acceptance are ready.

@@ -1,6 +1,7 @@
 'use strict';
 
 const { z } = require('zod');
+const { parsePartnerRoutes } = require('../modules/integration/tenant-webhook-routes');
 require('dotenv').config();
 
 const REQUIRED_TIMEFRAMES = Object.freeze(['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']);
@@ -64,6 +65,8 @@ const schema = z.object({
   PLATFORM_EVENTS_ENABLED: booleanFromEnv.default(false),
   ACG_FUNDED_WEBHOOK_URL: z.string().url().optional(),
   ACG_FUNDED_WEBHOOK_SECRET: z.string().min(16).optional(),
+  ACG_FUNDED_WEBHOOK_TENANT_ID: z.string().regex(/^[0-9a-f]{24}$/).optional(),
+  PARTNER_WEBHOOK_ROUTES_JSON: z.string().optional(),
   PLATFORM_EVENT_POLL_INTERVAL_MS: positiveInt(1000),
   PLATFORM_EVENT_TIMEOUT_MS: positiveInt(5000),
   PLATFORM_EVENT_BATCH_SIZE: positiveInt(100),
@@ -242,6 +245,8 @@ const env = Object.freeze({
     enabled: resolvedPlatformEventsEnabled,
     webhookUrl: raw.ACG_FUNDED_WEBHOOK_URL || null,
     webhookSecret: raw.ACG_FUNDED_WEBHOOK_SECRET || null,
+    legacyTenantId: raw.ACG_FUNDED_WEBHOOK_TENANT_ID || null,
+    partnerRoutes: parsePartnerRoutes(raw.PARTNER_WEBHOOK_ROUTES_JSON),
     pollIntervalMs: raw.PLATFORM_EVENT_POLL_INTERVAL_MS,
     timeoutMs: raw.PLATFORM_EVENT_TIMEOUT_MS,
     batchSize: raw.PLATFORM_EVENT_BATCH_SIZE,
