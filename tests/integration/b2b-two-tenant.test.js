@@ -139,6 +139,17 @@ test('B2B Mongo/HTTP/WS: two firms, same external references, independent creden
     await Promise.all([new PlatformEventRelay(config).flush(),new PlatformEventRelay(config).flush()]);
     assert.equal(sends.filter(id=>id==='acg-trader:'+retry.eventId).length,1);
     assert.equal((await PlatformEventOutbox.findById(retry._id)).status,'DELIVERED');
+    // A crashed worker's expired claim is recoverable, but a live claim
+    // cannot be stolen. Reuse the durable event ID on recovery.
+    const leased=await relay.enqueueDeal({account:await TradingAccount.findById(aid),deal:{dealId:'lease-recovery'}});
+    await PlatformEventOutbox.updateOne({_id:leased._id},{$set:{deliveryLeaseToken:'crashed-worker',deliveryLeaseUntil:new Date(Date.now()+60000)}});
+    await new PlatformEventRelay(config).flush();
+    assert.equal(sends.filter(id=>id==='acg-trader:'+leased.eventId).length,0);
+    await PlatformEventOutbox.updateOne({_id:leased._id},{$set:{deliveryLeaseUntil:new Date(0)}});
+    await new PlatformEventRelay(config).flush();
+    assert.equal(sends.filter(id=>id==='acg-trader:'+leased.eventId).length,1);
+    assert.equal((await PlatformEventOutbox.findById(leased._id)).status,'DELIVERED');
+
     for(const item of sent){
       const isA=item.url.includes('reference.');assert.equal(item.body.metadata.tenantId,isA?a.id:b.id);
       assert.equal(item.body.aggregateId,isA?'funded-legacy-id':'same-ref');

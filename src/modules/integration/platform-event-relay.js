@@ -486,12 +486,19 @@ class PlatformEventRelay {
       payload: record.payload,
       metadata: record.metadata || {},
     };
+    let deliveryError = null;
     try {
       await this.#postEnvelope(String(record.tenantId), envelope);
+    } catch (error) {
+      deliveryError = error;
+    }
+    // A database acknowledgement failure is not a transport failure. Leave
+    // the pending claim to expire and retry the same immutable event ID.
+    record.attempts += 1;
+    record.lastAttemptAt = this.now();
+    if (!deliveryError) {
       record.status = 'DELIVERED';
       record.deliveredAt = this.now();
-      record.lastAttemptAt = this.now();
-      record.attempts += 1;
       record.lastError = null;
       record.expiresAt = new Date(this.now().getTime() + this.retentionMs);
       if (!await persist()) return false;
@@ -500,28 +507,26 @@ class PlatformEventRelay {
       }
       this.lastSuccessfulDeliveryAt = this.now().toISOString();
       return true;
-    } catch (error) {
-      record.attempts += 1;
-      record.lastAttemptAt = this.now();
-      record.lastError = String(error?.message || error).slice(0, 2000);
-      if (record.attempts >= this.maxAttempts) {
-        record.status = 'DEAD';
-        // Keep undelivered immutable facts until explicit operator resolution.
-        record.expiresAt = record.eventType === 'ACCOUNT_SNAPSHOT' ? new Date(this.now().getTime() + this.retentionMs) : null;
-        if (record.eventType === 'ACCOUNT_SNAPSHOT') {
-          this.snapshotRetryPending.delete(String(record.accountId || ''));
-        }
-        this.deadEvents += 1;
-        this.deadEventsByType[record.eventType] = Number(this.deadEventsByType[record.eventType] || 0) + 1;
-      } else {
-        record.nextAttemptAt = new Date(this.now().getTime() + retryDelayMs(record.attempts));
-      }
-      if (!await persist()) return false;
-      this.deliveryFailures += 1;
-      this.lastDeliveryFailureAt = this.now().toISOString();
-      this.logger?.warn({ err: error, eventId: record.eventId, attempts: record.attempts }, 'Platform event delivery failed');
-      return false;
     }
+    record.lastError = String(deliveryError?.message || deliveryError).slice(0, 2000);
+    if (record.attempts >= this.maxAttempts) {
+      record.status = 'DEAD';
+      record.expiresAt = record.eventType === 'ACCOUNT_SNAPSHOT' ? new Date(this.now().getTime() + this.retentionMs) : null;
+    } else {
+      record.nextAttemptAt = new Date(this.now().getTime() + retryDelayMs(record.attempts));
+    }
+    if (!await persist()) return false;
+    if (record.status === 'DEAD') {
+      if (record.eventType === 'ACCOUNT_SNAPSHOT') {
+        this.snapshotRetryPending.delete(String(record.accountId || ''));
+      }
+      this.deadEvents += 1;
+      this.deadEventsByType[record.eventType] = Number(this.deadEventsByType[record.eventType] || 0) + 1;
+    }
+    this.deliveryFailures += 1;
+    this.lastDeliveryFailureAt = this.now().toISOString();
+    this.logger?.warn({ err: deliveryError, eventId: record.eventId, attempts: record.attempts }, 'Platform event delivery failed');
+    return false;
   }
 
   async #postEnvelope(tenantId, envelope) {
