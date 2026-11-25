@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const { TradingAccount } = require('../accounts/trading-account.model');
 const { PlatformEventOutbox } = require('./platform-event-outbox.model');
 const { buildTenantWebhookRoutes } = require('./tenant-webhook-routes');
+const { safePartnerFetch } = require('./safe-partner-fetch');
 
 class PlatformEventRelay {
   constructor({
@@ -14,7 +15,7 @@ class PlatformEventRelay {
     legacyTenantId = null,
     partnerRoutes = [],
     enabled = false,
-    fetchImpl = globalThis.fetch,
+    fetchImpl = null,
     accountModel = TradingAccount,
     outboxModel = PlatformEventOutbox,
     logger = null,
@@ -48,7 +49,7 @@ class PlatformEventRelay {
     this.started = true;
     if (!this.enabled) return;
     if (!this.routes.size) throw new Error('Platform event relay requires explicit tenant routes');
-    if (typeof this.fetchImpl !== 'function') throw new Error('Platform event relay requires fetch');
+    if (this.fetchImpl != null && typeof this.fetchImpl !== 'function') throw new Error('Invalid webhook transport');
     // Realtime account snapshots are reconstructable and intentionally
     // coalesced. Immutable DEAL_CREATED and ACCOUNT_CONTROLLED facts are
     // enqueued transactionally by the trading/account services themselves.
@@ -130,7 +131,7 @@ class PlatformEventRelay {
 
   async enqueueDeal({ account, deal, session = null } = {}) {
     if (!this.enabled || !account || !deal) return null;
-    const fundedAccountId = this.#aggregateId(account);
+    const fundedAccountId = this.#aggregateId(account, 'DEAL_CREATED');
     if (!fundedAccountId) return null;
 
     return this.#enqueue(account, fundedAccountId, 'DEAL_CREATED', {
@@ -161,7 +162,7 @@ class PlatformEventRelay {
 
   async enqueueControl({ account, sourceEvent, session = null, evidence = null } = {}) {
     if (!this.enabled || !account) return null;
-    const fundedAccountId = this.#aggregateId(account);
+    const fundedAccountId = this.#aggregateId(account, 'ACCOUNT_CONTROLLED');
     if (!fundedAccountId) return null;
 
     return this.#enqueue(account, fundedAccountId, 'ACCOUNT_CONTROLLED', {
@@ -225,9 +226,9 @@ class PlatformEventRelay {
     }
   }
 
-  #aggregateId(account) {
+  #aggregateId(account, eventType) {
     const route = this.routes.get(String(account?.tenantId || ''));
-    if (!route) return null;
+    if (!route || !route.eventTypes.includes(eventType)) return null;
     return route.legacy ? metadataValue(account.metadata, 'fundedAccountId') : account.externalRef || null;
   }
 
@@ -272,7 +273,7 @@ class PlatformEventRelay {
     const latest = this.latestSnapshotSequence.get(accountId);
     if (Number.isFinite(sequence) && Number.isFinite(latest) && sequence < latest) return;
 
-    const fundedAccountId = this.#aggregateId(account);
+    const fundedAccountId = this.#aggregateId(account, 'ACCOUNT_SNAPSHOT');
     if (!fundedAccountId) return;
     const state = payload?.state || account.state || {};
     const snapshotPayload = {
@@ -364,7 +365,7 @@ class PlatformEventRelay {
     if (!accountId) return;
     const account = await this.accountModel.findById(accountId).lean();
     if (!account) return;
-    const fundedAccountId = this.#aggregateId(account);
+    const fundedAccountId = this.#aggregateId(account, 'DEAL_CREATED');
     if (!fundedAccountId) return;
     await this.#enqueue(account, fundedAccountId, 'DEAL_CREATED', {
       provider: 'acg-trader',
@@ -395,7 +396,7 @@ class PlatformEventRelay {
     if (!accountId) return;
     const account = await this.accountModel.findById(accountId).lean();
     if (!account) return;
-    const fundedAccountId = this.#aggregateId(account);
+    const fundedAccountId = this.#aggregateId(account, 'ACCOUNT_CONTROLLED');
     if (!fundedAccountId) return;
     await this.#enqueue(account, fundedAccountId, 'ACCOUNT_CONTROLLED', {
       provider: 'acg-trader',
@@ -489,7 +490,8 @@ class PlatformEventRelay {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchImpl(route.url, {
+      const transport = this.fetchImpl || (route.legacy ? globalThis.fetch : safePartnerFetch);
+      const response = await transport(route.url, {
         method: 'POST',
         redirect: 'error',
         headers: {
@@ -497,6 +499,7 @@ class PlatformEventRelay {
           'x-acg-event-timestamp': timestamp,
           'x-acg-event-signature': signature,
           'x-acg-event-id': envelope.eventId,
+          ...(route.keyId ? { 'x-acg-key-id': route.keyId } : {}),
         },
         body: JSON.stringify(envelope),
         signal: controller.signal,
