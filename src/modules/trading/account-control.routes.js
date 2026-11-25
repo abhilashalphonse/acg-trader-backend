@@ -65,30 +65,26 @@ const challengeSyncSchema = z.object({
 function createAccountControlRouter(runtime, authService) {
   const router = express.Router();
   router.use(requireEnabled(runtime));
-  // Read-only integrations must not receive account mutation permissions.
-  router.use((req, res, next) => requireServicePrincipal(authService,
-    ['GET', 'HEAD'].includes(req.method) && /^\/[0-9a-f]{24}(?:\/lifecycle)?\/?$/i.test(req.path)
-      ? ['accounts:read', 'accounts:write'] : 'accounts:write')(req, res, next));
 
-  router.post('/provision', async (req, res) => { const result = await runtime.accountControlService.provision({ ...parse(provisionSchema, req.body), tenantId: req.servicePrincipal.tenantId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
-  router.get('/:accountId', async (req, res) => { const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); res.json({ account: await runtime.accountControlService.getById(accountId) }); });
-  router.get('/:accountId/lifecycle', async (req, res) => {
+  router.post('/provision', requireServicePrincipal(authService, ["accounts:provision","accounts:write"]), async (req, res) => { const result = await runtime.accountControlService.provision({ ...parse(provisionSchema, req.body), tenantId: req.servicePrincipal.tenantId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.get('/:accountId', requireServicePrincipal(authService, ["accounts:read","accounts:write"]), async (req, res) => { const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); res.json({ account: await runtime.accountControlService.getById(accountId) }); });
+  router.get('/:accountId/lifecycle', requireServicePrincipal(authService, ["accounts:read","accounts:write"]), async (req, res) => {
     const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); const { limit } = parse(lifecycleQuerySchema, req.query || {});
     const events = await runtime.accountControlService.lifecycleModel.find({ tenantId: req.servicePrincipal.tenantId, accountId }).sort({ createdAt: -1, _id: -1 }).limit(limit).lean();
     res.json({ events: events.map(event => ({ id: String(event._id), eventId: event.eventId, type: event.type, fromStatus: event.fromStatus, toStatus: event.toStatus, tradingEnabledBefore: event.tradingEnabledBefore, tradingEnabledAfter: event.tradingEnabledAfter, reason: event.reason, actorType: event.actorType, actorRef: event.actorRef || null, metadata: event.metadata instanceof Map ? Object.fromEntries(event.metadata) : (event.metadata || {}), createdAt: event.createdAt ? new Date(event.createdAt).toISOString() : null })) });
   });
 
-  router.get('/:accountId/admin-observability', async (req, res) => {
+  router.get('/:accountId/admin-observability', requireServicePrincipal(authService, ["accounts:observe","accounts:write"]), async (req, res) => {
     const accountId = parseId(req.params.accountId);
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const { limit } = parse(observabilityQuerySchema, req.query || {});
 
     const [account, openPositions, closedPositions, deals, orders, lifecycle, policyTransitions, tradingPolicyShadowEvents, weekendActions, tradingPermissionStatus] = await Promise.all([
       runtime.accountControlService.getById(accountId),
-      runtime.tradingHistoryService.positions(accountId, { limit, status: 'OPEN' }),
-      runtime.tradingHistoryService.positions(accountId, { limit, status: 'CLOSED' }),
-      runtime.tradingHistoryService.deals(accountId, { limit }),
-      runtime.tradingHistoryService.orders(accountId, { limit }),
+      runtime.tradingHistoryService.positions(accountId, { limit, status: 'OPEN', tenantId: req.servicePrincipal.tenantId }),
+      runtime.tradingHistoryService.positions(accountId, { limit, status: 'CLOSED', tenantId: req.servicePrincipal.tenantId }),
+      runtime.tradingHistoryService.deals(accountId, { limit, tenantId: req.servicePrincipal.tenantId }),
+      runtime.tradingHistoryService.orders(accountId, { limit, tenantId: req.servicePrincipal.tenantId }),
       runtime.accountControlService.lifecycleModel
         .find({ tenantId: req.servicePrincipal.tenantId, accountId })
         .sort({ createdAt: -1, _id: -1 })
@@ -165,14 +161,14 @@ function createAccountControlRouter(runtime, authService) {
     });
   });
 
-  router.post('/:accountId/policy-transitions', async (req, res) => {
+  router.post('/:accountId/policy-transitions', requireServicePrincipal(authService, ["funded:policy-migration","accounts:write"]), async (req, res) => {
     const accountId = parseId(req.params.accountId);
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
     const command = parse(policyTransitionSchema, req.body || {});
     res.json(await runtime.accountControlService.transitionRiskPolicy(accountId, command));
   });
 
-  router.patch('/:accountId/challenge', async (req, res) => {
+  router.patch('/:accountId/challenge', requireServicePrincipal(authService, ["risk:write","accounts:write"]), async (req, res) => {
     const accountId = parseId(req.params.accountId);
     const patch = parse(challengeSyncSchema, req.body || {});
     await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId);
@@ -199,14 +195,14 @@ function createAccountControlRouter(runtime, authService) {
     res.json({ operation: 'CHALLENGE_SYNC', account: serialized });
   });
 
-  router.post('/:accountId/pause', tenantCommand(runtime, 'pause', restrictSchema));
-  router.post('/:accountId/stage', tenantCommand(runtime, 'stage', restrictSchema));
-  router.post('/:accountId/activate', tenantCommand(runtime, 'activate', z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict()));
-  router.post('/:accountId/resume', tenantCommand(runtime, 'resume', z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict()));
-  router.post('/:accountId/disable', tenantCommand(runtime, 'disable', disableSchema));
-  router.post('/:accountId/breach', tenantCommand(runtime, 'breach', breachSchema));
-  router.post('/:accountId/flatten', tenantCommand(runtime, 'flatten', flattenSchema));
-  router.post('/:accountId/close', async (req, res) => { const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); const options = parse(closeSchema, req.body || {}); res.json(await runtime.accountControlService.close(accountId, options)); });
+  router.post('/:accountId/pause', requireServicePrincipal(authService, ["accounts:control","accounts:write"]), tenantCommand(runtime, 'pause', restrictSchema));
+  router.post('/:accountId/stage', requireServicePrincipal(authService, ["accounts:control","accounts:write"]), tenantCommand(runtime, 'stage', restrictSchema));
+  router.post('/:accountId/activate', requireServicePrincipal(authService, ["accounts:control","accounts:write"]), tenantCommand(runtime, 'activate', z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict()));
+  router.post('/:accountId/resume', requireServicePrincipal(authService, ["accounts:control","accounts:write"]), tenantCommand(runtime, 'resume', z.object({ reason: z.string().trim().min(1).max(256).optional() }).strict()));
+  router.post('/:accountId/disable', requireServicePrincipal(authService, ["accounts:control","accounts:write"]), tenantCommand(runtime, 'disable', disableSchema));
+  router.post('/:accountId/breach', requireServicePrincipal(authService, ["accounts:control","accounts:write"]), tenantCommand(runtime, 'breach', breachSchema));
+  router.post('/:accountId/flatten', requireServicePrincipal(authService, ["accounts:control","accounts:write"]), tenantCommand(runtime, 'flatten', flattenSchema));
+  router.post('/:accountId/close', requireServicePrincipal(authService, ["accounts:control","accounts:write"]), async (req, res) => { const accountId = parseId(req.params.accountId); await assertTenantAccount(runtime, req.servicePrincipal.tenantId, accountId); const options = parse(closeSchema, req.body || {}); res.json(await runtime.accountControlService.close(accountId, options)); });
   return router;
 }
 

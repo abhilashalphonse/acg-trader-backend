@@ -23,7 +23,7 @@ const ticketSchema = z.object({
 function createInternalAuthRouter(authService) {
   const router = express.Router();
 
-  router.post('/accounts/:accountId/credentials', requireServicePrincipal(authService, 'accounts:write'), async (req, res) => {
+  router.post('/accounts/:accountId/credentials', requireServicePrincipal(authService, ['credentials:write', 'accounts:write']), async (req, res) => {
     const result = await authService.createNativeCredential({
       tenantId: req.servicePrincipal.tenantId,
       accountId: parseId(req.params.accountId),

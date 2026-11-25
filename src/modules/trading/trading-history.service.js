@@ -18,6 +18,7 @@ class TradingHistoryService {
 
 async function page(model, accountId, query, serializer, timeField) {
   const filter = { accountId };
+  if (query.tenantId) filter.tenantId = query.tenantId;
   if (query.symbol) filter.symbol = String(query.symbol).toUpperCase();
   if (query.status) filter.status = String(query.status).toUpperCase();
   if (query.side) filter.side = String(query.side).toUpperCase();

@@ -50,7 +50,7 @@ function createTradingRouter(runtime, authService) {
   }));
 
   router.get('/accounts/:accountId/valuation', async (req, res) => { const accountId = parseObjectId(req.params.accountId); requireAccountGrant(req.traderPrincipal, accountId); const valuation = await runtime.valuationEngine.getOrLoadAccountSnapshot(accountId); if (!valuation) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' }); res.json(valuation); });
-  router.get('/positions/:positionId/valuation', async (req, res) => { const positionId = parseObjectId(req.params.positionId); const accountId = await positionAccountId(positionId); requireAccountGrant(req.traderPrincipal, accountId); const valuation = runtime.valuationEngine.getPositionSnapshot(positionId); if (!valuation) throw new AppError('Open position valuation was not found', { statusCode: 404, code: 'POSITION_VALUATION_NOT_FOUND' }); res.json(valuation); });
+  router.get('/positions/:positionId/valuation', async (req, res) => { const positionId = parseObjectId(req.params.positionId); const accountId = await positionAccountId(positionId, req.traderPrincipal.tenantId); requireAccountGrant(req.traderPrincipal, accountId); const valuation = runtime.valuationEngine.getPositionSnapshot(positionId); if (!valuation) throw new AppError('Open position valuation was not found', { statusCode: 404, code: 'POSITION_VALUATION_NOT_FOUND' }); res.json(valuation); });
   router.get('/accounts/:accountId/orders/pending', async (req, res) => { const accountId = parseObjectId(req.params.accountId); requireAccountGrant(req.traderPrincipal, accountId); res.json({ orders: await runtime.pendingOrderService.listPendingOrders(accountId) }); });
   router.get('/accounts/:accountId/policy-status', async (req, res) => {
     const accountId = parseObjectId(req.params.accountId);
@@ -90,10 +90,10 @@ function createTradingRouter(runtime, authService) {
   // Amending an existing pending entry is allowed during a restriction window.
   // The trigger path remains authoritative and will not create fresh exposure
   // while enforcement is active; cancellation is always allowed as risk reduction.
-  router.patch('/orders/:orderId', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(amendPendingSchema, req.body); const accountId = await orderAccountId(orderId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); res.json(await runtime.pendingOrderAmendService.amend({ ...command, orderId })); });
-  router.post('/orders/:orderId/cancel', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(cancelPendingSchema, req.body); const accountId = await orderAccountId(orderId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); const result = await runtime.pendingOrderService.cancelPendingOrder({ ...command, orderId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.patch('/orders/:orderId', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(amendPendingSchema, req.body); const accountId = await orderAccountId(orderId, req.traderPrincipal.tenantId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); res.json(await runtime.pendingOrderAmendService.amend({ ...command, orderId })); });
+  router.post('/orders/:orderId/cancel', async (req, res) => { const orderId = parseObjectId(req.params.orderId); const command = parse(cancelPendingSchema, req.body); const accountId = await orderAccountId(orderId, req.traderPrincipal.tenantId); assertResourceAccount(accountId, command.accountId, 'ORDER_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); const result = await runtime.pendingOrderService.cancelPendingOrder({ ...command, orderId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
   router.post('/accounts/:accountId/positions/close-all', async (req, res) => { const accountId = parseObjectId(req.params.accountId); const command = parse(closeAllSchema, req.body); assertResourceAccount(accountId, command.accountId, 'ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); const result = await runtime.tradingCommandService.closeAllPositions(command); res.status(result.complete ? 200 : 207).json(result); });
-  router.post('/positions/:positionId/reverse', async (req, res) => { const positionId = parseObjectId(req.params.positionId); const command = parse(reverseSchema, req.body); const resource = await positionResource(positionId); const accountId = resource.accountId; assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); await runtime.tradingPermissionPolicyService.assertExposureIncreaseAllowed({ accountId, symbol: resource.symbol, action: 'POSITION_REVERSE', referenceId: command.clientRequestId }); const result = await runtime.tradingCommandService.reversePosition({ ...command, positionId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
+  router.post('/positions/:positionId/reverse', async (req, res) => { const positionId = parseObjectId(req.params.positionId); const command = parse(reverseSchema, req.body); const resource = await positionResource(positionId, req.traderPrincipal.tenantId); const accountId = resource.accountId; assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH'); requireAccountGrant(req.traderPrincipal, accountId); await assertCustomerTradingWritable(accountId); await runtime.tradingPermissionPolicyService.assertExposureIncreaseAllowed({ accountId, symbol: resource.symbol, action: 'POSITION_REVERSE', referenceId: command.clientRequestId }); const result = await runtime.tradingCommandService.reversePosition({ ...command, positionId }); res.status(result.idempotentReplay ? 200 : 201).json(result); });
 
   router.patch('/positions/:positionId/protection', positionCommand(positionProtectionCommand(runtime, 'updateProtection'), protectionSchema));
   router.post('/positions/:positionId/break-even', positionCommand(positionProtectionCommand(runtime, 'moveStopToBreakEven'), breakEvenSchema));
@@ -104,12 +104,12 @@ function createTradingRouter(runtime, authService) {
     true,
   ));
 
-  function historyHandlerFactory(method) { return async (req, res) => { const accountId = parseObjectId(req.params.accountId); requireAccountGrant(req.traderPrincipal, accountId); res.json(await runtime.tradingHistoryService[method](accountId, parse(historyQuerySchema, req.query || {}))); }; }
+  function historyHandlerFactory(method) { return async (req, res) => { const accountId = parseObjectId(req.params.accountId); requireAccountGrant(req.traderPrincipal, accountId); res.json(await runtime.tradingHistoryService[method](accountId, { ...parse(historyQuerySchema, req.query || {}), tenantId: req.traderPrincipal.tenantId })); }; }
   function positionCommand(executor, schema, createdResponse = false) {
     return async (req, res) => {
       const positionId = parseObjectId(req.params.positionId);
       const command = parse(schema, req.body);
-      const accountId = await timeAsync(req.executionTiming, 'resource_auth_read', () => positionAccountId(positionId));
+      const accountId = await timeAsync(req.executionTiming, 'resource_auth_read', () => positionAccountId(positionId, req.traderPrincipal.tenantId));
       assertResourceAccount(accountId, command.accountId, 'POSITION_ACCOUNT_MISMATCH');
       requireAccountGrant(req.traderPrincipal, accountId);
       await assertCustomerTradingWritable(accountId);
@@ -134,10 +134,10 @@ function createTradingRouter(runtime, authService) {
 }
 
 function positionProtectionCommand(runtime, method) { return command => runtime.positionProtectionService[method](command); }
-async function orderResource(orderId) { const order = await Order.findById(orderId).select('accountId symbol').lean(); if (!order) throw new AppError('Order was not found', { statusCode: 404, code: 'ORDER_NOT_FOUND' }); return { accountId: String(order.accountId), symbol: order.symbol }; }
-async function orderAccountId(orderId) { return (await orderResource(orderId)).accountId; }
-async function positionResource(positionId) { const position = await Position.findById(positionId).select('accountId symbol').lean(); if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' }); return { accountId: String(position.accountId), symbol: position.symbol }; }
-async function positionAccountId(positionId) { return (await positionResource(positionId)).accountId; }
+async function orderResource(orderId, tenantId) { const order = await Order.findOne({ _id: orderId, tenantId }).select('accountId symbol').lean(); if (!order) throw new AppError('Order was not found', { statusCode: 404, code: 'ORDER_NOT_FOUND' }); return { accountId: String(order.accountId), symbol: order.symbol }; }
+async function orderAccountId(orderId, tenantId) { return (await orderResource(orderId, tenantId)).accountId; }
+async function positionResource(positionId, tenantId) { const position = await Position.findOne({ _id: positionId, tenantId }).select('accountId symbol').lean(); if (!position) throw new AppError('Position was not found', { statusCode: 404, code: 'POSITION_NOT_FOUND' }); return { accountId: String(position.accountId), symbol: position.symbol }; }
+async function positionAccountId(positionId, tenantId) { return (await positionResource(positionId, tenantId)).accountId; }
 async function assertCustomerTradingWritable(accountId) {
   const account = await TradingAccount.findById(accountId).select('status tradingEnabled').lean();
   if (!account) throw new AppError('Trading account was not found', { statusCode: 404, code: 'ACCOUNT_NOT_FOUND' });

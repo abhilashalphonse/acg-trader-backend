@@ -12,6 +12,7 @@ test('read-only partner credentials cannot mutate or read another tenant account
   const own = '64b000000000000000000001', foreign = '64b000000000000000000002';
   const records = {
     reader: { clientId:'reader', keyHash:hashToken('reader-token'), tenantId, scopes:['accounts:read','ledger:read'] },
+    control: { clientId:'control', keyHash:hashToken('control-token'), tenantId, scopes:['accounts:control'] },
     legacy: { clientId:'legacy', keyHash:hashToken('legacy-token'), tenantId, scopes:['accounts:write'] },
   };
   const authService = new AuthService({
@@ -41,9 +42,14 @@ test('read-only partner credentials cannot mutate or read another tenant account
     assert.equal((await fetch(base+own+'/ADMIN-OBSERVABILITY/',{headers})).status,403);
     assert.equal(writes,0);
     assert.ok(queries.every(q=>q.tenantId===tenantId));
+    const control={...headers,Authorization:'Bearer control-token','x-acg-client-id':'control'};
+    assert.equal((await fetch(base+own+'/pause',{method:'POST',headers:control,body:'{}'})).status,200);
+    assert.equal((await fetch(base+foreign+'/pause',{method:'POST',headers:control,body:'{}'})).status,404);
+    assert.equal((await fetch(base+own+'/ledger',{method:'POST',headers:control,body:'{}'})).status,403);
+    assert.equal((await fetch(base+own,{headers:control})).status,403);
     const legacy={...headers,Authorization:'Bearer legacy-token','x-acg-client-id':'legacy'};
     assert.equal((await fetch(base+own,{headers:legacy})).status,200);
     assert.equal((await fetch(base+own+'/pause',{method:'POST',headers:legacy,body:'{}'})).status,200);
-    assert.equal(writes,1);
+    assert.equal(writes,2);
   } finally {await new Promise(resolve=>server.close(resolve));}
 });
