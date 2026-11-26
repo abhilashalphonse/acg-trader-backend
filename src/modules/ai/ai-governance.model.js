@@ -15,7 +15,7 @@ const auditSchema = new Schema({
   requestedAccountId: { type: String, default: null, match: /^[a-f0-9]{24}$/ },
   operation: { type: String, required: true, enum: ['DISCOVER','GRANT_GET','GRANT_CREATE','GRANT_REVOKE','TOOL_INVOKE','CONTROL_CHANGE'] },
   toolId: { type: String, default: null, maxlength: 80 },
-  stage: { type: String, required: true, enum: ['ATTEMPT','ALLOWED','DENIED','FAILED','CONTROL_CHANGED'] },
+  stage: { type: String, required: true, enum: ['ATTEMPT','ALLOWED','DENIED','FAILED','SUPPRESSED','CONTROL_CHANGED'] },
   reason: { type: String, default: null, maxlength: 64 },
   revision: { type: Number, default: null, min: 0, validate: v => v == null || Number.isSafeInteger(v) },
   enabled: { type: Boolean, default: null },
