@@ -6,6 +6,8 @@ const {createOfflineBudget}=require('../src/modules/ai/providers/compute-budget'
 const {createOfflineEducationCache}=require('../src/modules/ai/providers/education-cache');
 const {createModelRegistry}=require('../src/modules/ai/providers/model-registry');
 const {normalizeOfflineOutcome,CONTRACT_VERSION}=require('../src/modules/ai/providers/provider-contract');
+const {createAiQuota}=require('../src/modules/ai/ai-quota');
+const {createAiQuotaStore}=require('../src/modules/ai/ai-quota-store');
 const {createAiGovernance}=require('../src/modules/ai/ai-governance');
 const {AiAuditEvent}=require('../src/modules/ai/ai-governance.model');
 const {assertIsolated}=require('../src/modules/ai/providers/credit-ledger-store');
@@ -38,6 +40,7 @@ async function runPhase3SecurityIntegration({auth,gateway,gs,token,foreignToken,
         usage:{status:'PROVIDER_REPORTED',inputTokens:100,outputTokens:20,cachedInputTokens:null,reasoningOutputTokens:null},errorCode:'NONE'});
     }}];
   const base={auth,gateway,governance:createAiGovernance({store:gs}),governanceStore:gs,
+    quota:createAiQuota({store:createAiQuotaStore()}),
     currentToken:()=>activeToken,accountId:readRequest.accountId,connectionId:readRequest.connectionId,
     selection,registry,adapters,computeBudget:budget,educationCache:cache,policyEpoch:'fixture-policy-v1',now:()=>clock,
     authorizePurpose:async req=>{
@@ -93,6 +96,10 @@ async function runPhase3SecurityIntegration({auth,gateway,gs,token,foreignToken,
   discloseAllowed=false;
   await assert.rejects(edu.run(input('Explain BOS.')),{code:'AI_INTEGRATION_FORBIDDEN'});
   discloseAllowed=true;assert.equal(calls,c);
+  const restricted=await createIsolatedIntelligenceSession({...base,profile:'EDUCATION',
+    quota:createAiQuota({store:createAiQuotaStore(),limit:1})});
+  await assert.rejects(restricted.run(input('Explain BOS.')),{code:'AI_QUOTA_EXCEEDED'});
+  assert.equal(calls,c);
   const events=await AiAuditEvent.find({tenantId:scope.tenantId,operation:'AI_GENERATE_OFFLINE'}).lean();
   assert.ok(events.some(e=>e.stage==='ATTEMPT'));
   assert.ok(events.some(e=>e.stage==='ALLOWED'));
