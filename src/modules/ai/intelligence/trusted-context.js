@@ -6,6 +6,7 @@ const {digest,freeze}=require('./candle-evidence');
 const {analyzeMarketCandles}=require('./market-facts');
 const {analyzeStructure}=require('./structure-liquidity');
 const {summarizeTimeframeStructure}=require('./timeframe-structure');
+const {analyzeSessionRange}=require('./session-range');
 const {classifyCoverage,validSchedule}=require('./calendar-coverage');
 const MAX_TIMEFRAMES=3,MAX_BARS=128,TTL_MS=10000;
 const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
@@ -35,14 +36,18 @@ function quoteEvidence(raw,i,asOfMs){
 function createTrustedContextAssembler({source,authorize,now=Date.now}={}){
   if(!source||typeof authorize!=='function')throw Error('Trusted context authorization and source required');
   return Object.freeze({
-    async assemble({scope,symbol,timeframes,limit=MAX_BARS}={}){
+    async assemble({scope,symbol,timeframes,limit=MAX_BARS,sessionWindows=[]}={}){
       if(!scope||!['tenantId','actorId','sessionId','accountId'].every(k=>id(scope[k]))||
         typeof symbol!=='string'||!/^[A-Z0-9._-]{1,32}$/.test(symbol)||
         !Array.isArray(timeframes)||timeframes.length<1||timeframes.length>MAX_TIMEFRAMES||
         new Set(timeframes).size!==timeframes.length||!timeframes.every(t=>typeof t==='string'&&Object.hasOwn(TWELVE_DATA_HISTORY_INTERVALS,t))||
-        !Number.isSafeInteger(limit)||limit<1||limit>MAX_BARS)deny('INVALID_CONTEXT_REQUEST');
+        !Number.isSafeInteger(limit)||limit<1||limit>MAX_BARS||
+        !Array.isArray(sessionWindows)||sessionWindows.length>3||
+        !sessionWindows.every(w=>w&&timeframes.includes(w.timeframe)&&Number.isSafeInteger(w.startMs)&&
+          Number.isSafeInteger(w.endMs)&&w.startMs>=0&&w.endMs>w.startMs&&w.endMs-w.startMs<=86400000))
+        deny('INVALID_CONTEXT_REQUEST');
       const request=freeze({scope:{tenantId:scope.tenantId,actorId:scope.actorId,sessionId:scope.sessionId,accountId:scope.accountId},
-        symbol,timeframes:[...timeframes],limit});
+        symbol,timeframes:[...timeframes],limit,sessionWindows:sessionWindows.map(w=>({timeframe:w.timeframe,startMs:w.startMs,endMs:w.endMs}))});
       if(await authorize(request)!==true)deny('CONTEXT_FORBIDDEN');
       const asOfMs=now();if(!clock(asOfMs))deny('INVALID_CONTEXT_CLOCK');
       const i=await source.instrument(symbol);
@@ -59,7 +64,9 @@ function createTrustedContextAssembler({source,authorize,now=Date.now}={}){
         const coverage=classifyCoverage(analysis.evidence,i);
         // Do not surface facts from bars known to be outside the configured calendar.
         const structure=coverage.outOfSessionBars>0?null:analyzeStructure({symbol,timeframe,asOfMs,candles});
-        series.push({timeframe,coverage,structure,analysis:coverage.outOfSessionBars>0?null:analysis,
+        const sessions=coverage.outOfSessionBars>0?[]:request.sessionWindows.filter(w=>w.timeframe===timeframe)
+          .map(w=>analyzeSessionRange({symbol,timeframe,asOfMs,candles},w));
+        series.push({timeframe,coverage,structure,sessions,analysis:coverage.outOfSessionBars>0?null:analysis,
           status:coverage.outOfSessionBars>0?'OUT_OF_SESSION_DATA_REJECTED':'HISTORICAL_ONLY'});
       }
       // Recheck mapping and schedule after reads; not a distributed atomic snapshot.
