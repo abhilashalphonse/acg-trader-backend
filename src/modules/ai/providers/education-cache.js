@@ -24,7 +24,7 @@ function createOfflineEducationCache({now=Date.now,maxEntries=128,maxBytes=26214
       const t=time(),k=key(input);if(t===null||!k||t>=input.request.expiresAtMs)return null;
       prune(t);const e=entries.get(k);if(!e)return null;
       entries.delete(k);entries.set(k,e);
-      return e.candidate;
+      return freeze({candidate:e.candidate,expiresAtMs:e.expiresAtMs});
     },
     put(input,{candidate,verifiedResponse}={}){
       const t=time(),k=key(input);
@@ -43,6 +43,11 @@ function createOfflineEducationCache({now=Date.now,maxEntries=128,maxBytes=26214
       prune(t);remove(k);
       while(entries.size>=maxEntries||bytes+size>maxBytes)remove(entries.keys().next().value);
       entries.set(k,freeze({candidate,expiresAtMs,size}));bytes+=size;return true;
+    },
+    isCurrent(input,hit){
+      const t=time(),k=key(input),e=k?entries.get(k):null;
+      return t!==null&&e!==undefined&&e!==null&&t<e.expiresAtMs&&t<input.request.expiresAtMs&&
+        hit?.candidate===e.candidate&&hit?.expiresAtMs===e.expiresAtMs;
     },
     invalidateAll(){entries.clear();bytes=0;},
   });
