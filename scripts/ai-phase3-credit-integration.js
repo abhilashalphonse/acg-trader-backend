@@ -5,7 +5,9 @@ const {createIsolatedCreditStore,assertIsolated}=require('../src/modules/ai/prov
 const {createIsolatedCreditLedger}=require('../src/modules/ai/providers/credit-ledger');
 const {AiCreditWallet,AiCreditReservation,AiCreditJournal}=require('../src/modules/ai/providers/credit-ledger.model');
 const {createModelRegistry}=require('../src/modules/ai/providers/model-registry');
-const {createOfflineRequest}=require('../src/modules/ai/providers/provider-contract');
+const {createOfflineRequest,normalizeOfflineOutcome,CONTRACT_VERSION}=require('../src/modules/ai/providers/provider-contract');
+const {createOfflineOrchestrator}=require('../src/modules/ai/providers/offline-orchestrator');
+const {createResponseEngine}=require('../src/modules/ai/intelligence/response-engine');
 const {createPricingRegistry}=require('../src/modules/ai/providers/compute-pricing');
 const {compilePromptPackage}=require('../src/modules/ai/intelligence/prompt-compiler');
 async function runPhase3CreditIntegration({auth,token,foreignToken,accountId,foreignAccountId}){
@@ -109,6 +111,33 @@ async function runPhase3CreditIntegration({auth,token,foreignToken,accountId,for
   assert.ok(journal.every(e=>BigInt(e.available)+BigInt(e.reserved)+BigInt(e.spent)===BigInt(e.credited)));
   assert.ok(!(JSON.stringify(await AiCreditReservation.find({tenantId:s.tenantId,actorId:s.actorId}).lean()).includes('Synthetic ledger fixture')));
   await assert.rejects(AiCreditJournal.updateOne({_id:event._id},{$set:{amount:'0'}}),/append-only/);
+  let dispatches=0;
+  const orchestrator=()=>createOfflineOrchestrator({registry,pricingRegistry:pricing,creditLedger:ledger(),
+    responseEngine:createResponseEngine({authorize,now:()=>now}),authorize,now:()=>now,
+    adapters:[{providerId:selection.providerId,modelId:selection.modelId,contractVersion:CONTRACT_VERSION,
+      executionMode:'OFFLINE_TEST_ONLY',async generate(q){
+        dispatches++;
+        return normalizeOfflineOutcome(q,{requestId:q.requestId,providerId:q.providerId,modelId:q.modelId,
+          descriptorId:q.descriptorId,status:'COMPLETED',
+          candidate:JSON.stringify({schemaVersion:'candidate-response-v2',status:'UNSUPPORTED',observations:[],interpretations:[],education:[]}),
+          usage:{status:'PROVIDER_REPORTED',inputTokens:20,outputTokens:10,cachedInputTokens:null,reasoningOutputTokens:null},errorCode:'NONE'});
+      }}]});
+  const input={scope:s,idempotencyKey:randomUUID(),selection,profile:'EDUCATION',question:'Synthetic orchestration fixture',
+    inputTokenUpperBound:100,maxOutputTokens:50,timeoutMs:10000};
+  const result=await orchestrator().run(input);
+  assert.equal(result.receipt.status,'COMPLETED');
+  assert.equal(result.receipt.creditReservation.status,'SETTLED');
+  assert.equal(result.receipt.creditReservation.charged,'40000000');
+  assert.equal(dispatches,1);
+  await check('380000000','0','120000000');
+  const replay=await orchestrator().run(input);
+  assert.equal(replay.receipt.status,'RECONCILIATION_REQUIRED');
+  assert.equal(replay.receipt.dispatch,'NOT_DISPATCHED');assert.equal(dispatches,1);
+  await check('380000000','0','120000000');
+  const byoResult=await orchestrator().run({...input,idempotencyKey:randomUUID(),selection:{...selection,fundingMode:'BYO_API'}});
+  assert.equal(byoResult.receipt.status,'COMPLETED');assert.equal(byoResult.receipt.creditReservation,null);
+  await check('380000000','0','120000000');
+  console.log('PASS Phase 3 credit orchestration durable pre-dispatch reservation, settlement, restart replay denial and BYO bypass');
   console.log('PASS Phase 3 credit ledger Mongo transactions, concurrent balance admission, one-shot dispatch, single settlement, recovery holds, journal rollback and isolation');
 }
 module.exports={runPhase3CreditIntegration};
