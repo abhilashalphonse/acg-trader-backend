@@ -36,13 +36,13 @@ function safeQuestion(q){
 // synthetic policy, not a production licence or consent implementation.
 // One immutable scope/profile/model/market specification per composition.
 async function createIsolatedIntelligenceSession({auth,gateway,governance,governanceStore,
-  currentToken,accountId,connectionId,selection,profile,market=null,source=null,
+  currentToken,accountId,connectionId,selection,profile,market=null,source=null,quota,
   authorizePurpose,policyEpoch,registry,pricingRegistry,adapters,computeBudget,creditLedger,educationCache=null,
   now=Date.now,identityNow=Date.now}={}){
   assertIsolated();
   if(typeof auth?.authenticateSessionToken!=='function'||typeof gateway?.assertDisclosure!=='function'||
     typeof governance?.run!=='function'||typeof governanceStore?.control!=='function'||
-    typeof currentToken!=='function'||typeof authorizePurpose!=='function'||
+    typeof currentToken!=='function'||typeof authorizePurpose!=='function'||typeof quota?.consume!=='function'||
     typeof computeBudget?.reserve!=='function'||typeof policyEpoch!=='string'||!/^[A-Za-z0-9._:-]{1,80}$/.test(policyEpoch))
     fail('AI_INTEGRATION_CONFIG',503);
   accountId=parse(id,accountId);connectionId=parse(z.uuid(),connectionId);
@@ -77,6 +77,9 @@ async function createIsolatedIntelligenceSession({auth,gateway,governance,govern
       await gateway.assertDisclosure(fresh,readRequest);
       if(await authorizePurpose(freeze({scope,operation,selection,profile,market,
         policyEpoch,governanceRevision:revision,externalExport:false,offlineOnly:true}))!==true)return false;
+      const again=await principal();
+      if(!equalScope(scopeFor(again,accountId,identityNow()),scope))return false;
+      await gateway.assertDisclosure(again,readRequest);
       const last=await governanceStore.control(scope.tenantId);
       return last?.enabled===true&&last.revision===revision;
     }catch{return false;}
@@ -99,15 +102,21 @@ async function createIsolatedIntelligenceSession({auth,gateway,governance,govern
       assertIsolated();const x=parse(runSchema,input);
       const p=await principal();
       if(!equalScope(scopeFor(p,accountId,identityNow()),scope))fail('AI_SCOPE_CHANGED');
+      let completed=null;
       const result=await governance.run({principal:p,operation:'AI_GENERATE_OFFLINE',requestedAccountId:accountId},
         async()=>{
           if(!safeQuestion(x.question))fail('AI_QUESTION_RESTRICTED',400);
           if(!await check('GENERATE'))fail('AI_INTEGRATION_FORBIDDEN');
+          await quota.consume(p);
           const context=assembler?await assembler.assemble(marketRequest):null;
-          return orchestrator.run({...x,scope,selection,profile,context},{signal});
-        },async()=>{if(!await check('DISCLOSE'))fail('AI_INTEGRATION_FORBIDDEN');});
+          completed=await orchestrator.run({...x,scope,selection,profile,context},{signal});
+          return completed;
+        },async()=>{
+          if(!await check('DISCLOSE'))fail('AI_INTEGRATION_FORBIDDEN');
+          if(completed?.response&&(!Number.isSafeInteger(now())||now()>=completed.response.expiresAtMs))fail('AI_RESPONSE_EXPIRED');
+        });
       // Governance append and final authorization consume time too.
-      if(result.response&&now()>=result.response.expiresAtMs)fail('AI_RESPONSE_EXPIRED');
+      if(result.response&&(!Number.isSafeInteger(now())||now()>=result.response.expiresAtMs))fail('AI_RESPONSE_EXPIRED');
       return result;
     },
     async status(key){assertIsolated();return orchestrator.status(scope,parse(z.uuid(),key));},
