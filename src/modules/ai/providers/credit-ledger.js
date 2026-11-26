@@ -151,7 +151,10 @@ function createIsolatedCreditLedger({store,authorize,now=Date.now}={}){
           ['CANCELLED','UNKNOWN'].includes(o.status)?{status:'UNKNOWN'}:o.usage);}
         catch{fail('CREDIT_SNAPSHOT_INVALID');}
         const final=metered.status==='CALCULATED_OFFLINE';
-        const evidence=final?digest([o.status,metered.lines,metered.costPicoUsd]):null;
+        const evidence=final?digest([o.status,
+          ['status','inputTokens','outputTokens','totalTokens','cachedInputTokens','reasoningOutputTokens',
+            'cacheWriteInputTokens','cacheWrite5mInputTokens','cacheWrite1hInputTokens'].map(k=>o.usage[k]??null),
+          metered.lines,metered.costPicoUsd]):null;
         if(r.status==='SETTLED'){
           if(!final||r.usageDigest!==evidence)fail('CREDIT_CONFLICT');
           return receipt(r);
