@@ -45,7 +45,7 @@ async function main() {
 
   try {
     const docs = await Instrument.find(symbols ? { symbol: { $in: [...symbols] } } : {})
-      .select('symbol status timezone tradingSessions tradingHolidays')
+      .select('symbol status timezone tradingSessions tradingHolidays sessionOverrides')
       .sort({ symbol: 1 })
       .lean();
 
