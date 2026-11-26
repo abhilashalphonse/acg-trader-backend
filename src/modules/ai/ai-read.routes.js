@@ -5,6 +5,7 @@ const { rateLimit } = require('express-rate-limit');
 const { requireTraderSession, bearerToken } = require('../auth/auth.middleware');
 const { AppError } = require('../../shared/errors/app-error');
 const { AVAILABLE_READ_TOOLS } = require('./read-tool-registry');
+const { assertPhaseOneRead, assertPhaseOneGrant } = require('./financial-safety-boundary');
 const accountId = z.string().regex(/^[a-f0-9]{24}$/);
 const connectionId = z.uuid();
 const createSchema = z.object({ accountId, toolIds: z.array(z.enum(AVAILABLE_READ_TOOLS)).min(1).max(AVAILABLE_READ_TOOLS.length) }).strict();
@@ -23,10 +24,18 @@ function createAiReadRouter({ authService, gateway }) {
     keyGenerator: req => 'ai:' + req.traderPrincipal.sessionId }));
   router.get('/tools', (_req,res) => res.json({ tools: AVAILABLE_READ_TOOLS, channel: 'NATIVE', readOnly: true }));
   router.get('/grants/:accountId', async(req,res) => res.json({ grant: await gateway.get(req.traderPrincipal, parse(accountId,req.params.accountId)) }));
-  router.post('/grants', async(req,res) => res.status(201).json({ grant: await gateway.create(req.traderPrincipal,parse(createSchema,req.body)) }));
+  router.post('/grants', async(req,res) => {
+    const request = parse(createSchema,req.body);
+    assertPhaseOneGrant(request.toolIds);
+    res.status(201).json({ grant: await gateway.create(req.traderPrincipal,request) });
+  });
   router.post('/grants/revoke', async(req,res) => res.json(await gateway.revoke(req.traderPrincipal,parse(revokeSchema,req.body))));
-  router.post('/invoke', async(req,res) => res.json(await gateway.invoke(req.traderPrincipal,parse(invokeSchema,req.body),
-    () => authService.authenticateSessionToken(bearerToken(req)))));
+  router.post('/invoke', async(req,res) => {
+    const request = parse(invokeSchema,req.body);
+    assertPhaseOneRead(request.toolId);
+    res.json(await gateway.invoke(req.traderPrincipal,request,
+      () => authService.authenticateSessionToken(bearerToken(req))));
+  });
   return router;
 }
 module.exports = { createAiReadRouter };
