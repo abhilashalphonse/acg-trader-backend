@@ -109,13 +109,19 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
     const { createAiReadGateway } = require('./modules/ai/ai-read-gateway');
     const { createAiReadStore } = require('./modules/ai/ai-read-store');
     const { createAiReadRouter } = require('./modules/ai/ai-read.routes');
+    const { createAiGovernanceStore } = require('./modules/ai/ai-governance-store');
+    const { createAiGovernance } = require('./modules/ai/ai-governance');
+    const { createAiGovernanceRouter } = require('./modules/ai/ai-governance.routes');
+    const governanceStore = createAiGovernanceStore();
+    const governance = createAiGovernance({ store: governanceStore, logger });
     const gateway = createAiReadGateway({
       store: createAiReadStore(),
       enabled: () => process.env.ACG_AI_READ_GATEWAY_ENABLED === 'true',
     });
     app.use('/v1/ai/read', (req, res, next) =>
       rejectUntrustedAuthOrigin(req, res, next, env.corsOrigins, env.isProduction));
-    app.use('/v1/ai/read', createAiReadRouter({ authService, gateway }));
+    app.use('/v1/ai/read', createAiReadRouter({ authService, gateway, governance }));
+    app.use('/v1/internal/ai', createAiGovernanceRouter({ authService, store: governanceStore }));
   }
   if (process.env.ACG_ALERTS_ENABLED === 'true') app.use('/v1/alerts', createAlertRouter({authService,marketRuntime}));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
