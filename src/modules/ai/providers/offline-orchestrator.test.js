@@ -6,6 +6,8 @@ const {createModelRegistry}=require('./model-registry');
 const {createResponseEngine}=require('../intelligence/response-engine');
 const {createOfflineOrchestrator}=require('./offline-orchestrator');
 const {createPricingRegistry}=require('./compute-pricing');
+const {createOfflineBudget}=require('./compute-budget');
+const {createOfflineEducationCache}=require('./education-cache');
 const {normalizeFixtureResponse}=require('./provider-response');
 const {normalizeOfflineOutcome,CONTRACT_VERSION}=require('./provider-contract');
 const scope={tenantId:'a'.repeat(24),actorId:'b'.repeat(24),sessionId:'c'.repeat(24),accountId:'d'.repeat(24)};
@@ -187,4 +189,104 @@ test('ambiguous outcome with reported usage cannot propose debit; cache write fi
   assert.equal(u.receipt.metering.reason,'CACHE_WRITE_UNSUPPORTED');
   assert.equal(u.receipt.status,'RECONCILIATION_REQUIRED');
   assert.equal(u.response,null);
+});
+
+const testPolicy=(extra={})=>({maxInputTokens:4096,maxOutputTokens:1024,maxRequestsPerUtcDay:3,maxTokensPerUtcDay:10240,
+  maxCostPicoUsdPerRequest:null,maxCostPicoUsdPerUtcDay:null,...extra});
+const budgetFor=(now,extra={})=>createOfflineBudget({now,policies:{BYO_API:testPolicy(extra),ACG_CREDITS:testPolicy(extra)}});
+test('budget caps reject before dispatch, actual usage replaces planning holds, funding is isolated',async()=>{
+  const budget=budgetFor(()=>nowMs,{maxRequestsPerUtcDay:2,maxTokensPerUtcDay:6000});
+  const {service,calls}=setup({options:{computeBudget:budget}});
+  const first=await service.run(input());
+  assert.equal(first.receipt.status,'COMPLETED');assert.equal(first.receipt.budget.status,'ACCOUNTED_OFFLINE');
+  assert.equal(first.receipt.budget.tokens,130);
+  assert.equal((await service.run(input())).receipt.status,'COMPLETED');
+  const denied=await service.run(input());
+  assert.equal(denied.receipt.errorCode,'BUDGET_DAILY_LIMIT');assert.equal(denied.receipt.dispatch,'NOT_DISPATCHED');
+  assert.equal(calls(),2);
+  const view=budget.usage(scope,'BYO_API');
+  assert.equal(view.tokens,260);assert.equal(view.requests,2);assert.equal(view.costPicoUsd,null);
+  assert.equal(view.outstandingHolds,0);
+  assert.equal((await service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}))).receipt.status,'COMPLETED');
+  assert.equal(budget.usage(scope,'ACG_CREDITS').requests,1);
+  const excessive=await service.run(input({inputTokenUpperBound:4097}));
+  assert.equal(excessive.receipt.errorCode,'BUDGET_REQUEST_LIMIT');
+});
+test('priced budget holds are exact, daily cost and missing prices block dispatch',async()=>{
+  const budget=budgetFor(()=>nowMs,{maxCostPicoUsdPerRequest:'7000000000',maxCostPicoUsdPerUtcDay:'6200000000'});
+  const a=setup({options:{computeBudget:budget}});
+  const v=await a.service.run(input());
+  assert.equal(v.receipt.budget.costPicoUsd,'160000000');
+  assert.equal(budget.usage(scope,'BYO_API').costPicoUsd,'160000000');
+  const denied=await a.service.run(input());
+  assert.equal(denied.receipt.errorCode,'BUDGET_DAILY_LIMIT');assert.equal(a.calls(),1);
+  const b=setup({options:{computeBudget:budgetFor(()=>nowMs,{maxCostPicoUsdPerRequest:'1'})}});
+  assert.equal((await b.service.run(input())).receipt.errorCode,'BUDGET_REQUEST_LIMIT');assert.equal(b.calls(),0);
+  const c=setup({options:{computeBudget:budgetFor(()=>nowMs,{maxCostPicoUsdPerRequest:'7000000000'}),
+    pricingRegistry:createPricingRegistry()}});
+  assert.equal((await c.service.run(input())).receipt.errorCode,'BUDGET_PRICE_REQUIRED');assert.equal(c.calls(),0);
+});
+test('uncertain usage retains full budget across midnight and prevents oversubscription',async()=>{
+  let at=nowMs;
+  const budget=budgetFor(()=>at,{maxRequestsPerUtcDay:1,maxTokensPerUtcDay:5120});
+  const a=setup({now:()=>at,options:{computeBudget:budget},generate:async q=>output(q,{usage:{status:'UNKNOWN'}})});
+  const v=await a.service.run(input());
+  assert.equal(v.receipt.status,'RECONCILIATION_REQUIRED');assert.equal(v.receipt.budget.status,'HELD_FOR_RECONCILIATION');
+  assert.equal(budget.usage(scope,'BYO_API').tokens,5120);
+  at+=86400000;
+  const next=budget.usage(scope,'BYO_API');assert.equal(next.carriedHolds,1);assert.equal(next.carriedTokens,5120);
+  assert.equal((await a.service.run(input())).receipt.errorCode,'BUDGET_DAILY_LIMIT');
+  assert.equal(a.calls(),1);
+  at=nowMs;assert.throws(()=>budget.usage(scope,'BYO_API'),{code:'BUDGET_CLOCK_ROLLBACK'});
+});
+test('pre-dispatch ledger failure releases budget and preserves no-dispatch receipt',async()=>{
+  const budget=budgetFor(()=>nowMs);
+  const ledger={reserve:async()=>{throw Error('fixture reject');},claimDispatch:async()=>{},recordOutcome:async()=>{},releaseBeforeDispatch:async()=>{}};
+  const {service,calls}=setup({options:{computeBudget:budget,creditLedger:ledger}});
+  const r=await service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(r.receipt.dispatch,'NOT_DISPATCHED');assert.equal(r.receipt.budget.status,'RELEASED_BEFORE_ATTEMPT');
+  assert.equal(budget.usage(scope,'ACG_CREDITS').tokens,0);assert.equal(calls(),0);
+});
+test('context-free BYO education cache skips inference and budget only after fresh verification',async()=>{
+  let at=nowMs;
+  const budget=budgetFor(()=>at,{maxRequestsPerUtcDay:1});
+  const cache=createOfflineEducationCache({now:()=>at,ttlMs:2000});
+  const {service,calls}=setup({now:()=>at,options:{computeBudget:budget,educationCache:cache,cachePolicyEpoch:'fixture-1'}});
+  const original=await service.run(input());assert.equal(original.receipt.cache,'MISS');
+  at+=10;
+  const hit=await service.run(input());
+  assert.equal(hit.receipt.status,'COMPLETED');assert.equal(hit.receipt.cache,'HIT_REVERIFIED');
+  assert.equal(hit.receipt.dispatch,'NOT_DISPATCHED');assert.equal(hit.receipt.usage.status,'NOT_DISPATCHED');
+  assert.equal(hit.receipt.metering.costPicoUsd,'0');assert.equal(hit.receipt.metering.proposedCreditDebitPicoUsd,'0');
+  assert.equal(hit.response.verifiedAtMs,at);assert.notEqual(hit.response.responseId,original.response.responseId);
+  assert.equal(calls(),1);assert.equal(budget.usage(scope,'BYO_API').requests,1);
+  const other=await service.run(input({question:'Different question'}));assert.equal(other.receipt.errorCode,'BUDGET_DAILY_LIMIT');
+  at+=2001;
+  assert.equal((await service.run(input())).receipt.errorCode,'BUDGET_DAILY_LIMIT');assert.equal(calls(),1);
+});
+test('cache misses across scope, policy epoch, funding and explicit invalidation',async()=>{
+  const cache=createOfflineEducationCache({now:()=>nowMs,maxEntries:8});
+  const a=setup({options:{educationCache:cache,cachePolicyEpoch:'fixture-1'}});
+  await a.service.run(input());
+  const foreign=await a.service.run(input({scope:{...scope,actorId:'e'.repeat(24)}}));
+  assert.equal(foreign.receipt.cache,'MISS');
+  const session=await a.service.run(input({scope:{...scope,sessionId:'e'.repeat(24)}}));
+  assert.equal(session.receipt.cache,'MISS');
+  const managed=await a.service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(managed.receipt.cache,'NOT_USED');
+  const b=setup({options:{educationCache:cache,cachePolicyEpoch:'fixture-2'}});
+  assert.equal((await b.service.run(input())).receipt.cache,'MISS');assert.equal(b.calls(),1);
+  cache.invalidateAll();
+  assert.equal((await a.service.run(input())).receipt.cache,'MISS');assert.equal(a.calls(),5);
+});
+test('cache cannot bypass current Phase 2 authorization or cache-specific permission',async()=>{
+  let engineAllowed=true,cacheAllowed=true;
+  const cache=createOfflineEducationCache({now:()=>nowMs});
+  const a=setup({engineAuthorize:async()=>engineAllowed,
+    authorize:async req=>!req.operation.startsWith('CACHE_')||cacheAllowed,
+    options:{educationCache:cache,cachePolicyEpoch:'fixture-1'}});
+  await a.service.run(input());engineAllowed=false;
+  assert.equal((await a.service.run(input())).receipt.status,'DENIED');assert.equal(a.calls(),1);
+  engineAllowed=true;cacheAllowed=false;
+  const v=await a.service.run(input());assert.equal(v.receipt.cache,'MISS');assert.equal(a.calls(),2);
 });
