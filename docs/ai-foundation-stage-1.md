@@ -44,3 +44,21 @@ Opt-in `ACG_AI_READ_GATEWAY_ENABLED=true` mounts `/v1/ai/read`. Default is absen
 - Session tokens remain in first-party client/server boundaries; never expose them to a model. The connection ID is not a bearer credential. Grant management is not a tool. No financial writes are registered. No provider calls, model runtime, or automatic approvals.
 - Store reads use primary/majority and query limits; session-bound request limit is 30/min per process. Distributed rate limiting and durable audit are later Phase 1 gates. Revocation is checked again before returning data; already disclosed results cannot be recalled and in-flight races require further evaluation.
 - Tests cover policy and gateway scope/expiry/revocation/unknown tools/projection and HTTP authentication/envelope. Real replica-set and real auth integration acceptance, race/failure tests, full security review, staging and production remain outstanding. Do not activate production from unit tests alone.
+
+
+## Stage 1F: financial safety boundary (read-only release)
+
+An independent immutable allowlist now gates HTTP invocation, gateway dispatch and registry resolution. It also constrains permission creation and rechecks persisted grant scope before result disclosure. All financial writes, including close/reduce/cancel/protection changes, remain prohibited through this AI path even if a future registry change accidentally lists them. Tools receive only a scope-bound read port, not grant mutation, runtime or execution services. No manual trading route or trading-engine logic changed. This is a code-level boundary, not process isolation against arbitrary code execution.
+
+The normal trader bearer credential is still powerful and must never be exposed to a model or agent. Scoped model-facing credentials, separated worker privileges and durable governance are prerequisite to provider integration. This increment is not a proof that all other trading endpoints reject a stolen normal user token.
+
+### Future execution contract (not activated or implemented in Stage 1)
+
+- Model output is a proposal, never an authorization. Immutable server-side intent binds actor, tenant, account, instrument, order/position reference, exact quantity/prices/protection and acceptable price deviation; no client-controlled approval flag. Authorize a single intent with expiry and replay protection.
+- Core risk engine checks authoritative executable bid/ask freshness, market session, account and broker policy, position size, margin, stop-loss geometry, currency conversion, aggregate exposure, daily loss and drawdown. Fail closed on missing/stale inputs. Risk reductions are also authorized.
+- Serialize/reconcile competing manual and AI commands against the same authoritative financial revision; reserve risk atomically with execution. Stable idempotency key and uncertain-outcome reconciliation, never blind retries.
+- Autonomous mandates require separate versioned user authorization, allowed symbols/strategy, capital allocation, risk ceilings, frequency, time scope and revocation. Agents may not modify their own mandate or approve increases. No autonomous authority until Phase 9.
+- Kill switch must prevent new AI requests without disabling existing broker/engine protection or manual trading. Explicit treatment of in-flight and pending orders is required.
+- Acceptance must exercise actual replica-set data, concurrency, broker uncertainty, slippage/gaps, authorization/revocation races, simulated outage, and protected manual-path regression before enabling financial actions. No guarantee of realized maximum loss.
+
+Phase 1F tests cover exact allowlist, registry alignment, scoped capability surface, malformed limits, corrupt grants and HTTP write rejection. Real integration and production acceptance remain outstanding.
