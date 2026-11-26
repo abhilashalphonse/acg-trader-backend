@@ -172,3 +172,19 @@ test('managed compute requires price before dispatch; BYO can continue without a
   assert.equal(byo.receipt.status,'COMPLETED');assert.equal(byo.receipt.metering.status,'PRICE_NOT_AVAILABLE');
   assert.equal(byo.receipt.metering.costPicoUsd,null);assert.equal(byo.receipt.metering.proposedCreditDebitPicoUsd,'0');
 });
+
+test('ambiguous outcome with reported usage cannot propose debit; cache write fields survive revalidation',async()=>{
+  const a=setup({generate:async q=>output(q,{status:'UNKNOWN',candidate:null,errorCode:'UNKNOWN'})});
+  const v=await a.service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(v.receipt.status,'RECONCILIATION_REQUIRED');
+  assert.equal(v.receipt.metering.reason,'PROVIDER_OUTCOME_UNKNOWN');
+  assert.equal(v.receipt.metering.proposedCreditDebitPicoUsd,null);
+  assert.equal(v.receipt.usage.totalTokens,130);
+  const b=setup({generate:async q=>output(q,{usage:{...usage,cacheWriteInputTokens:3,
+    cacheWrite5mInputTokens:1,cacheWrite1hInputTokens:2}})});
+  const u=await b.service.run(input());
+  assert.equal(u.receipt.usage.cacheWrite1hInputTokens,2);
+  assert.equal(u.receipt.metering.reason,'CACHE_WRITE_UNSUPPORTED');
+  assert.equal(u.receipt.status,'RECONCILIATION_REQUIRED');
+  assert.equal(u.response,null);
+});
