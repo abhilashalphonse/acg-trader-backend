@@ -31,7 +31,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
     typeof responseEngine?.prepare!=='function'||typeof responseEngine?.verify!=='function'||
     typeof authorize!=='function'||typeof pricingRegistry?.pin!=='function'||(creditLedger!==null&&!['reserve','claimDispatch','recordOutcome','releaseBeforeDispatch'].every(k=>typeof creditLedger[k]==='function'))||!Array.isArray(adapters)||adapters.length>32||
     (computeBudget!==null&&!['reserve','markAttempt','releaseBeforeAttempt','settle'].every(k=>typeof computeBudget[k]==='function'))||
-    (educationCache!==null&&(!['get','put'].every(k=>typeof educationCache[k]==='function')||typeof cachePolicyEpoch!=='string'||!/^[a-zA-Z0-9._:-]{1,128}$/.test(cachePolicyEpoch)))||
+    (educationCache!==null&&(!['get','put','isCurrent'].every(k=>typeof educationCache[k]==='function')||typeof cachePolicyEpoch!=='string'||!/^[a-zA-Z0-9._:-]{1,128}$/.test(cachePolicyEpoch)))||
     !bounded(maxActive,1,64)||!bounded(maxPerOwner,1,maxActive)||!bounded(maxPerTenant,1,maxActive)||
     !bounded(maxRecords,1,4096))fail('ORCHESTRATOR_CONFIG_INVALID');
   const adapterMap=new Map();
@@ -147,7 +147,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
         if(cachePermission.value===true){
           const cached=educationCache.get(cacheInput);
           if(cached!==null){
-            const verified=await step(()=>responseEngine.verify({ticket,scope,candidate:cached}));
+            const verified=await step(()=>responseEngine.verify({ticket,scope,candidate:cached.candidate}));
             if(verified.aborted||!validTime()){finish(record,'FAILED',reason||'TIMEOUT');return result();}
             if(verified.value?.verified!==true||!verified.value.response){finish(record,'FAILED','CACHE_VERIFICATION_REJECTED');return result();}
             const after=await step(()=>allowed(auth));
@@ -155,6 +155,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
             if(after.aborted||cacheAfter.aborted||!validTime()){finish(record,'FAILED',reason||'TIMEOUT');return result();}
             if(after.value!==true||cacheAfter.value!==true){finish(record,'DENIED','ORCHESTRATOR_FORBIDDEN');return result();}
             if(clock()>=q.expiresAtMs||clock()>=verified.value.response.expiresAtMs){finish(record,'FAILED','TIMEOUT');return result();}
+            if(!educationCache.isCurrent(cacheInput,cached)){finish(record,'FAILED','CACHE_EXPIRED_OR_INVALIDATED');return result();}
             record.cache='HIT_REVERIFIED';record.usageDisposition='NOT_DISPATCHED';
             record.usage=freeze({status:'NOT_DISPATCHED'});
             record.metering=freeze({status:'NO_PROVIDER_REQUEST',fundingMode:q.fundingMode,costPicoUsd:'0',
