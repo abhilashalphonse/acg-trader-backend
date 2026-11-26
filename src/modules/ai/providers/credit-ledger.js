@@ -137,6 +137,7 @@ function createIsolatedCreditLedger({store,authorize,now=Date.now}={}){
         if(r.status!=='RESERVED')return freeze({receipt:receipt(r),dispatchAllowed:false,attemptId:null});
         if(at>=r.expiresAtMs)fail('CREDIT_REQUEST_EXPIRED');
         const w=verifyWallet(await t.wallet(s,walletId(s)),s);
+        if((w.pendingReversals??0)>0)fail('CREDIT_WALLET_RESTRICTED');
         const next={...r,status:'DISPATCHED',attemptId:randomUUID(),revision:r.revision+1,updatedAtMs:at};
         const result=await change(t,s,w,r,next,'DISPATCH',0n,0n,0n,at);
         return freeze({receipt:result,dispatchAllowed:true,attemptId:next.attemptId});
