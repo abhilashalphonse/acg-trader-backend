@@ -66,7 +66,13 @@ function createAiGovernance({ store, logger, now = Date.now }) {
       }
       await append(event('end','ALLOWED',{ revision }));
       // An ALLOWED event records the completed operation, not delivery to the client.
-      if (!revocation) await assertCurrent(tenantId, revision);
+      if (!revocation) {
+        try { await assertCurrent(tenantId, revision); }
+        catch (error) {
+          await record(event('suppressed','SUPPRESSED',{ reason:safeReason(error), revision }));
+          throw error;
+        }
+      }
       return value;
     },
   });
