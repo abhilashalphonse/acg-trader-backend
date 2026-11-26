@@ -6,6 +6,7 @@ const { evaluateReadToolPolicy } = require('./read-tool-policy');
 const { AVAILABLE_READ_TOOLS, resolveReadTool } = require('./read-tool-registry');
 const objectId = v => typeof v === 'string' && /^[a-f0-9]{24}$/.test(v);
 const fail = (code, statusCode = 403) => new AppError('AI request denied', { code, statusCode });
+const { assertPhaseOneRead, assertPhaseOneGrant, createScopedReadPort } = require('./financial-safety-boundary');
 const MAX_GRANT_MS = 60 * 60 * 1000;
 function scopeFor(principal, accountId, nowMs, requireGrant = true) {
   if (principal?.authMethod !== 'SUPABASE' || ![principal.tenantId,principal.userId,principal.sessionId,accountId].every(objectId) ||
@@ -40,6 +41,7 @@ function createAiReadGateway({ store, enabled, now = Date.now }) {
       const { scope } = await liveScope(principal, accountId);
       if (!Array.isArray(toolIds) || !toolIds.length || new Set(toolIds).size !== toolIds.length ||
           !toolIds.every(t => AVAILABLE_READ_TOOLS.includes(t))) throw fail('AI_TOOL_NOT_AVAILABLE', 400);
+      assertPhaseOneGrant(toolIds);
       const start = now();
       const expiresAtMs = Math.min(start + MAX_GRANT_MS, Date.parse(principal.refreshExpiresAt));
       if (expiresAtMs <= start) throw fail('AI_IDENTITY_UNAVAILABLE');
@@ -62,18 +64,23 @@ function createAiReadGateway({ store, enabled, now = Date.now }) {
       return { revoked: await store.revokeGrant(grantKey(scope), connectionId) };
     },
     async invoke(principal, request, reauthenticate) {
+      assertEnabled();
+      assertPhaseOneRead(request?.toolId);
       const { scope, account } = await liveScope(principal, request.accountId);
       const key = grantKey(scope);
       const grant = await store.getGrant(key);
       checkGrant(scope, grant, request);
+      assertPhaseOneGrant(grant.toolIds);
       const tool = resolveReadTool(request.toolId, request.args);
-      const result = await tool.run({ scope, account, args: tool.args, reads: store });
+      const result = await tool.run({ account, args: tool.args, reads: createScopedReadPort(store, scope) });
       // Re-resolve session, current account access and grant before disclosure.
       // Already disclosed data cannot be recalled; a final in-flight race is possible.
       const fresh = await reauthenticate();
       const { scope: freshScope } = await liveScope(fresh, request.accountId);
       if (grantKey(freshScope) !== key) throw fail('AI_SCOPE_CHANGED');
-      checkGrant(freshScope, await store.getGrant(key), request);
+      const freshGrant = await store.getGrant(key);
+      checkGrant(freshScope, freshGrant, request);
+      assertPhaseOneGrant(freshGrant.toolIds);
       return { toolId: request.toolId, accountId: scope.accountId, retrievedAt: new Date(now()).toISOString(), result };
     },
   });
