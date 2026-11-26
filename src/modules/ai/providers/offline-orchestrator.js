@@ -278,6 +278,9 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       if(cacheEligible){
         const cachePermission=await step(()=>allowed(freeze({...auth,operation:'CACHE_WRITE'})));
         if(cachePermission.aborted||!validTime()){finish(record,'FAILED',reason||'TIMEOUT');return result();}
+        const finalAccess=await step(()=>allowed(auth));
+        if(finalAccess.aborted||!validTime()){finish(record,'FAILED',reason||'TIMEOUT');return result();}
+        if(finalAccess.value!==true){finish(record,'DENIED','ORCHESTRATOR_FORBIDDEN');return result();}
         if(cachePermission.value===true)try{educationCache.put(cacheInput,{candidate:v.candidate,verifiedResponse:verified.value.response});}catch{}
         if(clock()>=q.expiresAtMs||clock()>=verified.value.response.expiresAtMs){finish(record,'FAILED','TIMEOUT');return result();}
       }
@@ -286,12 +289,19 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       if(record){finish(record,record.dispatch==='ATTEMPTED'?'RECONCILIATION_REQUIRED':'FAILED','UNKNOWN');return result();}
       throw e;
     }finally{
-      if(budgetTicket&&!budgetAttempted)try{computeBudget.releaseBeforeAttempt(budgetTicket);}catch{}
+      releaseUnusedBudget();
       clearTimeout(timer);if(externalAbort)signal.removeEventListener('abort',externalAbort);
       if(!detached){if(inFlight)inFlight.then(release);else release();}
       if(record)record.stop=null;
     }
-    function result(response=null){return freeze({receipt:view(record),response,replayed:false});}
+    function releaseUnusedBudget(){
+      if(budgetTicket&&!budgetAttempted){
+        try{computeBudget.releaseBeforeAttempt(budgetTicket);if(record)record.budget=freeze({status:'RELEASED_BEFORE_ATTEMPT'});}
+        catch{if(record)record.budget=freeze({status:'HELD_FOR_RECONCILIATION'});}
+        budgetTicket=null;
+      }
+    }
+    function result(response=null){releaseUnusedBudget();return freeze({receipt:view(record),response,replayed:false});}
   }
   async function lookup(scopeInput,keyInput,operation){
     const s=scopeSchema.safeParse(scopeInput),k=z.uuid().safeParse(keyInput);
