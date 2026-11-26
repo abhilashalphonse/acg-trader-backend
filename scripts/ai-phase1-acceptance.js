@@ -130,17 +130,23 @@ async function main() {
     assert.equal((await send('/read/invoke',ta,{...req,toolId:'trade.execute'})).status,403);
     assert.equal((await send('/read/invoke',ta,{...req,args:{$where:'forbidden'}})).status,400);
     console.log('PASS real auth, account isolation, concurrent grants, projected reads, financial denial and injection rejection');
+    // Phase 2 synthetic entitlement + real database source; no public runtime registration.
+    const {runPhase2Integration}=require('./ai-phase2-integration');
+    const assertPhase2Denied=await runPhase2Integration({auth,gateway,gs,token:ta,readRequest:req,foreignToken:tb});
     // Verify transactional governance compare-and-swap and rollback.
     const race=await Promise.allSettled([0,1].map(()=>gs.updateControl({tenantId:tid,actorId:'fixture',expectedRevision:1,enabled:false,reason:'INCIDENT_RESPONSE'})));
     assert.equal(race.filter(x=>x.status==='fulfilled').length,1);
     assert.equal(race.find(x=>x.status==='rejected').reason.code,'AI_CONTROL_CONFLICT');
     assert.equal((await gs.control(tid)).revision,2);
+    await assertPhase2Denied();
     await assert.rejects(gs.updateControl({tenantId:tid,actorId:'fixture',expectedRevision:2,enabled:true,reason:'x'.repeat(65)}));
     assert.deepEqual(await gs.control(tid).then(c=>({enabled:c.enabled,revision:c.revision})),{enabled:false,revision:2});
     assert.equal((await send('/read/invoke',ta,req)).status,403);
     assert.equal((await send('/read/grants/revoke',ta,{accountId:a.id,connectionId:grant.connectionId})).body.revoked,true);
     await gs.updateControl({tenantId:tid,actorId:'fixture',expectedRevision:2,enabled:true,reason:'PILOT_APPROVAL'});
     assert.equal((await send('/read/invoke',ta,req)).status,403);
+    await assertPhase2Denied();
+    console.log('PASS Phase 2 actual governance suspension/revision and grant revocation boundary');
     console.log('PASS control CAS, rollback, suspension, revocation and resume cannot restore revoked grant');
     // A current account grant is independently required, even if a session exists.
     const gb=await send('/read/grants',tb,{accountId:b.id,toolIds:['account.valuation.read']});
