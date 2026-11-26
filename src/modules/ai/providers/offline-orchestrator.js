@@ -4,6 +4,7 @@ const {randomUUID,createHmac,randomBytes}=require('node:crypto');
 const {performance}=require('node:perf_hooks');
 const {freeze}=require('../intelligence/candle-evidence');
 const {createOfflineRequest,normalizeOfflineOutcome,CONTRACT_VERSION}=require('./provider-contract');
+const {createPricingRegistry,meterOfflineUsage}=require('./compute-pricing');
 const id=z.string().regex(/^[a-f0-9]{24}$/);
 const scopeSchema=z.object({tenantId:id,actorId:id,sessionId:id,accountId:id}).strict();
 const selectionSchema=z.object({providerId:z.enum(['openai','anthropic','gemini','deepseek','openrouter']),
@@ -25,10 +26,10 @@ const exact=(a,b)=>['tenantId','actorId','sessionId','accountId'].every(k=>a[k]=
 // live transport, worker recovery, runtime registration or financial tools.
 // Never evict idempotency tombstones to admit new requests.
 function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,now=Date.now,
-  maxActive=8,maxPerOwner=2,maxPerTenant=4,maxRecords=512}={}){
+  pricingRegistry=createPricingRegistry(),maxActive=8,maxPerOwner=2,maxPerTenant=4,maxRecords=512}={}){
   if(!registry||typeof registry.resolveForOfflineTest!=='function'||
     typeof responseEngine?.prepare!=='function'||typeof responseEngine?.verify!=='function'||
-    typeof authorize!=='function'||!Array.isArray(adapters)||adapters.length>32||
+    typeof authorize!=='function'||typeof pricingRegistry?.pin!=='function'||!Array.isArray(adapters)||adapters.length>32||
     !bounded(maxActive,1,64)||!bounded(maxPerOwner,1,maxActive)||!bounded(maxPerTenant,1,maxActive)||
     !bounded(maxRecords,1,4096))fail('ORCHESTRATOR_CONFIG_INVALID');
   const adapterMap=new Map();
@@ -51,6 +52,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
     return freeze({operationId:r.operationId,status:r.status,providerId:r.selection.providerId,modelId:r.selection.modelId,
       fundingMode:r.selection.fundingMode,requestId:r.requestId,createdAtMs:r.createdAtMs,finishedAtMs:r.finishedAtMs,
       dispatch:r.dispatch,usage:r.usage,usageDisposition:r.usageDisposition,errorCode:r.errorCode,
+      pricingSnapshot:r.pricingSnapshot,metering:r.metering,
       automaticRetry:false,automaticFallback:false,offlineOnly:true});
   }
   function finish(r,status,errorCode){
@@ -117,7 +119,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       if(!validTime())fail(reason||'TIMEOUT');
       record={scope,selection,profile:x.profile,fingerprint,operationId:randomUUID(),status:'PREPARING',requestId:null,
         createdAtMs:clock(),finishedAtMs:null,dispatch:'NOT_DISPATCHED',usage:{status:'UNKNOWN'},
-        usageDisposition:'NOT_DISPATCHED',errorCode:'NONE',controller,stop};
+        usageDisposition:'NOT_DISPATCHED',pricingSnapshot:null,metering:null,errorCode:'NONE',controller,stop};
       records.set(key,record);
       const prepared=await step(()=>responseEngine.prepare({scope,profile:x.profile,question:x.question,context}));
       if(prepared.aborted||!validTime()){finish(record,reason==='CANCELLED'?'CANCELLED':'FAILED',reason||'TIMEOUT');return result();}
@@ -131,6 +133,14 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       const before=await step(()=>allowed(auth));
       if(before.aborted||!validTime()){finish(record,reason==='CANCELLED'?'CANCELLED':'FAILED',reason||'TIMEOUT');return result();}
       if(before.value!==true){finish(record,'DENIED','ORCHESTRATOR_FORBIDDEN');return result();}
+      // Pin the applicable immutable price before dispatch; BYO may operate
+      // without a cost estimate, but managed compute needs an explicit price.
+      try{record.pricingSnapshot=pricingRegistry.pin(q,clock());}
+      catch(e){
+        if(q.fundingMode==='ACG_CREDITS'||e?.code!=='PRICE_NOT_AVAILABLE'){
+          finish(record,'FAILED','PRICE_UNAVAILABLE');return result();
+        }
+      }
       const remaining=Math.min(q.expiresAtMs-clock(),Math.floor(x.timeoutMs-(performance.now()-start)));
       if(remaining<1){finish(record,'FAILED','TIMEOUT');return result();}
       clearTimeout(timer);timer=setTimeout(()=>stop('TIMEOUT'),remaining);
@@ -153,12 +163,19 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
         // Revalidate normalized adapter output with the Phase 3A strict schema.
         const u=o.usage?.status==='PROVIDER_REPORTED'?{status:o.usage.status,inputTokens:o.usage.inputTokens,
           outputTokens:o.usage.outputTokens,cachedInputTokens:o.usage.cachedInputTokens,
-          reasoningOutputTokens:o.usage.reasoningOutputTokens}:o.usage;
+          reasoningOutputTokens:o.usage.reasoningOutputTokens,
+          ...Object.fromEntries(['cacheWriteInputTokens','cacheWrite5mInputTokens','cacheWrite1hInputTokens']
+            .filter(k=>Object.hasOwn(o.usage,k)).map(k=>[k,o.usage[k]]))}:o.usage;
         v=normalizeOfflineOutcome(q,{requestId:o.requestId,providerId:o.providerId,modelId:o.modelId,
           descriptorId:o.descriptorId,status:o.status,candidate:o.candidate,usage:u,errorCode:o.errorCode});
       }catch{finish(record,'RECONCILIATION_REQUIRED','INVALID_RESPONSE');return result();}
       record.usage=v.usage;record.usageDisposition=v.usageDisposition;
       record.dispatch='OUTCOME_RECEIVED';
+      if(record.pricingSnapshot){
+        try{record.metering=meterOfflineUsage(q,record.pricingSnapshot,v.usage);}
+        catch{record.usageDisposition='RECONCILIATION_REQUIRED';finish(record,'RECONCILIATION_REQUIRED','PRICE_SNAPSHOT_INVALID');return result();}
+        if(record.metering.status==='RECONCILIATION_REQUIRED'){record.usageDisposition='RECONCILIATION_REQUIRED';finish(record,'RECONCILIATION_REQUIRED','METERING_UNCERTAIN');return result();}
+      }else if(q.fundingMode==='BYO_API')record.metering=freeze({status:'PRICE_NOT_AVAILABLE',fundingMode:'BYO_API',costPicoUsd:null,proposedCreditDebitPicoUsd:'0',settled:false,creditDeducted:false,offlineOnly:true});
       if(v.usageDisposition==='RECONCILIATION_REQUIRED'||v.status==='UNKNOWN'){
         record.usageDisposition='RECONCILIATION_REQUIRED';
         finish(record,'RECONCILIATION_REQUIRED',v.errorCode==='NONE'?'USAGE_UNCERTAIN':v.errorCode);return result();
