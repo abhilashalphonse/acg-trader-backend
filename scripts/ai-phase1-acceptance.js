@@ -133,6 +133,8 @@ async function main() {
     // Phase 2 synthetic entitlement + real database source; no public runtime registration.
     const {runPhase2Integration}=require('./ai-phase2-integration');
     const assertPhase2Denied=await runPhase2Integration({auth,gateway,gs,token:ta,readRequest:req,foreignToken:tb});
+    const {runPhase3VaultIntegration}=require('./ai-phase3-vault-integration');
+    await runPhase3VaultIntegration({auth,token:ta,foreignToken:tb});
     // Verify transactional governance compare-and-swap and rollback.
     const race=await Promise.allSettled([0,1].map(()=>gs.updateControl({tenantId:tid,actorId:'fixture',expectedRevision:1,enabled:false,reason:'INCIDENT_RESPONSE'})));
     assert.equal(race.filter(x=>x.status==='fulfilled').length,1);
