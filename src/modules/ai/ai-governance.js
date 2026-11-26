@@ -39,7 +39,7 @@ function createAiGovernance({ store, logger, now = Date.now }) {
     }
   }
   return Object.freeze({
-    async run({ principal, operation, requestedAccountId, toolId }, work) {
+    async run({ principal, operation, requestedAccountId, toolId }, work, beforeDisclosure = null) {
       const tenantId = id(principal?.tenantId);
       if (!tenantId || !operations.has(operation)) throw unavailable();
       const trace = crypto.randomUUID();
@@ -67,7 +67,10 @@ function createAiGovernance({ store, logger, now = Date.now }) {
       await append(event('end','ALLOWED',{ revision }));
       // An ALLOWED event records the completed operation, not delivery to the client.
       if (!revocation) {
-        try { await assertCurrent(tenantId, revision); }
+        try {
+          if (beforeDisclosure) await beforeDisclosure();
+          await assertCurrent(tenantId, revision);
+        }
         catch (error) {
           await record(event('suppressed','SUPPRESSED',{ reason:safeReason(error), revision }));
           throw error;
