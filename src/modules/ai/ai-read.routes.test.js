@@ -31,6 +31,12 @@ test('HTTP boundary authenticates, rejects untrusted fields and reauthenticates 
     assert.equal((await send(data,'bad')).status,401);
     assert.equal((await send({...data,tenantId:'victim'},'trusted')).status,400);
     assert.equal((await send({...data,channel:'EXTERNAL'},'trusted')).status,400);
+    for (const toolId of ['trade.execute','orders.market','orders.pending','orders.amend','orders.cancel',
+      'positions.close','positions.reverse','positions.protection','account.withdraw','account.risk.write']) {
+      const denied=await send({...data,toolId},'trusted');
+      assert.equal(denied.status,403);
+      assert.equal((await denied.json()).code,'AI_FINANCIAL_BOUNDARY_DENIED');
+    }
     assert.equal(dispatchCalls,0);
     const before=authCalls;const result=await send(data,'trusted');
     assert.equal(result.status,200);assert.equal(result.headers.get('cache-control'),'no-store');
