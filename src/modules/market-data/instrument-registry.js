@@ -15,6 +15,16 @@ function freezeHolidays(value) {
   return Object.freeze((Array.isArray(value) ? value : []).map(String));
 }
 
+function freezeSessionOverrides(value) {
+  return Object.freeze((Array.isArray(value) ? value : [])
+    .filter(item => item && typeof item.date === 'string')
+    .map(item => Object.freeze({
+      date: item.date,
+      closed: item.closed === true,
+      sessions: freezeSessions(item.sessions),
+    })));
+}
+
 class InstrumentRegistry {
   constructor({ symbols, defaultMaxQuoteAgeMs, logger }) {
     this.symbols = symbols.map(normalizeSymbol);
@@ -57,6 +67,7 @@ class InstrumentRegistry {
         quoteCurrency: null,
         tradingSessions: Object.freeze([]),
         tradingHolidays: Object.freeze([]),
+        sessionOverrides: Object.freeze([]),
         timezone: 'UTC',
         softQuoteAgeMs: Math.max(1000, Math.round(this.defaultMaxQuoteAgeMs * 0.4)),
         maxQuoteAgeMs: this.defaultMaxQuoteAgeMs,
@@ -97,6 +108,7 @@ class InstrumentRegistry {
       quoteCurrency: doc.quoteCurrency || null,
       tradingSessions: freezeSessions(doc.tradingSessions),
       tradingHolidays: freezeHolidays(doc.tradingHolidays),
+      sessionOverrides: freezeSessionOverrides(doc.sessionOverrides),
       timezone: String(doc.timezone || 'UTC'),
       softQuoteAgeMs: Math.min(
         Number(doc.maxQuoteAgeMs) || this.defaultMaxQuoteAgeMs,
