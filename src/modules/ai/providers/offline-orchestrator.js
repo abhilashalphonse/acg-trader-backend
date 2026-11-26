@@ -26,10 +26,12 @@ const exact=(a,b)=>['tenantId','actorId','sessionId','accountId'].every(k=>a[k]=
 // live transport, worker recovery, runtime registration or financial tools.
 // Never evict idempotency tombstones to admit new requests.
 function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,now=Date.now,
-  pricingRegistry=createPricingRegistry(),creditLedger=null,maxActive=8,maxPerOwner=2,maxPerTenant=4,maxRecords=512}={}){
+  pricingRegistry=createPricingRegistry(),creditLedger=null,computeBudget=null,educationCache=null,cachePolicyEpoch=null,maxActive=8,maxPerOwner=2,maxPerTenant=4,maxRecords=512}={}){
   if(!registry||typeof registry.resolveForOfflineTest!=='function'||
     typeof responseEngine?.prepare!=='function'||typeof responseEngine?.verify!=='function'||
     typeof authorize!=='function'||typeof pricingRegistry?.pin!=='function'||(creditLedger!==null&&!['reserve','claimDispatch','recordOutcome','releaseBeforeDispatch'].every(k=>typeof creditLedger[k]==='function'))||!Array.isArray(adapters)||adapters.length>32||
+    (computeBudget!==null&&!['reserve','markAttempt','releaseBeforeAttempt','settle'].every(k=>typeof computeBudget[k]==='function'))||
+    (educationCache!==null&&(!['get','put'].every(k=>typeof educationCache[k]==='function')||typeof cachePolicyEpoch!=='string'||!/^[a-zA-Z0-9._:-]{1,128}$/.test(cachePolicyEpoch)))||
     !bounded(maxActive,1,64)||!bounded(maxPerOwner,1,maxActive)||!bounded(maxPerTenant,1,maxActive)||
     !bounded(maxRecords,1,4096))fail('ORCHESTRATOR_CONFIG_INVALID');
   const adapterMap=new Map();
@@ -53,6 +55,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       fundingMode:r.selection.fundingMode,requestId:r.requestId,createdAtMs:r.createdAtMs,finishedAtMs:r.finishedAtMs,
       dispatch:r.dispatch,usage:r.usage,usageDisposition:r.usageDisposition,errorCode:r.errorCode,
       pricingSnapshot:r.pricingSnapshot,metering:r.metering,creditReservation:r.creditReservation,
+      budget:r.budget,cache:r.cache,
       automaticRetry:false,automaticFallback:false,offlineOnly:true});
   }
   function finish(r,status,errorCode){
@@ -83,7 +86,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
     const release=reserve(scope);
     const controller=new AbortController();
     let timer,externalAbort,reason=null,record=null,detached=false;
-    let inFlight=null;
+    let inFlight=null,budgetTicket=null,budgetAttempted=false;
     const start=performance.now();
     function stop(code){if(reason===null){reason=code;controller.abort();}}
     const aborted=new Promise(resolve=>controller.signal.addEventListener('abort',()=>resolve({aborted:true}),{once:true}));
@@ -119,7 +122,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       if(!validTime())fail(reason||'TIMEOUT');
       record={scope,selection,profile:x.profile,fingerprint,operationId:randomUUID(),status:'PREPARING',requestId:null,
         createdAtMs:clock(),finishedAtMs:null,dispatch:'NOT_DISPATCHED',usage:{status:'UNKNOWN'},
-        usageDisposition:'NOT_DISPATCHED',pricingSnapshot:null,metering:null,creditReservation:null,errorCode:'NONE',controller,stop};
+        usageDisposition:'NOT_DISPATCHED',pricingSnapshot:null,metering:null,creditReservation:null,budget:null,cache:'NOT_USED',errorCode:'NONE',controller,stop};
       records.set(key,record);
       const prepared=await step(()=>responseEngine.prepare({scope,profile:x.profile,question:x.question,context}));
       if(prepared.aborted||!validTime()){finish(record,reason==='CANCELLED'?'CANCELLED':'FAILED',reason||'TIMEOUT');return result();}
@@ -133,6 +136,33 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       const before=await step(()=>allowed(auth));
       if(before.aborted||!validTime()){finish(record,reason==='CANCELLED'?'CANCELLED':'FAILED',reason||'TIMEOUT');return result();}
       if(before.value!==true){finish(record,'DENIED','ORCHESTRATOR_FORBIDDEN');return result();}
+      // Cache is deliberately BYO-only in this increment. Managed cache hits
+      // need durable zero-charge idempotency and wallet policy integration.
+      const cacheInput={scope,request:q,context,policyEpoch:cachePolicyEpoch};
+      const cacheEligible=educationCache!==null&&q.fundingMode==='BYO_API'&&context===null&&x.profile==='EDUCATION';
+      if(cacheEligible){
+        record.cache='MISS';
+        const cachePermission=await step(()=>allowed(freeze({...auth,operation:'CACHE_READ'})));
+        if(cachePermission.aborted||!validTime()){finish(record,'FAILED',reason||'TIMEOUT');return result();}
+        if(cachePermission.value===true){
+          const cached=educationCache.get(cacheInput);
+          if(cached!==null){
+            const verified=await step(()=>responseEngine.verify({ticket,scope,candidate:cached}));
+            if(verified.aborted||!validTime()){finish(record,'FAILED',reason||'TIMEOUT');return result();}
+            if(verified.value?.verified!==true||!verified.value.response){finish(record,'FAILED','CACHE_VERIFICATION_REJECTED');return result();}
+            const after=await step(()=>allowed(auth));
+            const cacheAfter=await step(()=>allowed(freeze({...auth,operation:'CACHE_READ'})));
+            if(after.aborted||cacheAfter.aborted||!validTime()){finish(record,'FAILED',reason||'TIMEOUT');return result();}
+            if(after.value!==true||cacheAfter.value!==true){finish(record,'DENIED','ORCHESTRATOR_FORBIDDEN');return result();}
+            if(clock()>=q.expiresAtMs||clock()>=verified.value.response.expiresAtMs){finish(record,'FAILED','TIMEOUT');return result();}
+            record.cache='HIT_REVERIFIED';record.usageDisposition='NOT_DISPATCHED';
+            record.usage=freeze({status:'NOT_DISPATCHED'});
+            record.metering=freeze({status:'NO_PROVIDER_REQUEST',fundingMode:q.fundingMode,costPicoUsd:'0',
+              proposedCreditDebitPicoUsd:'0',settled:false,creditDeducted:false,offlineOnly:true});
+            finish(record,'COMPLETED','NONE');return result(verified.value.response);
+          }
+        }
+      }
       // Pin the applicable immutable price before dispatch; BYO may operate
       // without a cost estimate, but managed compute needs an explicit price.
       try{record.pricingSnapshot=pricingRegistry.pin(q,clock());}
@@ -140,6 +170,10 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
         if(q.fundingMode==='ACG_CREDITS'||e?.code!=='PRICE_NOT_AVAILABLE'){
           finish(record,'FAILED','PRICE_UNAVAILABLE');return result();
         }
+      }
+      if(computeBudget!==null){
+        try{budgetTicket=computeBudget.reserve({scope,request:q,pricingSnapshot:record.pricingSnapshot});record.budget=freeze({status:'RESERVED_OFFLINE'});}
+        catch(e){finish(record,'FAILED',['BUDGET_REQUEST_LIMIT','BUDGET_DAILY_LIMIT','BUDGET_PRICE_REQUIRED','BUDGET_CAPACITY'].includes(e?.code)?e.code:'BUDGET_UNAVAILABLE');return result();}
       }
       const useLedger=creditLedger!==null&&q.fundingMode==='ACG_CREDITS';
       let attemptId=null;
@@ -176,6 +210,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       clearTimeout(timer);timer=setTimeout(()=>stop('TIMEOUT'),remaining);
       // Commit the in-memory dispatch marker synchronously before invocation.
       // A timeout/throw after this point is ambiguous, never auto-retried.
+      if(budgetTicket){computeBudget.markAttempt(budgetTicket);budgetAttempted=true;record.budget=freeze({status:'HELD_FOR_RECONCILIATION'});}
       record.status='DISPATCHED';record.dispatch='ATTEMPTED';record.usageDisposition='RECONCILIATION_REQUIRED';
       const work=Promise.resolve().then(()=>generate(q,{signal:controller.signal,timeoutMs:remaining}));
       const settled=work.then(value=>({value}),()=>({failed:true}));
@@ -201,6 +236,12 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       }catch{finish(record,'RECONCILIATION_REQUIRED','INVALID_RESPONSE');return result();}
       record.usage=v.usage;record.usageDisposition=v.usageDisposition;
       record.dispatch='OUTCOME_RECEIVED';
+      if(budgetTicket){
+        let metering=null;
+        if(record.pricingSnapshot)try{metering=meterOfflineUsage(q,record.pricingSnapshot,v.status==='UNKNOWN'?{status:'UNKNOWN'}:v.usage);}catch{}
+        try{record.budget=computeBudget.settle(budgetTicket,{outcome:v,metering});}
+        catch{record.budget=freeze({status:'HELD_FOR_RECONCILIATION'});}
+      }
       if(useLedger){
         const saved=await step(()=>creditLedger.recordOutcome(scope,x.idempotencyKey,{attemptId,requestId:q.requestId,status:v.status,usage:v.usage}));
         if(saved.value)record.creditReservation=saved.value;
@@ -220,6 +261,9 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
         record.usageDisposition='RECONCILIATION_REQUIRED';
         finish(record,'RECONCILIATION_REQUIRED',v.errorCode==='NONE'?'USAGE_UNCERTAIN':v.errorCode);return result();
       }
+      if(budgetTicket&&record.budget.status!=='ACCOUNTED_OFFLINE'){
+        record.usageDisposition='RECONCILIATION_REQUIRED';finish(record,'RECONCILIATION_REQUIRED','BUDGET_USAGE_UNCERTAIN');return result();
+      }
       if(v.status!=='COMPLETED'){finish(record,v.status==='CANCELLED'?'CANCELLED':'FAILED',
         knownError.has(v.errorCode)?v.errorCode:'UNKNOWN');return result();}
       record.status='VERIFYING';
@@ -231,11 +275,18 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       if(after.aborted||!validTime()){finish(record,reason==='CANCELLED'?'CANCELLED':'FAILED',reason||'TIMEOUT');return result();}
       if(after.value!==true){finish(record,'DENIED','ORCHESTRATOR_FORBIDDEN');return result();}
       if(clock()>=q.expiresAtMs||clock()>=verified.value.response.expiresAtMs){finish(record,'FAILED','TIMEOUT');return result();}
+      if(cacheEligible){
+        const cachePermission=await step(()=>allowed(freeze({...auth,operation:'CACHE_WRITE'})));
+        if(cachePermission.aborted||!validTime()){finish(record,'FAILED',reason||'TIMEOUT');return result();}
+        if(cachePermission.value===true)try{educationCache.put(cacheInput,{candidate:v.candidate,verifiedResponse:verified.value.response});}catch{}
+        if(clock()>=q.expiresAtMs||clock()>=verified.value.response.expiresAtMs){finish(record,'FAILED','TIMEOUT');return result();}
+      }
       finish(record,'COMPLETED','NONE');return result(verified.value.response);
     }catch(e){
       if(record){finish(record,record.dispatch==='ATTEMPTED'?'RECONCILIATION_REQUIRED':'FAILED','UNKNOWN');return result();}
       throw e;
     }finally{
+      if(budgetTicket&&!budgetAttempted)try{computeBudget.releaseBeforeAttempt(budgetTicket);}catch{}
       clearTimeout(timer);if(externalAbort)signal.removeEventListener('abort',externalAbort);
       if(!detached){if(inFlight)inFlight.then(release);else release();}
       if(record)record.stop=null;
