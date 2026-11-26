@@ -17,7 +17,7 @@ test('HTTP boundary authenticates, rejects untrusted fields and reauthenticates 
     if(token!=='trusted') throw new AppError('Unauthorized',{statusCode:401,code:'INVALID_TOKEN'});
     return principal;
   }};
-  const gateway={async invoke(p,q,reauth){
+  const gateway={async assertDisclosure(p,q){assert.equal(p,principal);assert.equal(q.accountId,accountId);},async invoke(p,q,reauth){
     dispatchCalls++;assert.equal(p,principal);
     assert.equal(await reauth(),principal);
     return {toolId:q.toolId};
@@ -43,7 +43,7 @@ test('HTTP boundary authenticates, rejects untrusted fields and reauthenticates 
     assert.equal(dispatchCalls,0);
     const before=authCalls;const result=await send(data,'trusted');
     assert.equal(result.status,200);assert.equal(result.headers.get('cache-control'),'no-store');
-    assert.equal(authCalls-before,2);assert.equal(dispatchCalls,1);
+    assert.equal(authCalls-before,3);assert.equal(dispatchCalls,1);
     assert.deepEqual(await result.json(),{toolId:data.toolId});
     assert.equal(audit.filter(e=>e.stage==='DENIED').length,12);
     assert.equal(audit.filter(e=>e.stage==='ALLOWED').length,1);
