@@ -26,10 +26,10 @@ const exact=(a,b)=>['tenantId','actorId','sessionId','accountId'].every(k=>a[k]=
 // live transport, worker recovery, runtime registration or financial tools.
 // Never evict idempotency tombstones to admit new requests.
 function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,now=Date.now,
-  pricingRegistry=createPricingRegistry(),maxActive=8,maxPerOwner=2,maxPerTenant=4,maxRecords=512}={}){
+  pricingRegistry=createPricingRegistry(),creditLedger=null,maxActive=8,maxPerOwner=2,maxPerTenant=4,maxRecords=512}={}){
   if(!registry||typeof registry.resolveForOfflineTest!=='function'||
     typeof responseEngine?.prepare!=='function'||typeof responseEngine?.verify!=='function'||
-    typeof authorize!=='function'||typeof pricingRegistry?.pin!=='function'||!Array.isArray(adapters)||adapters.length>32||
+    typeof authorize!=='function'||typeof pricingRegistry?.pin!=='function'||(creditLedger!==null&&!['reserve','claimDispatch','recordOutcome','releaseBeforeDispatch'].every(k=>typeof creditLedger[k]==='function'))||!Array.isArray(adapters)||adapters.length>32||
     !bounded(maxActive,1,64)||!bounded(maxPerOwner,1,maxActive)||!bounded(maxPerTenant,1,maxActive)||
     !bounded(maxRecords,1,4096))fail('ORCHESTRATOR_CONFIG_INVALID');
   const adapterMap=new Map();
@@ -52,7 +52,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
     return freeze({operationId:r.operationId,status:r.status,providerId:r.selection.providerId,modelId:r.selection.modelId,
       fundingMode:r.selection.fundingMode,requestId:r.requestId,createdAtMs:r.createdAtMs,finishedAtMs:r.finishedAtMs,
       dispatch:r.dispatch,usage:r.usage,usageDisposition:r.usageDisposition,errorCode:r.errorCode,
-      pricingSnapshot:r.pricingSnapshot,metering:r.metering,
+      pricingSnapshot:r.pricingSnapshot,metering:r.metering,creditReservation:r.creditReservation,
       automaticRetry:false,automaticFallback:false,offlineOnly:true});
   }
   function finish(r,status,errorCode){
@@ -119,7 +119,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       if(!validTime())fail(reason||'TIMEOUT');
       record={scope,selection,profile:x.profile,fingerprint,operationId:randomUUID(),status:'PREPARING',requestId:null,
         createdAtMs:clock(),finishedAtMs:null,dispatch:'NOT_DISPATCHED',usage:{status:'UNKNOWN'},
-        usageDisposition:'NOT_DISPATCHED',pricingSnapshot:null,metering:null,errorCode:'NONE',controller,stop};
+        usageDisposition:'NOT_DISPATCHED',pricingSnapshot:null,metering:null,creditReservation:null,errorCode:'NONE',controller,stop};
       records.set(key,record);
       const prepared=await step(()=>responseEngine.prepare({scope,profile:x.profile,question:x.question,context}));
       if(prepared.aborted||!validTime()){finish(record,reason==='CANCELLED'?'CANCELLED':'FAILED',reason||'TIMEOUT');return result();}
@@ -141,8 +141,38 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
           finish(record,'FAILED','PRICE_UNAVAILABLE');return result();
         }
       }
+      const useLedger=creditLedger!==null&&q.fundingMode==='ACG_CREDITS';
+      let attemptId=null;
+      if(useLedger){
+        const held=await step(()=>creditLedger.reserve(scope,x.idempotencyKey,q,record.pricingSnapshot));
+        if(held.aborted||held.failed||!held.value||!validTime()){
+          finish(record,'RECONCILIATION_REQUIRED','CREDIT_RESERVATION_UNCERTAIN');return result();
+        }
+        record.creditReservation=held.value;
+        if(held.value.status!=='RESERVED'){
+          finish(record,'FAILED','CREDIT_RESERVATION_NOT_AVAILABLE');return result();
+        }
+        const fresh=await step(()=>allowed(auth));
+        if(fresh.aborted||fresh.value!==true||!validTime()||clock()>=q.expiresAtMs){
+          const released=await step(()=>creditLedger.releaseBeforeDispatch(scope,x.idempotencyKey));
+          if(released.value)record.creditReservation=released.value;
+          finish(record,released.value?'DENIED':'RECONCILIATION_REQUIRED','CREDIT_DISPATCH_NOT_AUTHORIZED');return result();
+        }
+        const claim=await step(()=>creditLedger.claimDispatch(scope,x.idempotencyKey));
+        if(claim.value?.receipt)record.creditReservation=claim.value.receipt;
+        if(claim.aborted||claim.failed||claim.value?.dispatchAllowed!==true||!validTime()){
+          finish(record,'RECONCILIATION_REQUIRED','CREDIT_DISPATCH_NOT_CLAIMED');return result();
+        }
+        attemptId=claim.value.attemptId;
+        // Fresh check after durable dispatch claim; denial leaves a hold
+        // for conservative recovery, never a second dispatch.
+        const finalPermission=await step(()=>allowed(auth));
+        if(finalPermission.aborted||finalPermission.value!==true||!validTime()){
+          finish(record,'RECONCILIATION_REQUIRED','CREDIT_DISPATCH_NOT_AUTHORIZED');return result();
+        }
+      }
       const remaining=Math.min(q.expiresAtMs-clock(),Math.floor(x.timeoutMs-(performance.now()-start)));
-      if(remaining<1){finish(record,'FAILED','TIMEOUT');return result();}
+      if(remaining<1){finish(record,useLedger?'RECONCILIATION_REQUIRED':'FAILED','TIMEOUT');return result();}
       clearTimeout(timer);timer=setTimeout(()=>stop('TIMEOUT'),remaining);
       // Commit the in-memory dispatch marker synchronously before invocation.
       // A timeout/throw after this point is ambiguous, never auto-retried.
@@ -171,6 +201,13 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       }catch{finish(record,'RECONCILIATION_REQUIRED','INVALID_RESPONSE');return result();}
       record.usage=v.usage;record.usageDisposition=v.usageDisposition;
       record.dispatch='OUTCOME_RECEIVED';
+      if(useLedger){
+        const saved=await step(()=>creditLedger.recordOutcome(scope,x.idempotencyKey,{attemptId,requestId:q.requestId,status:v.status,usage:v.usage}));
+        if(saved.value)record.creditReservation=saved.value;
+        if(saved.aborted||saved.failed||saved.value?.status!=='SETTLED'||!validTime()){
+          record.usageDisposition='RECONCILIATION_REQUIRED';finish(record,'RECONCILIATION_REQUIRED','CREDIT_SETTLEMENT_UNCERTAIN');return result();
+        }
+      }
       if(record.pricingSnapshot){
         try{
           record.metering=meterOfflineUsage(q,record.pricingSnapshot,v.status==='UNKNOWN'?{status:'UNKNOWN'}:v.usage);
