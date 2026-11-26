@@ -34,7 +34,7 @@ const positiveInt=v=>Number.isSafeInteger(v)&&v>0;
 // Offline-only request contract. Inputs must originate from trusted server code;
 // package hash detects corruption, not authorization. Token count is a caller-
 // supplied planning estimate, not a billable count or tokenizer guarantee.
-function createOfflineRequest({registry,selection,prompt,inputTokenUpperBound,maxOutputTokens,nowMs}={}){
+function createOfflineRequest({registry,selection,prompt,inputTokenUpperBound,maxOutputTokens,nowMs,stream=false}={}){
   if(!registry||typeof registry.resolveForOfflineTest!=='function')fail('INVALID_REGISTRY');
   const model=registry.resolveForOfflineTest(selection);
   if(!prompt||prompt.payload?.schemaVersion!=='prompt-package-v1'||
@@ -49,6 +49,7 @@ function createOfflineRequest({registry,selection,prompt,inputTokenUpperBound,ma
   if(!positiveInt(inputTokenUpperBound)||!positiveInt(maxOutputTokens)||
     maxOutputTokens>model.capabilities.maxOutputTokens||
     inputTokenUpperBound+maxOutputTokens>model.capabilities.maxContextTokens)fail('MODEL_TOKEN_BUDGET_EXCEEDED');
+  if(typeof stream!=='boolean'||(stream&&!model.capabilities.streaming))fail('MODEL_STREAMING_UNSUPPORTED');
   // Funding metadata is for future orchestration/accounting ONLY, never part
   // of a provider wire payload. No account scope, endpoint, API key or tools.
   const envelope={contractVersion:CONTRACT_VERSION,requestId:randomUUID(),
@@ -58,7 +59,7 @@ function createOfflineRequest({registry,selection,prompt,inputTokenUpperBound,ma
     budget:{inputTokenUpperBound,maxOutputTokens,tokenCountStatus:'UNVERIFIED_PLANNING_BOUND'},
     request:{instruction:structuredClone(prompt.payload.instructions),
       data:structuredClone(prompt.payload.data),responseMode:model.capabilities.responseMode,
-      responseSchema:CANDIDATE_JSON_SCHEMA,maxOutputTokens,stream:false,tools:[]}};
+      responseSchema:CANDIDATE_JSON_SCHEMA,maxOutputTokens,stream,tools:[]}};
   return freeze(envelope);
 }
 // An adapter's eventual output must be normalized before verification. This
