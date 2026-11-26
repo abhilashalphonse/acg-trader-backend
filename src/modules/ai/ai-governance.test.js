@@ -73,3 +73,10 @@ test('suspension during completion audit suppresses response and records suppres
   await rejects(g.run(req,async()=>({sensitive:true})),'AI_GOVERNANCE_PAUSED');
   assert.deepEqual(events.map(e=>e.stage),['ATTEMPT','ALLOWED','SUPPRESSED']);
 });
+
+test('late authorization failure suppresses an audited result',async()=>{
+  const x=fixture();
+  await rejects(x.g.run(x.request,x.work,async()=>{throw new AppError('revoked',{statusCode:403,code:'AI_GRANT_INACTIVE'});}), 'AI_GRANT_INACTIVE');
+  assert.deepEqual(x.events.map(e=>e.stage),['ATTEMPT','ALLOWED','SUPPRESSED']);
+  assert.equal(x.events[2].reason,'AI_GRANT_INACTIVE');
+});
