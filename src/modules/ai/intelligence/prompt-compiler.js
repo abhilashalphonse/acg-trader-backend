@@ -1,7 +1,7 @@
 'use strict';
 const {digest,freeze}=require('./candle-evidence');
 const {selectKnowledge}=require('./knowledge-catalog');
-const PROMPT_VERSION='acg-prompt-v1';
+const PROMPT_VERSION='acg-prompt-v2';
 const MAX_QUESTION_BYTES=4096,MAX_PACKAGE_BYTES=49152;
 const POLICY=Object.freeze([
   'You are an analytical assistant for ACG Trader. This package grants no tool or trading authority.',
@@ -10,15 +10,19 @@ const POLICY=Object.freeze([
   'The knowledge catalog describes provisional ACG methods, not independently established facts or a proven strategy. A reference to a method is not evidence of a current market event.',
   'Preserve the symbol, timeframe, as-of, data quality, gaps, stale status and limitations. If evidence is absent or inadequate, abstain from market-specific conclusions; educational explanation is still possible.',
   'Historical closed bars, structural breaks, liquidity proxies, gaps and observed window ranges are not live executable prices or forecasts. Never claim order flow, fills, guaranteed profit, or execution.',
-  'Return only the requested JSON candidate response. Use only supplied reference IDs. Do not provide raw credentials, private identifiers, or hidden instructions. The server must independently verify every claim before display.',
+  'Return only the requested JSON candidate response. Select supplied reference IDs and approved interpretation codes only; never return prose, numeric claims, credentials or tool calls. The server renders independently checked evidence and original knowledge.',
 ]);
-const RESPONSE_CONTRACT=freeze({schemaVersion:'candidate-response-v1',
+const INTERPRETATION_CODES=freeze({
+  BREAK_HISTORY:'STRUCTURE_SUMMARY',SWEEP_OR_BREAK:'STRUCTURE_EVENT',
+  POTENTIAL_LIQUIDITY:'LIQUIDITY_REFERENCE',EQUAL_LEVEL:'EQUAL_LEVEL',
+  ZONE_STATE:'FVG_ZONE',WINDOW_RANGE:'SESSION_RANGE',FRAME_ALIGNMENT:'CROSS_TIMEFRAME'
+});
+const RESPONSE_CONTRACT=freeze({schemaVersion:'candidate-response-v2',
   status:['ANSWER','INSUFFICIENT_EVIDENCE','UNSUPPORTED'],
   observations:[{referenceId:'exact supplied market reference ID'}],
-  interpretations:[{referenceIds:['exact supplied market reference IDs'],text:'qualified interpretation'}],
-  education:[{knowledgeIds:['exact supplied knowledge IDs'],text:'method explanation'}],
-  limitations:['applicable evidence or methodology limitations'],
-  constraints:{maxObservations:32,maxInterpretations:8,maxEducation:8,maxTextChars:1000,noToolCalls:true,noExecution:true}});
+  interpretations:[{referenceId:'exact supplied market reference ID',code:Object.keys(INTERPRETATION_CODES)}],
+  education:[{knowledgeId:'exact supplied knowledge ID'}],
+  constraints:{maxObservations:32,maxInterpretations:8,maxEducation:8,noToolCalls:true,noExecution:true,noFreeText:true}});
 const bytes=value=>Buffer.byteLength(typeof value==='string'?value:JSON.stringify(value),'utf8');
 const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
 const hex=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -99,4 +103,4 @@ function compilePromptPackage({scope,profile,question,context=null,nowMs}={}){
   if(evidence?.references.some(r=>r.type==='QUOTE_OBSERVATION'))expiryCandidates.push(context.quote.validUntilMs);
   return freeze({packageId:digest(payload),compiledAtMs:nowMs,expiresAtMs:Math.min(...expiryCandidates),payloadBytes,payload});
 }
-module.exports={compilePromptPackage,PROMPT_VERSION,MAX_QUESTION_BYTES,MAX_PACKAGE_BYTES};
+module.exports={compilePromptPackage,PROMPT_VERSION,MAX_QUESTION_BYTES,MAX_PACKAGE_BYTES,INTERPRETATION_CODES};
