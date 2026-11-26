@@ -74,7 +74,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
     const parsed=inputSchema.safeParse(input);
     if(!parsed.success||!parsed.data.question.trim()||Buffer.byteLength(parsed.data.question)>4096)fail('ORCHESTRATOR_REQUEST_INVALID');
     const x=parsed.data,scope=freeze(x.scope),selection=freeze(x.selection),context=x.context??null;
-    const key=recordKey(scope,x.idempotencyKey);
+    const key=recordKey(scope,x.idempotencyKey.toLowerCase());
     const auth=freeze({scope,selection,operation:'GENERATE',profile:x.profile});
     // Bound pending authorization too. A busy caller can retry only before
     // an idempotency record exists and before any adapter invocation.
@@ -188,7 +188,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
   async function lookup(scopeInput,keyInput,operation){
     const s=scopeSchema.safeParse(scopeInput),k=z.uuid().safeParse(keyInput);
     if(!s.success||!k.success)fail('ORCHESTRATOR_REQUEST_INVALID');
-    const scope=freeze(s.data),r=records.get(recordKey(scope,k.data));
+    const scope=freeze(s.data),r=records.get(recordKey(scope,k.data.toLowerCase()));
     if(!r||!exact(r.scope,scope)||!await allowed(freeze({scope,selection:r.selection,profile:r.profile,operation})))fail('ORCHESTRATOR_FORBIDDEN');
     return r;
   }
