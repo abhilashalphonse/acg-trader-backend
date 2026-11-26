@@ -5,6 +5,7 @@ const {randomUUID}=require('node:crypto');
 const {createModelRegistry}=require('./model-registry');
 const {createResponseEngine}=require('../intelligence/response-engine');
 const {createOfflineOrchestrator}=require('./offline-orchestrator');
+const {createPricingRegistry}=require('./compute-pricing');
 const {normalizeFixtureResponse}=require('./provider-response');
 const {normalizeOfflineOutcome,CONTRACT_VERSION}=require('./provider-contract');
 const scope={tenantId:'a'.repeat(24),actorId:'b'.repeat(24),sessionId:'c'.repeat(24),accountId:'d'.repeat(24)};
@@ -27,11 +28,18 @@ function setup({generate=async q=>output(q),authorize=async()=>true,engineAuthor
     capabilities:{input:'TEXT',responseMode:'JSON_SCHEMA',separateInstructionChannel:true,streaming:true,
       usageReporting:'PROVIDER_REPORTED',maxContextTokens:8192,maxOutputTokens:2048}};
   const registry=createModelRegistry({descriptors:[descriptor],allowSynthetic:true});
+  const model=registry.resolveForOfflineTest(selection);
+  const pricingRegistry=createPricingRegistry({allowSynthetic:true,prices:[{
+    providerId:model.providerId,modelId:model.modelId,descriptorId:model.descriptorId,revision:'fixture-price-1',
+    effectiveFromMs:nowMs-1,effectiveUntilMs:null,currency:'USD',rateUnit:'MICRO_USD_PER_MILLION_TOKENS',
+    reviewStatus:'SYNTHETIC_TEST_ONLY',source:'OFFLINE_FIXTURE',additionalFees:'NONE_SYNTHETIC',
+    input:{standard:'1000000',cacheRead:null,cacheWriteMode:'NONE',cacheWrite:null,cacheWrite5m:null,cacheWrite1h:null},
+    output:{standard:'2000000',reasoning:null}}]});
   const responseEngine=createResponseEngine({authorize:engineAuthorize,now});
   const adapter={contractVersion:CONTRACT_VERSION,executionMode:'OFFLINE_TEST_ONLY',
     providerId:selection.providerId,modelId:selection.modelId,
     async generate(q,opts){calls++;return generate(q,opts);}};
-  const service=createOfflineOrchestrator({registry,responseEngine,adapters:[adapter],authorize,now,...options});
+  const service=createOfflineOrchestrator({registry,responseEngine,adapters:[adapter],authorize,now,pricingRegistry,...options});
   return {service,calls:()=>calls};
 }
 test('explicit provider and funding selection, real Phase 2 verification and receipt-only replay',async()=>{
@@ -51,6 +59,10 @@ test('explicit provider and funding selection, real Phase 2 verification and rec
   await assert.rejects(service.status({...scope,actorId:'e'.repeat(24)},x.idempotencyKey),{code:'ORCHESTRATOR_FORBIDDEN'});
   const c=await service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
   assert.equal(c.receipt.fundingMode,'ACG_CREDITS');assert.equal(calls(),2);
+  assert.equal(r.receipt.metering.costPicoUsd,'160000000');
+  assert.equal(r.receipt.metering.proposedCreditDebitPicoUsd,'0');
+  assert.equal(c.receipt.metering.proposedCreditDebitPicoUsd,'160000000');
+  assert.equal(c.receipt.metering.creditDeducted,false);
 });
 test('concurrent identical requests dispatch at most once; owner and global admission bounds',async()=>{
   const started=deferred(),hold=deferred();
@@ -149,4 +161,14 @@ test('provider mismatch and usage overrun require reconciliation; no candidate r
   const b=setup({generate:async q=>output(q,{usage:{...usage,inputTokens:4097}})});
   const over=await b.service.run(input());assert.equal(over.receipt.status,'RECONCILIATION_REQUIRED');
   assert.equal(over.receipt.usage.inputTokens,4097);assert.equal(over.response,null);
+});
+
+test('managed compute requires price before dispatch; BYO can continue without a quote',async()=>{
+  const a=setup({options:{pricingRegistry:createPricingRegistry()}});
+  const managed=await a.service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(managed.receipt.status,'FAILED');assert.equal(managed.receipt.errorCode,'PRICE_UNAVAILABLE');
+  assert.equal(managed.receipt.dispatch,'NOT_DISPATCHED');assert.equal(a.calls(),0);
+  const byo=await a.service.run(input());
+  assert.equal(byo.receipt.status,'COMPLETED');assert.equal(byo.receipt.metering.status,'PRICE_NOT_AVAILABLE');
+  assert.equal(byo.receipt.metering.costPicoUsd,null);assert.equal(byo.receipt.metering.proposedCreditDebitPicoUsd,'0');
 });
