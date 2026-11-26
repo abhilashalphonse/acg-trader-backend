@@ -112,13 +112,15 @@ async function provisionCatalogExecution({ logger } = {}) {
 
 async function syncInstrumentCatalog({ logger } = {}) {
   const operations = ACG_INSTRUMENT_CATALOG.map(spec => {
-    const { executionEnabled: _catalogExecutionDefault, status, ...managedSpec } = spec;
+    // Operator-maintained holidays and date overrides are not catalog defaults.
+    // Never erase holidays when refreshing instrument terms on restart.
+    const { executionEnabled: _catalogExecutionDefault, status, tradingHolidays, ...managedSpec } = spec;
     return {
       updateOne: {
         filter: { symbol: spec.symbol },
         update: {
           $set: managedSpec,
-          $setOnInsert: { executionEnabled: true, status, executionProvisionVersion: EXECUTION_PROVISION_VERSION },
+          $setOnInsert: { executionEnabled: true, status, tradingHolidays, executionProvisionVersion: EXECUTION_PROVISION_VERSION },
         },
         upsert: true,
       },
