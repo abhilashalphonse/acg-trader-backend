@@ -29,10 +29,12 @@ const owner=s=>({tenantId:s.tenantId,actorId:s.actorId});
 function verifyWallet(w,s){
   if(!w||w._id!==walletId(s)||w.tenantId!==s.tenantId||w.actorId!==s.actorId||
     !Number.isSafeInteger(w.revision)||w.revision<0||w.revision>=Number.MAX_SAFE_INTEGER||
-    n(w.available)+n(w.reserved)+n(w.spent)!==n(w.credited))fail('CREDIT_WALLET_INVALID');
+    !Number.isSafeInteger(w.pendingReversals??0)||(w.pendingReversals??0)<0||
+    !money.safeParse(w.reversed??'0').success||n(w.available)+n(w.reserved)+n(w.spent)!==n(w.credited))fail('CREDIT_WALLET_INVALID');
   return w;
 }
 function walletView(w){return freeze({available:w.available,reserved:w.reserved,spent:w.spent,credited:w.credited,revision:w.revision,
+  pendingReversals:w.pendingReversals??0,reversed:w.reversed??'0',
   currency:'USD',moneyUnit:'PICO_USD',offlineOnly:true});}
 function receipt(r){return freeze({reservationId:r._id,requestId:r.requestId,status:r.status,revision:r.revision,amount:r.amount,
   charged:r.charged,expiresAtMs:r.expiresAtMs,reason:r.reason,offlineOnly:true,automaticRetry:false});}
@@ -68,7 +70,7 @@ function createIsolatedCreditLedger({store,authorize,now=Date.now}={}){
   async function journal(t,s,w,operation,reference,reservation,amount,at,eventId=null){
     await t.append({_id:eventId??digest(['credit-event-v1',w._id,w.revision]),...owner(s),walletId:w._id,
       reservationId:reservation?reservation._id:null,operation,reference,revision:w.revision,amount,
-      available:w.available,reserved:w.reserved,spent:w.spent,credited:w.credited,occurredAtMs:at});
+      available:w.available,reserved:w.reserved,spent:w.spent,credited:w.credited,pendingReversals:w.pendingReversals??0,reversed:w.reversed??'0',occurredAtMs:at});
   }
   async function change(t,s,w,r,next,operation,availableDelta,reservedDelta,spentDelta,at){
     const newWallet={...w,available:m(n(w.available)+availableDelta),reserved:m(n(w.reserved)+reservedDelta),
@@ -118,6 +120,7 @@ function createIsolatedCreditLedger({store,authorize,now=Date.now}={}){
         }
         if(at<snapshot.pinnedAtMs||at>=meta.expiresAtMs)fail('CREDIT_REQUEST_EXPIRED');
         const w=verifyWallet(await t.wallet(s,walletId(s)),s);
+        if((w.pendingReversals??0)>0)fail('CREDIT_WALLET_RESTRICTED');
         if(n(w.available)<n(amount))fail('CREDIT_INSUFFICIENT');
         const next={_id:rid,...s,idempotencyKey:k,requestId:meta.requestId,requestFingerprint:fingerprint,
           revision:1,status:'RESERVED',amount,charged:'0',attemptId:null,requestMeta:metaJson,pricingSnapshot:snapshotJson,
@@ -197,4 +200,4 @@ function createIsolatedCreditLedger({store,authorize,now=Date.now}={}){
     async status(scope,key){return tx(scope,'STATUS',key,async(t,s,k)=>receipt(await readReservation(t,s,k)));},
   });
 }
-module.exports={createIsolatedCreditLedger};
+module.exports={createIsolatedCreditLedger,walletId,verifyWallet,walletView};
