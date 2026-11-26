@@ -75,3 +75,12 @@ test('reject source drift, excessive history, foreign provider and expired assem
   const z=fixture();z.bars([bar(0,{provider:'accelpix'})]);await assert.rejects(z.a.assemble(req),{code:'CANDLE_PROVIDER_MISMATCH'});
   const t=fixture();t.after(()=>t.advance(TTL_MS));await assert.rejects(t.a.assemble(req),{code:'CONTEXT_EXPIRED'});
 });
+
+test('explicit server session window is attached to scoped context; bad windows are rejected',async()=>{
+  const x=fixture();
+  const a=await x.a.assemble({...req,sessionWindows:[{timeframe:'1m',startMs:start,endMs:start+2*step}]});
+  assert.equal(a.series[0].sessions[0].status,'OBSERVED_WINDOW_COMPLETE');
+  assert.equal(a.series[0].sessions[0].observedRange.high,'101');
+  assert.equal(a.crossTimeframe.alignment,'INSUFFICIENT_QUALIFIED_FRAMES');
+  await assert.rejects(x.a.assemble({...req,sessionWindows:[{timeframe:'5m',startMs:start,endMs:start+2*step}]}),{code:'INVALID_CONTEXT_REQUEST'});
+});
