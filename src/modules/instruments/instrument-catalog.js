@@ -1,5 +1,7 @@
 'use strict';
 
+const { sessionForCommodity } = require('./commodity-trading-sessions');
+
 // ACG-owned simulated CFD product universe.
 // Twelve Data is the market-data provider; these are ACG execution/product
 // specifications and must not be treated as universal broker contract terms.
@@ -517,6 +519,7 @@ function forexSpec(pair) {
 }
 
 function commoditySpec(spec) {
+  const session = sessionForCommodity(spec.symbol);
   return baseSpec({
     symbol: spec.symbol,
     displaySymbol: spec.providerSymbol.includes('/') ? spec.providerSymbol : spec.symbol,
@@ -525,7 +528,8 @@ function commoditySpec(spec) {
     pipSize: spec.pipSize, contractSize: spec.contractSize,
     commissionPerLotPerSide: spec.assetClass === 'METAL' ? '2.5' : '0',
     spreadProfile: commoditySpreadProfile(spec),
-    providerSymbol: spec.providerSymbol, tradingSessions: FX_WEEK,
+    providerSymbol: spec.providerSymbol, tradingSessions: session.tradingSessions,
+    timezone: session.timezone,
     softQuoteAgeMs: spec.assetClass === 'OTHER' ? 15000 : 10000,
     maxQuoteAgeMs: spec.assetClass === 'OTHER' ? 60000 : 35000,
   });
