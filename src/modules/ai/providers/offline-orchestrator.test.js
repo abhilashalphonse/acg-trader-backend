@@ -41,7 +41,7 @@ test('explicit provider and funding selection, real Phase 2 verification and rec
   assert.equal(r.receipt.fundingMode,'BYO_API');assert.equal(r.receipt.usage.totalTokens,130);
   assert.equal(r.response.education[0].id,'MARKET_STRUCTURE');
   assert.equal(r.receipt.usageDisposition,'UNSETTLED');
-  const replay=await service.run(x);
+  const replay=await service.run({...x,idempotencyKey:x.idempotencyKey.toUpperCase()});
   assert.equal(replay.replayed,true);assert.equal(replay.response,null);
   assert.deepEqual(replay.receipt,r.receipt);assert.equal(calls(),1);
   const receipt=await service.status(scope,x.idempotencyKey);
@@ -85,7 +85,7 @@ test('cancellation after dispatch preserves ambiguity and holds slot until adapt
 test('deadline after dispatch and thrown adapter never trigger retry or fallback',async()=>{
   const hold=deferred();
   const a=setup({generate:async()=>hold.promise});
-  const x=input({timeoutMs:40});const r=await a.service.run(x);
+  const x=input({timeoutMs:500});const r=await a.service.run(x);
   assert.equal(r.receipt.status,'RECONCILIATION_REQUIRED');assert.equal(r.receipt.errorCode,'TIMEOUT');
   assert.equal(r.receipt.automaticRetry,false);assert.equal(r.receipt.automaticFallback,false);
   hold.resolve(null);
@@ -127,4 +127,26 @@ test('actual Phase 3C SSE adapter pipeline through orchestration and Phase 2 ver
   }});
   const r=await service.run(input({stream:true}));
   assert.equal(r.receipt.status,'COMPLETED');assert.equal(r.response.education[0].id,'MARKET_STRUCTURE');
+});
+
+test('stalled pre-dispatch authorization holds admission until the work settles',async()=>{
+  const hold=deferred(),started=deferred(),controller=new AbortController();
+  const {service,calls}=setup({authorize:async()=>{started.resolve();return hold.promise;},
+    options:{maxActive:1,maxPerOwner:1,maxPerTenant:1}});
+  const p=service.run(input(),{signal:controller.signal});
+  await started.promise;controller.abort();
+  await assert.rejects(p,{code:'CANCELLED'});
+  await assert.rejects(service.run(input()),{code:'ORCHESTRATOR_BUSY'});
+  assert.equal(calls(),0);
+  hold.resolve(true);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal((await service.run(input())).receipt.status,'COMPLETED');
+});
+test('provider mismatch and usage overrun require reconciliation; no candidate release',async()=>{
+  const a=setup({generate:async q=>({...output(q),modelId:'wrong-model'})});
+  const bad=await a.service.run(input());
+  assert.equal(bad.receipt.status,'RECONCILIATION_REQUIRED');assert.equal(bad.receipt.errorCode,'INVALID_RESPONSE');
+  assert.equal(bad.response,null);
+  const b=setup({generate:async q=>output(q,{usage:{...usage,inputTokens:4097}})});
+  const over=await b.service.run(input());assert.equal(over.receipt.status,'RECONCILIATION_REQUIRED');
+  assert.equal(over.receipt.usage.inputTokens,4097);assert.equal(over.response,null);
 });
