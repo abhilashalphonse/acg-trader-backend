@@ -9,7 +9,9 @@ const revision={type:Number,required:true,min:0,validate:Number.isSafeInteger};
 const time={type:Number,required:true,min:1,validate:Number.isSafeInteger};
 const options={strict:'throw',versionKey:false,autoCreate:false,autoIndex:false,writeConcern:{w:'majority'}};
 const walletSchema=new Schema({_id:hash,tenantId:id,actorId:id,
-  available:amount,reserved:amount,spent:amount,credited:amount,revision},options);
+  available:amount,reserved:amount,spent:amount,credited:amount,revision,
+  pendingReversals:{type:Number,required:true,default:0,min:0,validate:Number.isSafeInteger},
+  reversed:{...amount,default:'0'}},options);
 walletSchema.index({tenantId:1,actorId:1},{unique:true});
 const reservationSchema=new Schema({_id:hash,tenantId:id,actorId:id,sessionId:id,accountId:id,
   idempotencyKey:uuid,requestId:uuid,requestFingerprint:hash,revision,
@@ -24,9 +26,10 @@ reservationSchema.index({requestId:1},{unique:true});
 reservationSchema.index({tenantId:1,actorId:1,status:1,expiresAtMs:1});
 const eventSchema=new Schema({_id:hash,tenantId:id,actorId:id,walletId:hash,
   reservationId:{type:String,default:null,match:/^[a-f0-9]{64}$/},
-  operation:{type:String,required:true,enum:['FIXTURE_CREDIT','RESERVE','DISPATCH','HOLD','SETTLE','RELEASE']},
+  operation:{type:String,required:true,enum:['FIXTURE_CREDIT','RESERVE','DISPATCH','HOLD','SETTLE','RELEASE','PURCHASE_CREDIT','PAYMENT_REVERSAL_HOLD','PAYMENT_REVERSAL']},
   reference:{type:String,required:true,maxlength:64},revision,amount,available:amount,reserved:amount,spent:amount,credited:amount,
-  occurredAtMs:time},options);
+  pendingReversals:{type:Number,required:true,default:0,min:0,validate:Number.isSafeInteger},
+  reversed:{...amount,default:'0'},occurredAtMs:time},options);
 eventSchema.index({walletId:1,revision:1},{unique:true});
 function immutable(next){next(Error('Credit journal is append-only'));}
 eventSchema.pre('save',function(next){if(this.isNew)return next();immutable(next);});
