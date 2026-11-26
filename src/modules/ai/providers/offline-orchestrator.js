@@ -55,7 +55,8 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
   }
   function finish(r,status,errorCode){
     if(terminal.has(r.status))return;
-    r.status=status;r.errorCode=errorCode;r.finishedAtMs=clock();
+    r.status=status;r.errorCode=errorCode;
+    try{r.finishedAtMs=clock();}catch{r.finishedAtMs=null;}
     // Never retain questions, context, candidates, provider payloads or answers.
     r.controller=null;
   }
@@ -114,7 +115,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       }
       if(records.size>=maxRecords)fail('ORCHESTRATOR_RECORD_LIMIT');
       if(!validTime())fail(reason||'TIMEOUT');
-      record={scope,selection,fingerprint,operationId:randomUUID(),status:'PREPARING',requestId:null,
+      record={scope,selection,profile:x.profile,fingerprint,operationId:randomUUID(),status:'PREPARING',requestId:null,
         createdAtMs:clock(),finishedAtMs:null,dispatch:'NOT_DISPATCHED',usage:{status:'UNKNOWN'},
         usageDisposition:'NOT_DISPATCHED',errorCode:'NONE',controller,stop};
       records.set(key,record);
@@ -188,7 +189,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
     const s=scopeSchema.safeParse(scopeInput),k=z.uuid().safeParse(keyInput);
     if(!s.success||!k.success)fail('ORCHESTRATOR_REQUEST_INVALID');
     const scope=freeze(s.data),r=records.get(recordKey(scope,k.data));
-    if(!r||!exact(r.scope,scope)||!await allowed(freeze({scope,selection:r.selection,operation})))fail('ORCHESTRATOR_FORBIDDEN');
+    if(!r||!exact(r.scope,scope)||!await allowed(freeze({scope,selection:r.selection,profile:r.profile,operation})))fail('ORCHESTRATOR_FORBIDDEN');
     return r;
   }
   return Object.freeze({
