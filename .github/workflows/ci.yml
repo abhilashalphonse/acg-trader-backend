@@ -65,3 +65,11 @@ jobs:
         env:
           ACG_AI_ISOLATED_CI: 'true'
         run: node scripts/ai-phase2-default-off.js
+
+      - name: Run AI Phase 3J financial stress and crash recovery acceptance
+        env:
+          ACG_AI_ISOLATED_CI: 'true'
+        run: node scripts/ai-phase3-financial-acceptance.js
+
+      - name: Run AI Phase 3J provider security and offline performance benchmarks
+        run: node scripts/ai-phase3-provider-benchmark.js
