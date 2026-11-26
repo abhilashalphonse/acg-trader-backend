@@ -14,7 +14,7 @@ async function main(){
       assert.equal((await fetch(root+'/health/live')).status,200);
       assert.equal((await fetch(root+'/v1/ai/read/tools')).status,enabled?401:404);
       assert.equal((await fetch(root+'/v1/internal/ai/control')).status,enabled?401:404);
-      for(const route of ['/v1/ai/intelligence','/v1/ai/context','/v1/ai/response','/v1/ai/chat']){
+      for(const route of ['/v1/ai/intelligence','/v1/ai/context','/v1/ai/response','/v1/ai/chat','/v1/ai/providers','/v1/ai/connections','/v1/ai/credentials']){
         assert.equal((await fetch(root+route,{method:'POST',headers:{'content-type':'application/json'},body:'{}'})).status,404);
       }
     }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
