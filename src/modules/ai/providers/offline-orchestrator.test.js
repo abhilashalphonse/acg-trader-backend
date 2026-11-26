@@ -290,3 +290,16 @@ test('cache cannot bypass current Phase 2 authorization or cache-specific permis
   engineAllowed=true;cacheAllowed=false;
   const v=await a.service.run(input());assert.equal(v.receipt.cache,'MISS');assert.equal(a.calls(),2);
 });
+
+test('invalidation during cache verification suppresses disclosure without dispatch',async()=>{
+  const cache=createOfflineEducationCache({now:()=>nowMs});
+  let invalidate=false;
+  const a=setup({engineAuthorize:async()=>{if(invalidate)cache.invalidateAll();return true;},
+    authorize:async req=>{if(req.operation==='CACHE_READ')invalidate=true;return true;},
+    options:{educationCache:cache,cachePolicyEpoch:'fixture-1'}});
+  const initial=await a.service.run(input());
+  assert.equal(initial.receipt.status,'COMPLETED');assert.equal(a.calls(),1);
+  invalidate=false;
+  const next=await a.service.run(input());
+  assert.equal(next.receipt.errorCode,'CACHE_EXPIRED_OR_INVALIDATED');assert.equal(next.response,null);assert.equal(a.calls(),1);
+});
