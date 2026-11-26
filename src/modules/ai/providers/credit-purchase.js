@@ -17,7 +17,7 @@ const owner=s=>({tenantId:s.tenantId,actorId:s.actorId});
 const owns=(p,s)=>p&&p.tenantId===s.tenantId&&p.actorId===s.actorId;
 function view(p){return freeze({purchaseId:p._id,sku:p.sku,currency:p.currency,amountMinor:p.amountMinor,
   creditAmount:p.creditAmount,moneyUnit:'PICO_USD',status:p.status,revision:p.revision,
-  reversalPending:p.reversalPending,fullReversalVerified:p.fullReversalVerified,
+  reversalPending:p.reversalPending,fullReversalVerified:p.fullReversalVerified,conflictReview:p.conflictReview,
   catalogVersion:p.catalogVersion,offlineOnly:true,paymentEnabled:false});}
 // No external checkout, provider credentials, payment dispatch, routes or
 // production mint capability. Store and service require isolated CI.
@@ -48,7 +48,7 @@ function createIsolatedPurchaseService({store,verifier,authorize,authorizeWebhoo
       reversed:next.reversed,pendingReversals:next.pendingReversals,occurredAtMs:at});
   }
   async function applyFullReversal(t,p,at){
-    if(!p.credited||!p.fullReversalVerified)fail('CREDIT_PURCHASE_STATE_INVALID');
+    if(!p.credited||!p.fullReversalVerified||p.conflictReview)fail('CREDIT_PURCHASE_STATE_INVALID');
     const w=verifyWallet(await t.wallet(owner(p),walletId(p)),p);
     if(n(w.available)<n(p.creditAmount)){
       if(!p.reversalPending)await walletChange(t,p,'PAYMENT_REVERSAL_HOLD',0n,1,at);
@@ -70,7 +70,7 @@ function createIsolatedPurchaseService({store,verifier,authorize,authorizeWebhoo
         const at=clock(),amountMinor=CATALOG[product],p={_id:randomUUID(),...owner(s),idempotencyKey:key,
           sku:product,currency:'USD',amountMinor,creditAmount:(BigInt(amountMinor)*10000000000n).toString(),
           catalogVersion:'fixture-purchase-v1',provider:'FIXTURE',paymentId:null,revision:1,status:'CREATED',
-          credited:false,reversalPending:false,fullReversalVerified:false,createdAtMs:at,updatedAtMs:at};
+          credited:false,reversalPending:false,fullReversalVerified:false,conflictReview:false,createdAtMs:at,updatedAtMs:at};
         await t.createPurchase(p);return view(p);
       });
     },
@@ -97,21 +97,23 @@ function createIsolatedPurchaseService({store,verifier,authorize,authorizeWebhoo
           // Sticky review and reversal states cannot be turned into fresh credits
           // by a later capture, regardless of delivery order.
           if(!p.credited&&p.status==='CREATED'){
-            if(e.currency!==p.currency||e.amountMinor!==p.amountMinor)next.status='REVIEW_REQUIRED';
+            if(e.currency!==p.currency||e.amountMinor!==p.amountMinor){next.status='REVIEW_REQUIRED';next.conflictReview=true;}
             else{
               await walletChange(t,p,'PURCHASE_CREDIT',n(p.creditAmount),0,at);
               next={...next,status:'CREDITED',credited:true};
             }
           }else if(p.credited&&e.amountMinor!==p.amountMinor&&p.status==='CREDITED'){
             await walletChange(t,p,'PAYMENT_REVERSAL_HOLD',0n,1,at);
-            next={...next,status:'REVERSAL_PENDING',reversalPending:true};
-          }
+            next={...next,status:'REVERSAL_PENDING',reversalPending:true,conflictReview:true};
+          }else if(p.credited&&e.amountMinor!==p.amountMinor&&p.status==='REVERSAL_PENDING')next.conflictReview=true;
         }else if(!['REVERSED','REVERSED_UNFUNDED'].includes(p.status)){
           const full=e.currency===p.currency&&e.amountMinor===p.amountMinor;
+          const contradictory=e.currency!==p.currency||n(e.amountMinor)>n(p.amountMinor);
+          if(contradictory)next.conflictReview=true;
           if(!p.credited){
-            next.status=full?'REVERSED_UNFUNDED':'REVIEW_REQUIRED';
+            next.status=full&&!next.conflictReview?'REVERSED_UNFUNDED':'REVIEW_REQUIRED';
             next.fullReversalVerified=full;
-          }else if(full||p.fullReversalVerified){
+          }else if((full||p.fullReversalVerified)&&!next.conflictReview){
             next=await applyFullReversal(t,{...next,fullReversalVerified:true},at);
           }else{
             if(!p.reversalPending)await walletChange(t,p,'PAYMENT_REVERSAL_HOLD',0n,1,at);
@@ -134,7 +136,7 @@ function createIsolatedPurchaseService({store,verifier,authorize,authorizeWebhoo
       return store.transaction(async t=>{
         const p=await t.purchase(key);if(!p)fail('CREDIT_PURCHASE_UNAVAILABLE');
         if(p.status==='REVERSED')return view(p);
-        if(p.status!=='REVERSAL_PENDING'||!p.fullReversalVerified)fail('CREDIT_PURCHASE_STATE_INVALID');
+        if(p.status!=='REVERSAL_PENDING'||!p.fullReversalVerified||p.conflictReview)fail('CREDIT_PURCHASE_STATE_INVALID');
         const at=clock(),next=await applyFullReversal(t,p,at);
         if(next.status===p.status)return view(p);
         const saved={...next,revision:p.revision+1,updatedAtMs:at};
