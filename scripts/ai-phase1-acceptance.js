@@ -117,6 +117,7 @@ async function main() {
     assert.deepEqual(grants.map(x=>x.status).sort(),[201,409]);
     const grant=grants.find(x=>x.status===201).body.grant;
     const req={accountId:a.id,connectionId:grant.connectionId,toolId:'account.valuation.read',args:{}};
+    assert.equal((await send('/read/invoke','invalid-test-token',req)).status,401);
     const val=await send('/read/invoke',ta,req);
     assert.equal(val.status,200);assert.equal(val.body.result.balance,'10000');assert.equal(val.body.result.live,false);
     for(const [toolId,key] of [['account.positions.read','positions'],['account.orders.read','orders']]){
@@ -146,11 +147,15 @@ async function main() {
     assert.equal(gb.status,201);
     await AccountAccessGrant.updateOne({accountId:b.account._id,userId:b.user._id},{$set:{status:'REVOKED',revokedAt:new Date()}});
     assert.equal((await send('/read/invoke',tb,{...req,accountId:b.id,connectionId:gb.body.grant.connectionId})).status,403);
+    // Revocation of the normal authenticated session must also deny AI access.
+    await TraderSession.updateOne({_id:b.session.session.id},{$set:{revokedAt:new Date()}});
+    assert.equal((await send('/read/invoke',tb,{...req,accountId:b.id,connectionId:gb.body.grant.connectionId})).status,401);
     const audit=await send('/admin/audit',admin.apiKey,undefined,'GET',admin.clientId);
     assert.equal(audit.status,200);
     assert.ok(audit.body.events.some(e=>e.stage==='DENIED'&&e.reason==='AI_FINANCIAL_BOUNDARY_DENIED'));
     assert.ok(audit.body.events.every(e=>e.tenantId===tid));
-    assert.doesNotMatch(JSON.stringify(audit.body),/10000|90000|acg_ts_|acg_sk_/);
+    assert.doesNotMatch(JSON.stringify(audit.body),/acg_ts_|acg_sk_/);
+    for (const e of audit.body.events) for (const field of ['balance','equity','args','result','token','prompt']) assert.equal(Object.hasOwn(e,field),false);
     const event=await AiAuditEvent.findOne({tenantId:tid}).lean();
     await assert.rejects(AiAuditEvent.updateOne({_id:event._id},{$set:{reason:'modified'}}),/append-only/);
     await assert.rejects(AiAuditEvent.deleteOne({_id:event._id}),/append-only/);
