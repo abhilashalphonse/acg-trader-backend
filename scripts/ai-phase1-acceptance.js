@@ -59,7 +59,7 @@ async function main() {
       const user=await User.create({});
       const identity=await LoginIdentity.create({userId:user._id,provider:'SUPABASE',issuer:'https://test.invalid/auth/v1',subject:label});
       const account=await TradingAccount.create({tenantId:tenant._id,userId:user._id,externalRef:label,accountCode:label,
-        accountType:'DEMO',riskDayKey:'2026-01-01',state:{initialBalance:balance,balance,equity:balance,freeMargin:balance},
+        accountType:'DEMO',riskDayKey:'2026-01-01',state:{initialBalance:balance,balance,equity:balance,freeMargin:balance,dailyStartEquity:balance,floatingPnl:'0',realizedPnlToday:'0',usedMargin:'0'},
         metadata:{product:DEMO_PRODUCT,ownership:INTERNAL_OWNER}});
       await AccountAccessGrant.create({tenantId:tenant._id,userId:user._id,accountId:account._id,
         source:'PERSONAL',permissions:['VIEW','TRADE']});
