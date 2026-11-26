@@ -811,6 +811,12 @@ class CandleEngine {
     const instrument = this.instrumentRegistry?.get?.(symbol);
     if (!instrument?.configured) return false;
 
+    // Twelve Data's spot/aggregate commodity feeds can publish genuine OHLC
+    // during the reference futures exchange's daily maintenance break.
+    // Never fill gaps in those instruments with copied prices: gaps are not
+    // proof of an open, unchanged market. Provider ticks/history stay real.
+    if (['METAL', 'ENERGY', 'OTHER'].includes(instrument.assetClass)) return false;
+
     try {
       return isInstrumentSessionOpen(instrument, openTimeMs);
     } catch (error) {
