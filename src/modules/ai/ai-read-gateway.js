@@ -36,7 +36,15 @@ function createAiReadGateway({ store, enabled, now = Date.now }) {
       grant, request, nowMs: now() });
     if (!decision.allowed) throw fail(decision.code);
   }
+  async function assertDisclosure(principal,request) {
+    assertPhaseOneRead(request?.toolId);
+    const { scope }=await liveScope(principal,request.accountId);
+    const grant=await store.getGrant(grantKey(scope));
+    checkGrant(scope,grant,request);
+    assertPhaseOneGrant(grant.toolIds);
+  }
   return Object.freeze({
+    assertDisclosure,
     async create(principal, { accountId, toolIds }) {
       const { scope } = await liveScope(principal, accountId);
       if (!Array.isArray(toolIds) || !toolIds.length || new Set(toolIds).size !== toolIds.length ||
