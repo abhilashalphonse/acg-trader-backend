@@ -135,6 +135,8 @@ async function main() {
     const assertPhase2Denied=await runPhase2Integration({auth,gateway,gs,token:ta,readRequest:req,foreignToken:tb});
     const {runPhase3VaultIntegration}=require('./ai-phase3-vault-integration');
     await runPhase3VaultIntegration({auth,token:ta,foreignToken:tb});
+    const {runPhase3CreditIntegration}=require('./ai-phase3-credit-integration');
+    await runPhase3CreditIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
     // Verify transactional governance compare-and-swap and rollback.
     const race=await Promise.allSettled([0,1].map(()=>gs.updateControl({tenantId:tid,actorId:'fixture',expectedRevision:1,enabled:false,reason:'INCIDENT_RESPONSE'})));
     assert.equal(race.filter(x=>x.status==='fulfilled').length,1);
