@@ -52,3 +52,8 @@ jobs:
         env:
           B2B_TEST_MONGODB_URI: mongodb://127.0.0.1:27017/acg_b2b_isolation_test?replicaSet=rs0
         run: node --test tests/integration/b2b-two-tenant.test.js
+
+      - name: Run AI Phase 1 isolated replica-set adversarial acceptance
+        env:
+          ACG_AI_ISOLATED_CI: 'true'
+        run: node scripts/ai-phase1-acceptance.js
