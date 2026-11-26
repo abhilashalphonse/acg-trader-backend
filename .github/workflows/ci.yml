@@ -57,3 +57,11 @@ jobs:
         env:
           ACG_AI_ISOLATED_CI: 'true'
         run: node scripts/ai-phase1-acceptance.js
+
+      - name: Run AI Phase 2 deterministic intelligence benchmarks
+        run: node scripts/ai-intelligence-benchmark.js
+
+      - name: Verify Phase 2 default-off runtime boundaries
+        env:
+          ACG_AI_ISOLATED_CI: 'true'
+        run: node scripts/ai-phase2-default-off.js
