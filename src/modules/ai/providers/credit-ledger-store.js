@@ -1,7 +1,8 @@
 'use strict';
 const mongoose=require('mongoose');
 const {AiCreditWallet,AiCreditReservation,AiCreditJournal}=require('./credit-ledger.model');
-const models=[AiCreditWallet,AiCreditReservation,AiCreditJournal];
+const {AiCreditPurchase,AiCreditPaymentEvent}=require('./credit-purchase.model');
+const models=[AiCreditWallet,AiCreditReservation,AiCreditJournal,AiCreditPurchase,AiCreditPaymentEvent];
 // Deliberately inaccessible outside the existing isolated replica-set CI.
 function assertIsolated(){
   if(process.env.NODE_ENV!=='test'||process.env.ACG_AI_ISOLATED_CI!=='true'||
@@ -32,6 +33,12 @@ function createIsolatedCreditStore(){
             wallet:(s,id)=>query(AiCreditWallet,{_id:id,...owner(s)}),
             reservation:(s,id)=>query(AiCreditReservation,{_id:id,...owner(s)}),
             journal:(s,id)=>query(AiCreditJournal,{_id:id,...owner(s)}),
+            purchase:(id)=>query(AiCreditPurchase,{_id:id}),
+            purchaseByKey:(s,key)=>query(AiCreditPurchase,{...owner(s),idempotencyKey:key}),
+            paymentEvent:(id)=>query(AiCreditPaymentEvent,{_id:id}),
+            createPurchase:async d=>{await AiCreditPurchase.create([d],{session});},
+            updatePurchase:(s,p,n)=>update(AiCreditPurchase,p,n,s),
+            appendPaymentEvent:async d=>{await AiCreditPaymentEvent.create([d],{session});},
             createWallet:async d=>{await AiCreditWallet.create([d],{session});},
             createReservation:async d=>{await AiCreditReservation.create([d],{session});},
             updateWallet:(s,p,n)=>update(AiCreditWallet,p,n,s),
