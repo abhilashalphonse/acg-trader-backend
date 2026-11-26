@@ -3,14 +3,14 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {createTrustedContextAssembler}=require('./trusted-context');
 const {createResponseEngine,MAX_RESPONSE_BYTES}=require('./response-engine');
-const start=Date.UTC(2026,0,5,10),step=60000,asOf=start+7*step;
+const start=Date.UTC(2026,0,5,10),step=60000,asOf=start+8*step;
 const scope={tenantId:'a'.repeat(24),actorId:'b'.repeat(24),sessionId:'c'.repeat(24),accountId:'d'.repeat(24)};
 const foreign={...scope,accountId:'e'.repeat(24)};
 const instrument={symbol:'XAUUSD',status:'ACTIVE',chartEnabled:true,provider:'twelve-data',providerSymbol:'XAU/USD',
   quoteCurrency:'USD',timezone:'UTC',scheduleVersion:1,tradingSessions:[{days:[1],open:'00:00',close:'23:59'}],
   tradingHolidays:[],sessionOverrides:[],maxQuoteAgeMs:30000};
 const rows=[[100,103,97,100],[100,104,96,101],[101,110,90,102],
-  [102,105,95,103],[103,106,94,104],[104,112,101,106],[106,115,105,112]];
+  [102,105,95,103],[103,106,94,104],[104,112,101,106],[106,115,105,112],[118,120,117,119]];
 async function fixture(){
   let clock=asOf,auth=true,checks=0,after=null;
   const candles=rows.map(([open,high,low,close],i)=>({symbol:'XAUUSD',timeframe:'1m',
@@ -48,7 +48,8 @@ test('independent replay verifies typed facts and advanced references; output is
   assert.equal(result.response.expiresAtMs,asOf+5000);
   assert.ok(Object.isFrozen(result.response.observations[0]));
   assert.equal(JSON.stringify(result.response).includes(scope.accountId),false);
-  assert.equal(JSON.stringify(result.response).includes('999'),false);
+  assert.equal(result.response.observations[0].data.value,'119');
+  assert.equal(result.response.observations[2].data.lower,'112');
   assert.equal(f.checks(),3);
   assert.equal((await f.verify(ticket,candidate())).verified,false);
 });
