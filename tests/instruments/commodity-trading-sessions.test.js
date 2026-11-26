@@ -75,7 +75,7 @@ test('ICE sugar, coffee, cocoa and cotton have distinct exchange trading windows
   assert.equal(marketOpen('COFFEE', '2026-11-18T09:20:00Z'), true);
   assert.equal(marketOpen('COCOA', '2026-11-18T09:40:00Z'), false);
   assert.equal(marketOpen('COCOA', '2026-11-18T09:50:00Z'), true);
-  assert.equal(marketOpen('COTTON', '2026-11-18T01:30:00Z'), true);
+  assert.equal(marketOpen('COTTON', '2026-11-18T02:30:00Z'), true);
   assert.equal(marketOpen('COTTON', '2026-11-18T20:00:00Z'), false);
 });
 
