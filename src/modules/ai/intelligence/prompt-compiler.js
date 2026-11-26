@@ -39,11 +39,12 @@ function validateContext(context,scope,nowMs){
   if(!Array.isArray(context.series)||context.series.length<1||context.series.length>3)fail('PROMPT_CONTEXT_INVALID');
 }
 function projectEvidence(context,nowMs){
-  const references=[];
+  const references=[],seen=new Set();
   function ref(type,timeframe,sourceId,data){
     if(!hex(sourceId))fail('PROMPT_EVIDENCE_INVALID');
     const entry={type,timeframe,sourceId,data};
-    references.push({...entry,referenceId:digest([PROMPT_VERSION,context.contextId,entry])});
+    const referenceId=digest([PROMPT_VERSION,context.contextId,entry]);
+    if(!seen.has(referenceId)){seen.add(referenceId);references.push({...entry,referenceId});}
   }
   const frames=context.series.map(s=>{
     const e=s.analysis?.evidence;
