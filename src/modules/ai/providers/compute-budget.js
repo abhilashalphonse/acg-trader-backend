@@ -2,6 +2,7 @@
 const {z}=require('zod');
 const {freeze}=require('../intelligence/candle-evidence');
 const {CONTRACT_VERSION}=require('./provider-contract');
+const {meterOfflineUsage}=require('./compute-pricing');
 const count=z.number().int().min(0).max(1000000000);
 const money=z.string().regex(/^(0|[1-9][0-9]{0,23})$/);
 const policySchema=z.object({
@@ -51,6 +52,7 @@ function createOfflineBudget({policies,now=Date.now,maxBuckets=1024,maxLeases=40
       const priced=p.maxCostPicoUsdPerRequest!==null||p.maxCostPicoUsdPerUtcDay!==null;
       if(priced&&(!s||s.requestId!==q.requestId||s.fundingMode!==q.fundingMode||s.descriptorId!==q.descriptorId||
         !money.safeParse(s.upperBoundPicoUsd).success))fail('BUDGET_PRICE_REQUIRED');
+      if(priced)try{meterOfflineUsage(q,s,{status:'UNKNOWN'});}catch{fail('BUDGET_PRICE_REQUIRED');}
       const cost=priced?BigInt(s.upperBoundPicoUsd):0n;
       if(p.maxCostPicoUsdPerRequest!==null&&cost>BigInt(p.maxCostPicoUsdPerRequest))fail('BUDGET_REQUEST_LIMIT');
       const d=day(),key=scopeKey(identity,q.fundingMode,d);prune(d);
@@ -95,8 +97,14 @@ function createOfflineBudget({policies,now=Date.now,maxBuckets=1024,maxLeases=40
     usage(scope,fundingMode){
       const s=parse(scopeSchema,scope);if(!Object.hasOwn(config,fundingMode))fail('BUDGET_REQUEST_INVALID');
       const d=day(),b=buckets.get(scopeKey(s,fundingMode,d))??zero();
-      return freeze({utcDay:d,requests:b.requests,tokens:b.tokens,costPicoUsd:b.cost.toString(),
-        outstandingHolds:b.holds,offlineOnly:true});
+      let carryRequests=0,carryTokens=0,carryCost=0n;
+      for(const l of leases.values())if(l.owner===JSON.stringify(owner(s))&&l.funding===fundingMode&&l.bucket.day<d){
+        carryRequests++;carryTokens+=l.tokens;carryCost+=l.cost;
+      }
+      const priced=config[fundingMode].maxCostPicoUsdPerRequest!==null||config[fundingMode].maxCostPicoUsdPerUtcDay!==null;
+      return freeze({utcDay:d,requests:b.requests,tokens:b.tokens,costPicoUsd:priced?b.cost.toString():null,
+        outstandingHolds:b.holds,carriedHolds:carryRequests,carriedTokens:carryTokens,
+        carriedCostPicoUsd:priced?carryCost.toString():null,offlineOnly:true});
     },
   });
 }
