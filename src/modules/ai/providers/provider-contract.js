@@ -9,8 +9,15 @@ const tokenCount=z.number().int().min(0).max(10000000);
 const reportedUsage=z.object({
   status:z.literal('PROVIDER_REPORTED'),inputTokens:tokenCount,outputTokens:tokenCount,
   cachedInputTokens:tokenCount.nullable(),reasoningOutputTokens:tokenCount.nullable(),
+  cacheWriteInputTokens:tokenCount.nullable().optional(),
+  cacheWrite5mInputTokens:tokenCount.nullable().optional(),cacheWrite1hInputTokens:tokenCount.nullable().optional(),
 }).strict().refine(u=>(u.cachedInputTokens===null||u.cachedInputTokens<=u.inputTokens)&&
-  (u.reasoningOutputTokens===null||u.reasoningOutputTokens<=u.outputTokens));
+  (u.reasoningOutputTokens===null||u.reasoningOutputTokens<=u.outputTokens)&&
+  (u.cacheWriteInputTokens==null||u.cacheWriteInputTokens+(u.cachedInputTokens??0)<=u.inputTokens)&&
+  (u.cacheWrite5mInputTokens==null||u.cacheWriteInputTokens!=null&&u.cacheWrite5mInputTokens<=u.cacheWriteInputTokens)&&
+  (u.cacheWrite1hInputTokens==null||u.cacheWriteInputTokens!=null&&u.cacheWrite1hInputTokens<=u.cacheWriteInputTokens)&&
+  (u.cacheWrite5mInputTokens==null||u.cacheWrite1hInputTokens==null||
+    u.cacheWrite5mInputTokens+u.cacheWrite1hInputTokens===u.cacheWriteInputTokens));
 const usageSchema=z.union([reportedUsage,z.object({status:z.literal('UNKNOWN')}).strict()]);
 const outcomeSchema=z.object({
   requestId:z.uuid(),providerId:z.string().min(1).max(32),modelId:z.string().min(1).max(160),
