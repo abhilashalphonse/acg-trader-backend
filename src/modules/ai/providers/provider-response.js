@@ -101,7 +101,7 @@ function createCollector(q){
         if(c.finishReason!=null)setReason(c.finishReason);
       }
     }
-    if(v.usageMetadata!=null)rawUsage=v.usageMetadata;
+    if(v.usageMetadata!=null&&reason!==null)rawUsage=v.usageMetadata;
   }
   function json(v){
     if(!v||typeof v!=='object'||Array.isArray(v)||v.error)invalid();
@@ -155,7 +155,7 @@ function createCollector(q){
           if(block===null||v.index!==block)invalid();block=null;break;
         case 'message_delta':
           if(!started||block!==null||reason!==null)invalid();
-          setReason(v.delta?.stop_reason);rawUsage={...rawUsage,...v.usage};break;
+          setReason(v.delta?.stop_reason);rawUsage=count(v.usage?.output_tokens)?{...rawUsage,...v.usage}:null;break;
         case 'message_stop':
           if(!started||block!==null||reason===null)invalid();
           terminal=true;break;
