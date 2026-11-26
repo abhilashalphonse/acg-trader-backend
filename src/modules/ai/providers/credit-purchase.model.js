@@ -19,6 +19,7 @@ const purchaseSchema=new Schema({
   credited:{type:Boolean,required:true,default:false},
   reversalPending:{type:Boolean,required:true,default:false},
   fullReversalVerified:{type:Boolean,required:true,default:false},
+  conflictReview:{type:Boolean,required:true,default:false},
   createdAtMs:time,updatedAtMs:time,
 },options);
 purchaseSchema.index({tenantId:1,actorId:1,idempotencyKey:1},{unique:true});
