@@ -9,6 +9,13 @@ const {summarizeTimeframeStructure}=require('./timeframe-structure');
 const {analyzeSessionRange}=require('./session-range');
 const {classifyCoverage,validSchedule}=require('./calendar-coverage');
 const MAX_TIMEFRAMES=3,MAX_BARS=128,TTL_MS=10000;
+// Process-local replay material, keyed by the actual server-minted object.
+// Never serialize or send this material to a model. GC follows context lifetime.
+const replayByContext=new WeakMap();
+function getContextReplay(context){return replayByContext.get(context)||null;}
+function pinInstrument(i){
+  return freeze(structuredClone(Object.fromEntries(['symbol','status','chartEnabled','provider','providerSymbol','quoteCurrency','timezone','scheduleVersion','tradingSessions','tradingHolidays','sessionOverrides','maxQuoteAgeMs'].map(k=>[k,i[k]]))));
+}
 const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
 const clock=v=>Number.isSafeInteger(v)&&v>0&&v<8640000000000000;
 function deny(code){const e=new Error('Context unavailable');e.code=code;throw e;}
@@ -50,14 +57,20 @@ function createTrustedContextAssembler({source,authorize,now=Date.now}={}){
         symbol,timeframes:[...timeframes],limit,sessionWindows:sessionWindows.map(w=>({timeframe:w.timeframe,startMs:w.startMs,endMs:w.endMs}))});
       if(await authorize(request)!==true)deny('CONTEXT_FORBIDDEN');
       const asOfMs=now();if(!clock(asOfMs))deny('INVALID_CONTEXT_CLOCK');
-      const i=await source.instrument(symbol);
+      const sourceInstrument=await source.instrument(symbol);
+      const i=sourceInstrument?pinInstrument(sourceInstrument):null;
       if(!i||i.symbol!==symbol||i.status!=='ACTIVE'||i.chartEnabled!==true||
         !['twelve-data','accelpix'].includes(i.provider)||typeof i.providerSymbol!=='string'||!i.providerSymbol||i.providerSymbol.length>128)
         deny('INSTRUMENT_UNAVAILABLE');
-      const quote=quoteEvidence(source.quote(symbol),i,asOfMs);
-      const series=[];
+      const rawQuote=source.quote(symbol);
+      const pinnedQuote=rawQuote?freeze(structuredClone(Object.fromEntries(['symbol','providerSymbol','source','receivedAtMs','providerTimestampMs','isStale','sessionOpen','bid','ask','isSyntheticSpread'].map(k=>[k,rawQuote[k]])))):null;
+      const quote=quoteEvidence(pinnedQuote,i,asOfMs);
+      const series=[],replaySeries=[];
       for(const timeframe of request.timeframes){
-        const candles=await source.candles({symbol,timeframe,asOfMs,limit});
+        const rawCandles=await source.candles({symbol,timeframe,asOfMs,limit});
+        if(!Array.isArray(rawCandles)||rawCandles.length>limit)deny('SOURCE_LIMIT_VIOLATION');
+        const candles=freeze(rawCandles.map(c=>c?Object.fromEntries(['symbol','timeframe','openTimeMs','closeTimeMs','open','high','low','close','complete','synthetic','source','provider'].map(k=>[k,c[k]])):null));
+        replaySeries.push({timeframe,candles});
         if(!Array.isArray(candles)||candles.length>limit)deny('SOURCE_LIMIT_VIOLATION');
         if(candles.some(c=>c?.provider!==i.provider))deny('CANDLE_PROVIDER_MISMATCH');
         const analysis=analyzeMarketCandles({symbol,timeframe,asOfMs,candles});
@@ -86,8 +99,10 @@ function createTrustedContextAssembler({source,authorize,now=Date.now}={}){
         asOfMs,completedAtMs,expiresAtMs:asOfMs+TTL_MS,quote:finalQuote,series,
         crossTimeframe:summarizeTimeframeStructure({symbol,asOfMs,series}),
         limitations:['NO_EXTERNAL_ENTITLEMENT_IMPLEMENTATION','NO_ATOMIC_CROSS_SERIES_SNAPSHOT','NO_PROVIDER_IDENTITY_PROOF','NO_EXECUTION_AUTHORITY','NO_ACCOUNT_DATA','NO_WORKSPACE_DRAWINGS']};
-      return freeze({...snapshot,contextId:digest(snapshot)});
+      const context=freeze({...snapshot,contextId:digest(snapshot)});
+      replayByContext.set(context,freeze({request,instrument:i,quote:pinnedQuote,series:replaySeries}));
+      return context;
     },
   });
 }
-module.exports={createTrustedContextAssembler,quoteEvidence,MAX_TIMEFRAMES,MAX_BARS,TTL_MS};
+module.exports={createTrustedContextAssembler,getContextReplay,quoteEvidence,MAX_TIMEFRAMES,MAX_BARS,TTL_MS};
