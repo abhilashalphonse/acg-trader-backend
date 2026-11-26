@@ -87,6 +87,11 @@ async function runPhase3PurchaseIntegration({auth,token,foreignToken,accountId,f
   assert.equal((await send(event(underpaid,'fixture-underpaid','CAPTURED','499'))).purchase.status,'REVIEW_REQUIRED');
   assert.equal((await send(event(underpaid,'fixture-underpaid'))).purchase.status,'REVIEW_REQUIRED');
   await check(s,original.available,original.reserved,original.spent,original.credited,0,(BigInt(original.reversed)+credit).toString());
+  const contradictory=await create(s);
+  await send(event(contradictory,'fixture-contradictory','CAPTURED','501'));
+  assert.equal((await send(event(contradictory,'fixture-contradictory','REFUNDED'))).purchase.conflictReview,true);
+  assert.equal((await p.status(s,contradictory.purchaseId)).status,'REVIEW_REQUIRED');
+  await check(s,original.available,original.reserved,original.spent,original.credited,0,(BigInt(original.reversed)+credit).toString());
   // Cross-owner checkout status and payment ID cannot be reused.
   active=foreignToken;activeAccount=foreignAccountId;
   await assert.rejects(p.status(s,purchase.purchaseId),{code:'CREDIT_PURCHASE_FORBIDDEN'});
@@ -136,6 +141,10 @@ async function runPhase3PurchaseIntegration({auth,token,foreignToken,accountId,f
   assert.equal((await send(event(spentPurchase,'fixture-payment-spent','CHARGEBACK'))).purchase.status,'REVERSAL_PENDING');
   assert.equal((await p.reconcileFullReversal(spentPurchase.purchaseId)).status,'REVERSAL_PENDING');
   await check(foreign,'4999960000000','0','40000000','5000000000000',1,'5000000000000');
+  const conflict=await send(event(spentPurchase,'fixture-payment-spent','REFUNDED','501'));
+  assert.equal(conflict.purchase.conflictReview,true);
+  await assert.rejects(p.reconcileFullReversal(spentPurchase.purchaseId),{code:'CREDIT_PURCHASE_STATE_INVALID'});
+  assert.equal((await l.balance(foreign)).pendingReversals,1);
   // Verify journal and payment event atomicity, immutable events, no secrets.
   const journal=await AiCreditJournal.find({tenantId:foreign.tenantId,actorId:foreign.actorId}).sort({revision:1}).lean();
   assert.equal(journal.filter(e=>e.operation==='PURCHASE_CREDIT').length,2);
