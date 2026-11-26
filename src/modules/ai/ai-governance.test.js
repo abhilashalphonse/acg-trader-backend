@@ -61,3 +61,15 @@ test('denied and unexpected errors are recorded without raw input or error messa
   assert.equal(y.events[1].reason,'UNCLASSIFIED_ERROR');
   assert.doesNotMatch(JSON.stringify([...x.events,...y.events]),/secret/);
 });
+
+test('suspension during completion audit suppresses response and records suppression',async()=>{
+  let control={enabled:true,revision:1};
+  const events=[];
+  const g=createAiGovernance({store:{
+    async control(){return control;},
+    async append(e){events.push(e);if(e.stage==='ALLOWED')control={enabled:false,revision:2};},
+  }});
+  const req={principal:{tenantId:id('1')},operation:'TOOL_INVOKE',toolId:'account.positions.read'};
+  await rejects(g.run(req,async()=>({sensitive:true})),'AI_GOVERNANCE_PAUSED');
+  assert.deepEqual(events.map(e=>e.stage),['ATTEMPT','ALLOWED','SUPPRESSED']);
+});
