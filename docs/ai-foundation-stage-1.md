@@ -1,6 +1,6 @@
 # ACG Trader AI — Foundation implementation (Stage 1A)
 
-Status: proposed, isolated, no runtime activation. This patch introduces only a pure read-tool candidate policy and tests.
+Status: draft, read-only native pilot code; disabled by default. Stage 1A policy plus Stage 1B–E implementation increment. No production activation.
 
 ## Product invariants
 - Equal access to supported capabilities; no mandatory subscription or feature-tier gating. Inference uses explicitly selected BYOAI allowance or prepaid ACG credits. Infrastructure quotas, entitlements and safety restrictions are independent of funding.
@@ -28,3 +28,19 @@ Status: proposed, isolated, no runtime activation. This patch introduces only a 
 
 ## Required acceptance before any live trading
 Adversarial inputs, stale/incorrect quotes, cross-tenant access, concurrent orders, replay, partial fills, outage and restart, broker uncertainty, protective order continuity, credit exhaustion, injection and unauthorized strategy changes. Define quantitative acceptance thresholds and collect evidence before each release. No live execution authority in Stage 1A.
+
+
+## Stage 1B–E implementation increment (native personal demo only)
+
+Opt-in `ACG_AI_READ_GATEWAY_ENABLED=true` mounts `/v1/ai/read`. Default is absent; no production environment changes are part of this PR. Requires existing Supabase personal-demo session path, live VIEW account grant and current tenant/user-owned demo account. Legacy password/federated sessions, partner accounts, external MCP and agents are not enabled. This is an intentionally narrow pilot; no real-money or Funded access.
+
+- GET /tools: authenticated discovery of implemented tools (not a grant).
+- GET /grants/:accountId: current session/account grant.
+- POST /grants: explicit first-party user consent to a nonempty allowlist of implemented tools.
+- POST /grants/revoke: revoke the exact current session/account connection.
+- POST /invoke: strict envelope {accountId, connectionId, toolId, args}, authenticated independently on every request and again before result disclosure.
+- Persisted grants are limited to one per session/account, with a server-generated connection ID, maximum one-hour lifetime, no reactivation within the same session and majority writes. Revocation and expiry fail closed; a new authenticated session is needed for a new grant. The _id index is sufficient for point lookups. Retention/cleanup and reauthorization UX are pending; do not enable broadly until resolved.
+- Implemented tools: account.valuation.read (persisted account state, explicitly not live), account.positions.read, account.orders.read (bounded to 50 records; truncation disclosed). All data queries are tenant/account scoped and output is field-projected. No market quote/candle or policy tools are dispatched yet: entitlement, provenance, freshness and policy response review remain pending.
+- Session tokens remain in first-party client/server boundaries; never expose them to a model. The connection ID is not a bearer credential. Grant management is not a tool. No financial writes are registered. No provider calls, model runtime, or automatic approvals.
+- Store reads use primary/majority and query limits; session-bound request limit is 30/min per process. Distributed rate limiting and durable audit are later Phase 1 gates. Revocation is checked again before returning data; already disclosed results cannot be recalled and in-flight races require further evaluation.
+- Tests cover policy and gateway scope/expiry/revocation/unknown tools/projection and HTTP authentication/envelope. Real replica-set and real auth integration acceptance, race/failure tests, full security review, staging and production remain outstanding. Do not activate production from unit tests alone.
