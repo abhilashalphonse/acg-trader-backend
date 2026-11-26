@@ -23,7 +23,12 @@ function mapUsage(provider,u){
   if(provider==='anthropic'){
     const read=u.cache_read_input_tokens??0,write=u.cache_creation_input_tokens??0;
     if(!count(u.input_tokens)||!count(read)||!count(write)||u.server_tool_use!=null)return unknown();
-    return usage(u.input_tokens+read+write,u.output_tokens,read,null);
+    const base=usage(u.input_tokens+read+write,u.output_tokens,read,null);
+    if(base.status==='UNKNOWN')return base;
+    const a=u.cache_creation?.ephemeral_5m_input_tokens,b=u.cache_creation?.ephemeral_1h_input_tokens;
+    if(u.cache_creation!=null&&(!count(a)||!count(b)||a+b!==write))return unknown();
+    return {...base,cacheWriteInputTokens:write,cacheWrite5mInputTokens:write===0?0:a??null,
+      cacheWrite1hInputTokens:write===0?0:b??null};
   }
   if(provider==='gemini'){
     const thoughts=u.thoughtsTokenCount??0,tools=u.toolUsePromptTokenCount??0;
