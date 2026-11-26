@@ -40,7 +40,15 @@ function createAiReadRouter({ authService, gateway, governance, quota }) {
       principal: req.traderPrincipal, operation,
       requestedAccountId: req.params.accountId ?? req.body?.accountId,
       toolId: req.body?.toolId,
-      }, () => work(req));
+      }, () => work(req), operation === 'TOOL_INVOKE' ? async () => {
+        const request=parse(invokeSchema,req.body);
+        const fresh=await authService.authenticateSessionToken(bearerToken(req));
+        if (fresh.tenantId!==req.traderPrincipal.tenantId || fresh.userId!==req.traderPrincipal.userId ||
+            fresh.sessionId!==req.traderPrincipal.sessionId) {
+          throw new AppError('AI scope changed',{statusCode:403,code:'AI_SCOPE_CHANGED'});
+        }
+        await gateway.assertDisclosure(fresh,request);
+      } : null);
     });
     res.status(successStatus).json(result);
   };
