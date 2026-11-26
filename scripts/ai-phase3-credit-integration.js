@@ -7,6 +7,7 @@ const {AiCreditWallet,AiCreditReservation,AiCreditJournal}=require('../src/modul
 const {createModelRegistry}=require('../src/modules/ai/providers/model-registry');
 const {createOfflineRequest,normalizeOfflineOutcome,CONTRACT_VERSION}=require('../src/modules/ai/providers/provider-contract');
 const {createOfflineOrchestrator}=require('../src/modules/ai/providers/offline-orchestrator');
+const {createOfflineBudget}=require('../src/modules/ai/providers/compute-budget');
 const {createResponseEngine}=require('../src/modules/ai/intelligence/response-engine');
 const {createPricingRegistry}=require('../src/modules/ai/providers/compute-pricing');
 const {compilePromptPackage}=require('../src/modules/ai/intelligence/prompt-compiler');
@@ -112,7 +113,10 @@ async function runPhase3CreditIntegration({auth,token,foreignToken,accountId,for
   assert.ok(!(JSON.stringify(await AiCreditReservation.find({tenantId:s.tenantId,actorId:s.actorId}).lean()).includes('Synthetic ledger fixture')));
   await assert.rejects(AiCreditJournal.updateOne({_id:event._id},{$set:{amount:'0'}}),/append-only/);
   let dispatches=0;
-  const orchestrator=()=>createOfflineOrchestrator({registry,pricingRegistry:pricing,creditLedger:ledger(),
+  const policy={maxInputTokens:100,maxOutputTokens:50,maxRequestsPerUtcDay:3,maxTokensPerUtcDay:500,
+    maxCostPicoUsdPerRequest:'200000000',maxCostPicoUsdPerUtcDay:'300000000'};
+  const budget=createOfflineBudget({now:()=>now,policies:{ACG_CREDITS:policy,BYO_API:policy}});
+  const orchestrator=()=>createOfflineOrchestrator({registry,pricingRegistry:pricing,creditLedger:ledger(),computeBudget:budget,
     responseEngine:createResponseEngine({authorize,now:()=>now}),authorize,now:()=>now,
     adapters:[{providerId:selection.providerId,modelId:selection.modelId,contractVersion:CONTRACT_VERSION,
       executionMode:'OFFLINE_TEST_ONLY',async generate(q){
@@ -128,15 +132,24 @@ async function runPhase3CreditIntegration({auth,token,foreignToken,accountId,for
   assert.equal(result.receipt.status,'COMPLETED');
   assert.equal(result.receipt.creditReservation.status,'SETTLED');
   assert.equal(result.receipt.creditReservation.charged,'40000000');
+  assert.equal(result.receipt.budget.status,'ACCOUNTED_OFFLINE');
+  assert.equal(result.receipt.budget.costPicoUsd,'40000000');
   assert.equal(dispatches,1);
   await check('380000000','0','120000000');
   const replay=await orchestrator().run(input);
   assert.equal(replay.receipt.status,'RECONCILIATION_REQUIRED');
   assert.equal(replay.receipt.dispatch,'NOT_DISPATCHED');assert.equal(dispatches,1);
+  assert.equal(replay.receipt.budget.status,'RELEASED_BEFORE_ATTEMPT');
+  assert.equal(budget.usage(s,'ACG_CREDITS').requests,1);
   await check('380000000','0','120000000');
   const byoResult=await orchestrator().run({...input,idempotencyKey:randomUUID(),selection:{...selection,fundingMode:'BYO_API'}});
   assert.equal(byoResult.receipt.status,'COMPLETED');assert.equal(byoResult.receipt.creditReservation,null);
   await check('380000000','0','120000000');
+  assert.equal(budget.usage(s,'BYO_API').costPicoUsd,'40000000');
+  const refused=await orchestrator().run({...input,idempotencyKey:randomUUID(),maxOutputTokens:51});
+  assert.equal(refused.receipt.errorCode,'BUDGET_REQUEST_LIMIT');assert.equal(dispatches,2);
+  await check('380000000','0','120000000');
+  console.log('PASS Phase 3 budget integration with durable ledger and BYO separation');
   console.log('PASS Phase 3 credit orchestration durable pre-dispatch reservation, settlement, restart replay denial and BYO bypass');
   console.log('PASS Phase 3 credit ledger Mongo transactions, concurrent balance admission, one-shot dispatch, single settlement, recovery holds, journal rollback and isolation');
 }
