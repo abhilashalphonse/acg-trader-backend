@@ -172,7 +172,10 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       record.usage=v.usage;record.usageDisposition=v.usageDisposition;
       record.dispatch='OUTCOME_RECEIVED';
       if(record.pricingSnapshot){
-        try{record.metering=meterOfflineUsage(q,record.pricingSnapshot,v.usage);}
+        try{
+          record.metering=meterOfflineUsage(q,record.pricingSnapshot,v.status==='UNKNOWN'?{status:'UNKNOWN'}:v.usage);
+          if(v.status==='UNKNOWN')record.metering=freeze({...record.metering,reason:'PROVIDER_OUTCOME_UNKNOWN'});
+        }
         catch{record.usageDisposition='RECONCILIATION_REQUIRED';finish(record,'RECONCILIATION_REQUIRED','PRICE_SNAPSHOT_INVALID');return result();}
         if(record.metering.status==='RECONCILIATION_REQUIRED'){record.usageDisposition='RECONCILIATION_REQUIRED';finish(record,'RECONCILIATION_REQUIRED','METERING_UNCERTAIN');return result();}
       }else if(q.fundingMode==='BYO_API')record.metering=freeze({status:'PRICE_NOT_AVAILABLE',fundingMode:'BYO_API',costPicoUsd:null,proposedCreditDebitPicoUsd:'0',settled:false,creditDeducted:false,offlineOnly:true});
