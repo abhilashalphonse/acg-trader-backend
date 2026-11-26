@@ -15,10 +15,14 @@ function isInstrumentSessionOpen(instrument, nowMs = Date.now()) {
   if (holidays.includes(dateKey) && !instrument.sessionOverrides?.some(item => item.date === dateKey)) return false;
 
   if (instrument.sessionOverrides?.length) {
-    const windows = [...sessionWindowsOnDate(instrument, local), ...sessionWindowsOnDate(instrument, addLocalCalendarDays(local, -1))];
     const override = instrument.sessionOverrides.find(item => item.date === dateKey);
     if (override?.closed) return false;
     if (!override && !instrument.tradingSessions?.length) return true;
+    // A date-specific override defines the entire local day's tradable window.
+    // Do not let yesterday's overnight weekly session bypass an early close.
+    const windows = override
+      ? sessionWindowsOnDate(instrument, local)
+      : [...sessionWindowsOnDate(instrument, local), ...sessionWindowsOnDate(instrument, addLocalCalendarDays(local, -1))];
     return windows.some(window => nowMs >= window.openMs && nowMs < window.closeMs);
   }
   const sessions = Array.isArray(instrument.tradingSessions) ? instrument.tradingSessions : [];
@@ -101,7 +105,12 @@ function activeSessionOpenTimeMs(instrument, nowMs) {
   if (instrument.sessionOverrides?.length) {
     if (!isInstrumentSessionOpen(instrument, nowMs)) return null;
     const local = zonedParts(nowMs, String(instrument.timezone || 'UTC'));
-    return [...sessionWindowsOnDate(instrument, local), ...sessionWindowsOnDate(instrument, addLocalCalendarDays(local, -1))].find(window => nowMs >= window.openMs && nowMs < window.closeMs)?.openMs ?? null;
+    const override = instrument.sessionOverrides.find(item =>
+      item.date === `${local.year}-${pad(local.month)}-${pad(local.day)}`);
+    const windows = override
+      ? sessionWindowsOnDate(instrument, local)
+      : [...sessionWindowsOnDate(instrument, local), ...sessionWindowsOnDate(instrument, addLocalCalendarDays(local, -1))];
+    return windows.find(window => nowMs >= window.openMs && nowMs < window.closeMs)?.openMs ?? null;
   }
 
   const timezone = String(instrument.timezone || 'UTC');
