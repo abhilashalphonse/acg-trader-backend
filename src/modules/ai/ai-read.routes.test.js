@@ -22,7 +22,7 @@ test('HTTP boundary authenticates, rejects untrusted fields and reauthenticates 
     assert.equal(await reauth(),principal);
     return {toolId:q.toolId};
   }};
-  const app=express();app.use(express.json());app.use('/v1/ai/read',createAiReadRouter({authService,gateway,governance}));
+  const app=express();app.use(express.json());app.use('/v1/ai/read',createAiReadRouter({authService,gateway,governance,quota:{async consume(){}}}));
   app.use((err,_req,res,_next)=>res.status(err.statusCode||500).json({code:err.code}));
   const server=app.listen(0,'127.0.0.1');
   try{
@@ -38,7 +38,7 @@ test('HTTP boundary authenticates, rejects untrusted fields and reauthenticates 
       'positions.close','positions.reverse','positions.protection','account.withdraw','account.risk.write']) {
       const denied=await send({...data,toolId},'trusted');
       assert.equal(denied.status,403);
-      assert.equal((await denied.json()).code,'AI_FINANCIAL_BOUNDARY_DENIED');
+      assert.equal((await denied.json()).error.code,'AI_FINANCIAL_BOUNDARY_DENIED');
     }
     assert.equal(dispatchCalls,0);
     const before=authCalls;const result=await send(data,'trusted');
