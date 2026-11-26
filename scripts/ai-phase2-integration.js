@@ -98,7 +98,13 @@ async function runPhase2Integration({auth,gateway,gs,token,readRequest,foreignTo
   await assert.rejects(assembler.assemble(req),{code:'INSTRUMENT_UNAVAILABLE'});
   await Instrument.updateOne({symbol},{$set:{'providerMappings.twelveData':'XAU/USD'}});
   console.log('PASS Phase 2 foreign scope, synthetic entitlement revocation, expiration, catalog mismatch and read-only boundary');
+  const {runPhase3SecurityIntegration}=require('./ai-phase3-security-integration');
+  const security=await runPhase3SecurityIntegration({auth,gateway,gs,token,foreignToken,readRequest,source,scope,asOf});
   // Later Phase 1 test changes actual control revision and revokes actual grant.
-  return async()=>{await assert.rejects(assembler.assemble(req),{code:'CONTEXT_FORBIDDEN'});};
+  return async phase=>{
+    await assert.rejects(assembler.assemble(req),{code:'CONTEXT_FORBIDDEN'});
+    if(phase==='PAUSED')await security.assertPaused();
+    if(phase==='REVOKED')await security.assertRevoked();
+  };
 }
 module.exports={runPhase2Integration};
