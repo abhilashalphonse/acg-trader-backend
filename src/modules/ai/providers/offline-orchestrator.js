@@ -80,12 +80,17 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
     const release=reserve(scope);
     const controller=new AbortController();
     let timer,externalAbort,reason=null,record=null,detached=false;
+    let inFlight=null;
     const start=performance.now();
     function stop(code){if(reason===null){reason=code;controller.abort();}}
     const aborted=new Promise(resolve=>controller.signal.addEventListener('abort',()=>resolve({aborted:true}),{once:true}));
     const step=async fn=>{
       if(reason!==null)return {aborted:true};
-      return Promise.race([Promise.resolve().then(()=>fn()).then(value=>({value}),()=>({failed:true})),aborted]);
+      const work=Promise.resolve().then(()=>fn()).then(value=>({value}),()=>({failed:true}));
+      inFlight=work;
+      const result=await Promise.race([work,aborted]);
+      if(!result.aborted)inFlight=null;
+      return result;
     };
     function validTime(){return reason===null&&performance.now()-start<x.timeoutMs;}
     try{
@@ -125,12 +130,13 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       const before=await step(()=>allowed(auth));
       if(before.aborted||!validTime()){finish(record,reason==='CANCELLED'?'CANCELLED':'FAILED',reason||'TIMEOUT');return result();}
       if(before.value!==true){finish(record,'DENIED','ORCHESTRATOR_FORBIDDEN');return result();}
-      if(clock()>=q.expiresAtMs){finish(record,'FAILED','TIMEOUT');return result();}
+      const remaining=Math.min(q.expiresAtMs-clock(),Math.floor(x.timeoutMs-(performance.now()-start)));
+      if(remaining<1){finish(record,'FAILED','TIMEOUT');return result();}
+      clearTimeout(timer);timer=setTimeout(()=>stop('TIMEOUT'),remaining);
       // Commit the in-memory dispatch marker synchronously before invocation.
       // A timeout/throw after this point is ambiguous, never auto-retried.
       record.status='DISPATCHED';record.dispatch='ATTEMPTED';record.usageDisposition='RECONCILIATION_REQUIRED';
-      const work=Promise.resolve().then(()=>generate(q,{signal:controller.signal,
-        timeoutMs:Math.max(1,Math.min(q.expiresAtMs-clock(),Math.floor(x.timeoutMs-(performance.now()-start))))}));
+      const work=Promise.resolve().then(()=>generate(q,{signal:controller.signal,timeoutMs:remaining}));
       const settled=work.then(value=>({value}),()=>({failed:true}));
       const outcome=await Promise.race([settled,aborted]);
       if(outcome.aborted||!validTime()){
@@ -153,6 +159,7 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       record.usage=v.usage;record.usageDisposition=v.usageDisposition;
       record.dispatch='OUTCOME_RECEIVED';
       if(v.usageDisposition==='RECONCILIATION_REQUIRED'||v.status==='UNKNOWN'){
+        record.usageDisposition='RECONCILIATION_REQUIRED';
         finish(record,'RECONCILIATION_REQUIRED',v.errorCode==='NONE'?'USAGE_UNCERTAIN':v.errorCode);return result();
       }
       if(v.status!=='COMPLETED'){finish(record,v.status==='CANCELLED'?'CANCELLED':'FAILED',
@@ -172,7 +179,8 @@ function createOfflineOrchestrator({registry,responseEngine,adapters,authorize,n
       throw e;
     }finally{
       clearTimeout(timer);if(externalAbort)signal.removeEventListener('abort',externalAbort);
-      if(!detached)release();if(record)record.stop=null;
+      if(!detached){if(inFlight)inFlight.then(release);else release();}
+      if(record)record.stop=null;
     }
     function result(response=null){return freeze({receipt:view(record),response,replayed:false});}
   }
