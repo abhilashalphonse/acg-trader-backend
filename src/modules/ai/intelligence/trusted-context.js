@@ -4,6 +4,8 @@ const {isInstrumentSessionOpen}=require('../../instruments/session-calendar');
 const {scheduleHash}=require('../../instruments/schedule-identity');
 const {digest,freeze}=require('./candle-evidence');
 const {analyzeMarketCandles}=require('./market-facts');
+const {analyzeStructure}=require('./structure-liquidity');
+const {summarizeTimeframeStructure}=require('./timeframe-structure');
 const {classifyCoverage,validSchedule}=require('./calendar-coverage');
 const MAX_TIMEFRAMES=3,MAX_BARS=128,TTL_MS=10000;
 const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
@@ -56,7 +58,8 @@ function createTrustedContextAssembler({source,authorize,now=Date.now}={}){
         const analysis=analyzeMarketCandles({symbol,timeframe,asOfMs,candles});
         const coverage=classifyCoverage(analysis.evidence,i);
         // Do not surface facts from bars known to be outside the configured calendar.
-        series.push({timeframe,coverage,analysis:coverage.outOfSessionBars>0?null:analysis,
+        const structure=coverage.outOfSessionBars>0?null:analyzeStructure({symbol,timeframe,asOfMs,candles});
+        series.push({timeframe,coverage,structure,analysis:coverage.outOfSessionBars>0?null:analysis,
           status:coverage.outOfSessionBars>0?'OUT_OF_SESSION_DATA_REJECTED':'HISTORICAL_ONLY'});
       }
       // Recheck mapping and schedule after reads; not a distributed atomic snapshot.
@@ -74,6 +77,7 @@ function createTrustedContextAssembler({source,authorize,now=Date.now}={}){
         instrument:{provider:i.provider,providerSymbol:i.providerSymbol,quoteCurrency:i.quoteCurrency??null,
           scheduleVersion:i.scheduleVersion??null,scheduleHash:scheduleHash(i)},
         asOfMs,completedAtMs,expiresAtMs:asOfMs+TTL_MS,quote:finalQuote,series,
+        crossTimeframe:summarizeTimeframeStructure({symbol,asOfMs,series}),
         limitations:['NO_EXTERNAL_ENTITLEMENT_IMPLEMENTATION','NO_ATOMIC_CROSS_SERIES_SNAPSHOT','NO_PROVIDER_IDENTITY_PROOF','NO_EXECUTION_AUTHORITY','NO_ACCOUNT_DATA','NO_WORKSPACE_DRAWINGS']};
       return freeze({...snapshot,contextId:digest(snapshot)});
     },
