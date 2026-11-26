@@ -39,8 +39,9 @@ async function runPhase3SecurityIntegration({auth,gateway,gs,token,foreignToken,
         descriptorId:q.descriptorId,status:'COMPLETED',candidate:JSON.stringify(candidate),
         usage:{status:'PROVIDER_REPORTED',inputTokens:100,outputTokens:20,cachedInputTokens:null,reasoningOutputTokens:null},errorCode:'NONE'});
     }}];
+  const quotaNow=Date.now();
   const base={auth,gateway,governance:createAiGovernance({store:gs}),governanceStore:gs,
-    quota:createAiQuota({store:createAiQuotaStore()}),
+    quota:createAiQuota({store:createAiQuotaStore(),now:()=>quotaNow}),
     currentToken:()=>activeToken,accountId:readRequest.accountId,connectionId:readRequest.connectionId,
     selection,registry,adapters,computeBudget:budget,educationCache:cache,policyEpoch:'fixture-policy-v1',now:()=>clock,
     authorizePurpose:async req=>{
@@ -97,7 +98,7 @@ async function runPhase3SecurityIntegration({auth,gateway,gs,token,foreignToken,
   await assert.rejects(edu.run(input('Explain BOS.')),{code:'AI_INTEGRATION_FORBIDDEN'});
   discloseAllowed=true;assert.equal(calls,c);
   const restricted=await createIsolatedIntelligenceSession({...base,profile:'EDUCATION',
-    quota:createAiQuota({store:createAiQuotaStore(),limit:1})});
+    quota:createAiQuota({store:createAiQuotaStore(),limit:1,now:()=>quotaNow})});
   await assert.rejects(restricted.run(input('Explain BOS.')),{code:'AI_QUOTA_EXCEEDED'});
   assert.equal(calls,c);
   const events=await AiAuditEvent.find({tenantId:scope.tenantId,operation:'AI_GENERATE_OFFLINE'}).lean();
