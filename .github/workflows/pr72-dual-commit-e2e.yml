@@ -120,6 +120,29 @@ jobs:
           (cd frontend && npm ci --no-audit && npm install --no-save --no-audit --no-fund playwright@1.56.1)
           command -v google-chrome || command -v google-chrome-stable
 
+      - name: Audit commodity provider candles during historical rollover (PR 105)
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 105
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.ACG_E2E_TWELVE_DATA_API_KEY }}
+          ACG_COMMODITY_AUDIT_START: '2026-11-25T20:45:00Z'
+          ACG_COMMODITY_AUDIT_END: '2026-11-26T01:00:00Z'
+          ACG_COMMODITY_AUDIT_DELAY_MS: '500'
+        run: |
+          set +e
+          node backend/scripts/audit-commodity-provider-sessions.js > "${{ runner.temp }}/commodity-session-parity.json"
+          exit_code=$?
+          cat "${{ runner.temp }}/commodity-session-parity.json"
+          exit "$exit_code"
+
+      - name: Preserve commodity provider parity evidence (PR 105)
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.number == 105
+        uses: actions/upload-artifact@v4
+        with:
+          name: commodity-session-parity-${{ github.run_id }}
+          path: ${{ runner.temp }}/commodity-session-parity.json
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Provision disposable MongoDB replica-set container
         run: |
           docker run -d --rm --name pr72-e2e-mongo \
