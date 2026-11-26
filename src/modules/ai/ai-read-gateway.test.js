@@ -82,3 +82,20 @@ test('valuation explicitly labels persisted state rather than live data',async()
   const r=await x.gateway.invoke(x.principal,{...q,toolId:'account.valuation.read',args:{}},x.fresh);
   assert.equal(r.result.live,false); assert.equal(r.result.balance,'10000');
 });
+
+test('financial actions are denied before even reading account or grant data',async()=>{
+  const x=fixture(),q=await x.issue();
+  x.store.account=async()=>assert.fail('must not load account');
+  x.store.getGrant=async()=>assert.fail('must not load grant');
+  for(const toolId of ['trade.execute','orders.cancel','positions.close','account.withdraw','account.risk.write']){
+    await rejects(x.gateway.invoke(x.principal,{...q,toolId},x.fresh),'AI_FINANCIAL_BOUNDARY_DENIED');
+  }
+  assert.equal(x.readCount(),0);
+});
+test('a corrupt grant containing a future candidate cannot dispatch even a valid read',async()=>{
+  const x=fixture(),q=await x.issue();
+  const original=x.store.getGrant;
+  x.store.getGrant=async key=>{const grant=await original(key);grant.toolIds.push('market.quote.read');return grant;};
+  await rejects(x.gateway.invoke(x.principal,q,x.fresh),'AI_FINANCIAL_BOUNDARY_DENIED');
+  assert.equal(x.readCount(),0);
+});
