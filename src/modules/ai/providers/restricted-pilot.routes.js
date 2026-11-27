@@ -38,6 +38,11 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
         return {contractVersion:'restricted-pilot-v1',mode:runtime.mode,executionAllowed:false,...value};
       }finally{res.removeListener('close',abort);}
     });
+    if(action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&result.state!=='ANSWERED'){
+      // Aggregate diagnosis only. Never log the prompt, answer, account or provider response.
+      req.log?.warn({aiOutcome:result.state,aiFailureReason:result.failureReason??'UNCLASSIFIED',
+        aiInputTokens:result.usage?.inputTokens??null,aiOutputTokens:result.usage?.outputTokens??null},'AI workspace response incomplete');
+    }
     res.json(result);
   });
   router.use(aiSafeError);return router;
