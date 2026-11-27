@@ -1,7 +1,7 @@
 'use strict';
 // Narrow, explicit calculation intent. No inferred stop distance, trade side,
 // symbol, risk basis, or order authority. All sizing values are decimal strings.
-const {normalizeDecimal,multiplyDecimal,divideDecimal,compareDecimal,quantizeToStep,subtractDecimal,addDecimal,ROUNDING}=require('../../shared/decimal/decimal');
+const {normalizeDecimal,multiplyDecimal,divideDecimal,compareDecimal,quantizeToStep,subtractDecimal,addDecimal,ROUNDING}=require('../../../shared/decimal/decimal');
 const {calculateRequiredMargin}=require('../../trading/execution-planner');
 const {calculateCommission}=require('../../trading/trading-costs');
 const min=(...v)=>v.reduce((a,b)=>compareDecimal(a,b)<=0?a:b);
