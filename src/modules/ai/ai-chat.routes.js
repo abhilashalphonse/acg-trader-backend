@@ -20,9 +20,9 @@ const parse=(schema,value)=>{const p=schema.safeParse(value);if(!p.success)throw
 const scopeEqual=(a,b)=>['tenantId','actorId','sessionId','accountId'].every(k=>a[k]===b[k]);
 const contractVersion='native-chat-v1';
 // This API is an isolated contract rehearsal, not a production route.
-// Optional bounded conversation storage; no provider dispatch, credentials, pricing or orders.
+// Optional bounded conversation storage and local TLS fixture only; no public provider, pricing or orders.
 function createIsolatedChatRouter({authService,gateway,governance,quota,authorizePurpose,
-  registry=createModelRegistry(),conversations=null,now=Date.now}={}){
+  registry=createModelRegistry(),conversations=null,fixtureProviderEnabled=false,now=Date.now}={}){
   assertIsolated();
   if(typeof authService?.authenticateSessionToken!=='function'||typeof gateway?.assertDisclosure!=='function'||
     typeof governance?.run!=='function'||typeof quota?.consume!=='function'||typeof authorizePurpose!=='function'||
@@ -81,6 +81,7 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
       if(options.length>=16)break;
     }
     return {contractVersion,registryVersion:REGISTRY_VERSION,runtimeEnabled:false,sendEnabled:false,
+      fixtureProviderEnabled:fixtureProviderEnabled===true&&conversations!==null,
       providers:registry.providers().map(p=>({id:p.id,name:p.name,integrationStatus:'PLANNED',runtimeEnabled:false})),
       rehearsalOptions:options,fundingModes:[{id:'BYO_API',runtimeEnabled:false},{id:'ACG_CREDITS',runtimeEnabled:false}],
       profiles:[{id:'EDUCATION',rehearsalOnly:true}],maxQuestionBytes:4096};
