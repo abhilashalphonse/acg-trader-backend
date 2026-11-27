@@ -96,19 +96,20 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
   if(data.market?.schemaVersion==='adaptive-market-v1'){
     const frames=data.market.frames;
     while(oversized()){
+      const f=frames.filter(x=>x.observations?.length>(x.timeframe===data.market.selectedTimeframe?12:6)).sort((a,b)=>Number(a.timeframe===data.market.selectedTimeframe)-Number(b.timeframe===data.market.selectedTimeframe)||b.observations.length-a.observations.length)[0];
+      if(!f)break;
+      // Keep price/range facts and most recent references where possible.
+      const index=f.observations.findIndex(x=>x.type!=='FACT'&&x.type!=='STRUCTURE_SUMMARY');
+      const removable=index>=0?index:f.observations.findIndex(x=>x.type==='FACT'&&!['LAST_CLOSED_PRICE','OBSERVED_RANGE_HIGH','OBSERVED_RANGE_LOW'].includes(x.kind));
+      f.observations.splice(removable<0?0:removable,1);f.omittedObservations=(f.omittedObservations??0)+1;refresh();
+    }
+    while(oversized()){
       const candidates=frames.filter(f=>f.closedCandles?.length>(f.timeframe===data.market.selectedTimeframe?48:16));
       if(!candidates.length)break;
       const f=candidates.sort((a,b)=>Number(a.timeframe===data.market.selectedTimeframe)-Number(b.timeframe===data.market.selectedTimeframe)||b.closedCandles.length-a.closedCandles.length)[0];
       const minimum=f.timeframe===data.market.selectedTimeframe?48:16;
       f.closedCandles.splice(0,Math.min(16,f.closedCandles.length-minimum));
       f.omittedClosedBars=f.availableClosedBars-f.closedCandles.length;refresh();
-    }
-    while(oversized()){
-      const f=frames.filter(x=>x.observations?.length>4).sort((a,b)=>Number(a.timeframe===data.market.selectedTimeframe)-Number(b.timeframe===data.market.selectedTimeframe)||b.observations.length-a.observations.length)[0];
-      if(!f)break;
-      // Keep price/range facts and most recent references where possible.
-      const index=f.observations.findIndex(x=>x.type!=='FACT');
-      f.observations.splice(index<0?0:index,1);f.omittedObservations=(f.omittedObservations??0)+1;refresh();
     }
   }
   check(!oversized());
