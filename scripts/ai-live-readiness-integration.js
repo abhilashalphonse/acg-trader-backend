@@ -26,6 +26,7 @@ async function runLiveReadiness({auth,gateway,token,foreignToken,readRequest,for
     },
     // These are synthetic administrator, entitlement and billing policies.
     // Real production authorization adapters must be reviewed separately.
+    authorizeMarket:async (_scope,w)=>w.descriptorId===descriptorId&&w.policyVersion===policyVersion&&w.symbol==='XAUUSD'&&w.timeframe==='1m',
     authorizeAdmin:async a=>!denyAdmin&&a.tenantId===admin.tenantId&&a.actorId===admin.actorId,
     authorizeReconciliation:async a=>!denyBilling&&a.tenantId===admin.tenantId&&a.actorId===admin.actorId,
     resolvePrice:async d=>d===descriptorId?price:null
