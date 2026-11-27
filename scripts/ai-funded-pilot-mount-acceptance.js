@@ -203,6 +203,10 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.equal(five.freshness.latestClosedAtMs,lastFiveClose);
           assert.equal(five.freshness.state,lastFiveClose===expectedFiveOpen?'LATEST_EXPECTED_UTC_BUCKET':'MISSING_RECENT_CLOSED_BUCKET');
           assert.equal(data.market.sessionClocks.length,3);assert.ok(data.knowledge.length>0);
+          assert.equal(data.market.economicCalendar.dataStatus,'FRESH');
+          assert.equal(data.market.economicCalendar.events.length,1);
+          assert.equal(data.market.economicCalendar.events[0].title,'Synthetic USD release');
+          assert.equal(data.market.economicCalendar.events[0].timing,'UPCOMING');
           for(const value of [tenantId,actor.actorId,staff,...ids,'staff-owner',wsEnv.ACG_AI_FUNDED_OPENAI_API_KEY])
             assert.ok(!raw.includes(value));
           res.writeHead(200,{'content-type':'application/json'});
@@ -212,7 +216,11 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
         }catch(e){wireError=e;res.destroy();}
       });
       await new Promise(resolve=>tls.listen(0,'127.0.0.1',resolve));
-      const app=createApp({marketRuntime,tradingRuntime:{enabled:true,health:()=>({enabled:true})},authRuntime:{authService:auth},
+      const app=createApp({marketRuntime,tradingRuntime:{enabled:true,health:()=>({enabled:true}),
+        readAiCalendarSnapshot:now=>({dataStatus:'FRESH',fetchedAt:new Date(now-1000).toISOString(),
+          coverageFrom:new Date(now-3600000).toISOString(),coverageTo:new Date(now+86400000).toISOString(),
+          events:[{title:'Synthetic USD release',currency:'USD',impact:'HIGH',timestamp:new Date(now+1800000).toISOString(),allDay:false},
+            {title:'Unrelated EUR release',currency:'EUR',impact:'HIGH',timestamp:new Date(now+1800000).toISOString(),allDay:false}]})},authRuntime:{authService:auth},
         restrictedPilotBootstrap:{...ws,isolatedWorkspaceLoopback:{port:tls.address().port,ca}}});
       server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
       const wsRoot='http://127.0.0.1:'+server.address().port,wsBase={...base,connectionId:randomUUID(),symbol};
