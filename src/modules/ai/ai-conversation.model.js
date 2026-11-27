@@ -15,7 +15,7 @@ const conversation=new Schema({conversationId:uuid,status:{type:String,required:
   createdAtMs:time,updatedAtMs:time,expiresAtMs:time,
   messages:{type:[message],required:true,validate:v=>v.length<=16}},{_id:false,strict:'throw'});
 const bucket=new Schema({_id:{type:String,required:true,match:/^[a-f0-9]{64}$/},tenantId:id,actorId:id,accountId:id,
-  revision:{type:Number,required:true,min:1,validate:Number.isSafeInteger},expiresAt:{type:Date,required:true},
+  generation:uuid,revision:{type:Number,required:true,min:1,validate:Number.isSafeInteger},expiresAt:{type:Date,required:true},
   conversations:{type:[conversation],required:true,validate:v=>v.length<=8}},
   {strict:'throw',versionKey:false,autoCreate:false,autoIndex:false,writeConcern:{w:'majority'}});
 bucket.index({tenantId:1,actorId:1,accountId:1},{unique:true});
