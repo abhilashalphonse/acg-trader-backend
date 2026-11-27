@@ -16,13 +16,13 @@ function staffPreviewAllowed(principal,accountId,env=process.env,now=Date.now())
     id(principal.sessionId)&&id(accountId)&&Array.isArray(principal.accountIds)&&principal.accountIds.includes(accountId)&&
     [principal.expiresAt,principal.refreshExpiresAt,principal.idleExpiresAt].every(v=>Date.parse(v)>now);
 }
-function createStaffPreviewRouter({authService,env=process.env}){
+function createStaffPreviewRouter({authService,env=process.env,runtimeAvailable=()=>false}){
   const router=express.Router();
   router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
   router.get('/capability',requireTraderSession(authService),(req,res)=>{
     const parsed=z.object({accountId:z.string().regex(/^[a-f0-9]{24}$/)}).strict().safeParse(req.query);
     const eligible=parsed.success&&staffPreviewAllowed(req.traderPrincipal,parsed.data.accountId,env);
-    res.json({contractVersion:'staff-ai-preview-v1',previewEnabled:eligible===true,runtimeEnabled:false});
+    res.json({contractVersion:'staff-ai-preview-v1',previewEnabled:eligible===true,runtimeEnabled:eligible===true&&runtimeAvailable()===true});
   });
   router.use(aiSafeError);
   return router;
