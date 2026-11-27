@@ -14,12 +14,17 @@ const policy={maxInputTokens:8192,maxOutputTokens:1024,maxRequestsPerUtcDay:16,m
 // Fixture transport only. The operation ID is assigned durably by the
 // conversation service, before any adapter admission or external action.
 // All content is server-owned or from the isolated persisted user message.
-function createIsolatedConversationProvider({registry,store,crypto,transport,admission,marketSource=null}={}){
+function createIsolatedConversationProvider({registry,store,crypto,transport,admission,marketSource=null,marketGuard=null}={}){
   assertIsolated();
   const budget=createOfflineBudget({policies:{BYO_API:policy,ACG_CREDITS:policy}});
   return Object.freeze({
     marketEnabled:typeof marketSource?.instrument==='function'&&typeof marketSource?.candles==='function',
-    async run({scope,selection,profile,workspace=null,question,operationId,authorize}){
+    async prepare({scope,selection,workspace}){
+      if(!marketGuard)return null;
+      return marketGuard.prepare({scope,selection,workspace});
+    },
+    async assertDisclosure(scope,operationId){if(marketGuard)await marketGuard.assertDisclosure(scope,operationId);},
+    async run({scope,selection,profile,workspace=null,question,operationId,authorize,guardTicket=null}){
       assertIsolated();
       const market=profile==='STRUCTURE'||profile==='MARKET_OVERVIEW';
       if((!market&&profile!=='EDUCATION')||selection?.fundingMode!=='BYO_API'||typeof authorize!=='function'||
@@ -33,6 +38,8 @@ function createIsolatedConversationProvider({registry,store,crypto,transport,adm
       const permitted=async()=>{try{return await authorize()===true;}catch{return false;}};
       // Only the server's read-only market source can mint a context. No client
       // candles, quote, account data, serialized evidence or provider URL.
+      if(marketGuard&&(!market||guardTicket===null))throw deny('AI_CHAT_PROVIDER_DISABLED');
+      const exchange=marketGuard?marketGuard.bind({ticket:guardTicket,operationId,transport,authorize:permitted}):transport;
       let context=null,request=null;
       if(market){
         request={scope:owner,symbol:workspace.symbol,timeframes:[workspace.timeframe],limit:64,sessionWindows:[]};
@@ -40,7 +47,7 @@ function createIsolatedConversationProvider({registry,store,crypto,transport,adm
           candles:r=>marketSource.candles(r),quote:()=>null},authorize:async r=>isDeepStrictEqual(r,request)&&await permitted()});
         try{context=await assembler.assemble(request);}catch{return {state:'FAILED'};}
       }
-      const adapter=createIsolatedCredentialAdapter({scope:owner,selection:picked,registry,store,crypto,transport,admission,operationId,
+      const adapter=createIsolatedCredentialAdapter({scope:owner,selection:picked,registry,store,crypto,transport:exchange,admission,operationId,
         authorize:permitted});
       const engine=createResponseEngine({authorize:async r=>r.profile===profile&&isDeepStrictEqual(r.marketRequest,request)&&await permitted()});
       const orchestrator=createOfflineOrchestrator({registry,responseEngine:engine,adapters:[adapter],authorize:permitted,computeBudget:budget});
