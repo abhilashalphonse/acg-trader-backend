@@ -32,7 +32,7 @@ const { createTraderProfileRouter } = require('./modules/profile/trader-profile.
 const { createAlertRouter } = require('./modules/alerts/alert.routes');
 const { notFoundHandler, errorHandler } = require('./shared/http/error-middleware');
 
-function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
+function createApp({ marketRuntime, tradingRuntime, authRuntime, restrictedPilotBootstrap = null }) {
   const app = express();
   const { authService } = authRuntime;
   const personalDemoService = env.identity.personalDemoEnabled
@@ -73,10 +73,17 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
     },
     credentials: true,
   }));
+  // Explicit trusted startup composition is required in addition to the
+  // environment switches. No environment flag alone can mount a live pilot.
+  const pilotEnabled = () => restrictedPilotBootstrap !== null &&
+    process.env.ACG_AI_READ_GATEWAY_ENABLED === 'true' &&
+    process.env.ACG_AI_LIVE_PROVIDER_ENABLED === 'true' &&
+    process.env.ACG_AI_RESTRICTED_PILOT_ENABLED === 'true';
   // AI has a separate, smaller uncompressed JSON boundary before the shared parser.
   if (process.env.ACG_AI_READ_GATEWAY_ENABLED === 'true') {
     const { aiJsonBoundary } = require('./modules/ai/ai-http-security');
     app.use(['/v1/ai/read','/v1/internal/ai'], aiJsonBoundary());
+    if (pilotEnabled()) app.use('/v1/ai/pilot', aiJsonBoundary());
   }
   app.use(express.json({ limit: '512kb' }));
 
@@ -130,6 +137,16 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime }) {
       rejectUntrustedAuthOrigin(req, res, next, env.corsOrigins, env.isProduction));
     app.use('/v1/ai/read', createAiReadRouter({ authService, gateway, governance, quota }));
     app.use('/v1/internal/ai', createAiGovernanceRouter({ authService, store: governanceStore }));
+    if (pilotEnabled()) {
+      const { createRestrictedPilotRuntime } = require('./modules/ai/providers/restricted-pilot-runtime');
+      const { createRestrictedPilotRouter } = require('./modules/ai/providers/restricted-pilot.routes');
+      const runtime = createRestrictedPilotRuntime({
+        ...restrictedPilotBootstrap, env: process.env, authService, gateway, governanceStore, marketRuntime,
+      });
+      app.use('/v1/ai/pilot', (req, res, next) =>
+        rejectUntrustedAuthOrigin(req, res, next, env.corsOrigins, env.isProduction));
+      app.use('/v1/ai/pilot', createRestrictedPilotRouter({ runtime, authService, quota, enabled: pilotEnabled }));
+    }
   }
   if (process.env.ACG_ALERTS_ENABLED === 'true') app.use('/v1/alerts', createAlertRouter({authService,marketRuntime}));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
