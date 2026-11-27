@@ -144,6 +144,8 @@ async function main() {
     await runPhase4TransportIntegration({auth,gateway,gs,token:ta,foreignToken:tb,readRequest:req,
       marketTest:{token:tb,foreignToken:ta,readRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,
         toolId:'account.valuation.read',args:{}},source:assertPhase2Denied.source,asOf:assertPhase2Denied.asOf}});
+    const {runPilotMountAcceptance}=require('./ai-pilot-mount-acceptance');
+    await runPilotMountAcceptance({auth,token:ta,foreignToken:tb,readRequest:req});
     const {runPhase3CreditIntegration}=require('./ai-phase3-credit-integration');
     await runPhase3CreditIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
     const {runPhase3PurchaseIntegration}=require('./ai-phase3-purchase-integration');
