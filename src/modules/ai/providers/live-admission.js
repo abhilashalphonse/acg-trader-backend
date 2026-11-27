@@ -28,11 +28,12 @@ async function event(session,s,kind,subject,revision,atMs){await E.create([{_id:
 // authorizeSession must reauthenticate and return the actual account/connection
 // authority, not echo client input. Admin and reconciliation authorities are
 // separate; pricing must come from an approved server-owned descriptor.
-function createLiveAdmission({authorizeSession,authorizeAdmin,authorizeReconciliation,resolvePrice,now=Date.now}={}){
-  check([authorizeSession,authorizeAdmin,authorizeReconciliation,resolvePrice,now].every(f=>typeof f==='function'));
+function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,authorizeReconciliation,resolvePrice,now=Date.now}={}){
+  check([authorizeSession,authorizeMarket,authorizeAdmin,authorizeReconciliation,resolvePrice,now].every(f=>typeof f==='function'));
   function clock(){const t=now();check(positive(t)&&t<8640000000000000);return t;}
   const day=t=>new Date(t).toISOString().slice(0,10);
   async function permitted(s,purpose){check(scopeEqual(s,scope(await authorizeSession(s,purpose))),'LIVE_AI_SCOPE_CHANGED');}
+  async function market(s,g,purpose){check(await authorizeMarket(s,{descriptorId:g.descriptorId,policyVersion:g.policyVersion,symbol:g.symbol,timeframe:g.timeframe},purpose)===true,'LIVE_AI_MARKET_DENIED');}
   async function admin(a,purpose){check(id(a?.tenantId)&&id(a?.actorId)&&await authorizeAdmin({tenantId:a.tenantId,actorId:a.actorId},purpose)===true,'LIVE_AI_ADMIN_DENIED');}
   async function liveControl(s,session){const c=await get(C,s.tenantId,session);check(c?.enabled===true,'LIVE_AI_PAUSED');return c;}
   async function guard(s,c,g,t,session){check(g?.active===true&&scopeEqual(s,g)&&g.expiresAtMs>t&&g.controlRevision===c.revision,'LIVE_AI_CONSENT_REQUIRED');
@@ -70,7 +71,7 @@ function createLiveAdmission({authorizeSession,authorizeAdmin,authorizeReconcili
       const s=scope(s0),{expectedRevision,explicitConsent,descriptorId,policyVersion,symbol,timeframe,expiresAtMs}=input;
       check(integer(expectedRevision)&&explicitConsent===true&&hex(descriptorId)&&hex(policyVersion)&&typeof symbol==='string'&&/^[A-Z0-9._-]{1,32}$/.test(symbol)&&['1m','5m','15m','30m','1h','4h','1d','1w'].includes(timeframe)&&positive(expiresAtMs));
       await permitted(s,'GRANT');
-      return tx(async session=>{await permitted(s,'GRANT');const t=clock();check(expiresAtMs>t&&expiresAtMs-t<=3600000);const c=await liveControl(s,session),key=consentId(s),g=await get(S,key,session);
+      return tx(async session=>{await permitted(s,'GRANT');await market(s,input,'GRANT');const t=clock();check(expiresAtMs>t&&expiresAtMs-t<=3600000);const c=await liveControl(s,session),key=consentId(s),g=await get(S,key,session);
         check((g?.revision??0)===expectedRevision,'LIVE_AI_CHANGED');await patch(C,{_id:c._id,revision:c.revision,fence:c.fence},{fence:sum(c.fence,1)},session);
         const next={...s,revision:sum(expectedRevision,1),fence:sum(g?.fence??0,1),controlRevision:c.revision,active:true,expiresAtMs,descriptorId,policyVersion,symbol,timeframe};
         if(g)await patch(S,{_id:key,revision:g.revision,fence:g.fence},next,session);else await S.create([{_id:key,...next}],{session});
@@ -90,7 +91,7 @@ function createLiveAdmission({authorizeSession,authorizeAdmin,authorizeReconcili
       const amount=cost(maxInputTokens,maxOutputTokens,price.inputRatePicoUsd,price.outputRatePicoUsd);
       return tx(async session=>{await permitted(s,'CLAIM');const t=clock(),c=await liveControl(s,session),g=await get(S,consentId(s),session);
         check(g?.revision===consentRevision&&g.descriptorId===descriptorId&&g.policyVersion===policyVersion&&g.symbol===symbol&&g.timeframe===timeframe,'LIVE_AI_CONSENT_REQUIRED');
-        const key=attemptId(s,operationId);check(!await get(A,key,session),'LIVE_AI_ALREADY_CLAIMED');
+        await market(s,g,'CLAIM');const key=attemptId(s,operationId);check(!await get(A,key,session),'LIVE_AI_ALREADY_CLAIMED');
         await guard(s,c,g,t,session);await reserve(s,day(t),c,amount,session);
         await A.create([{_id:key,...s,operationId,consentId:g._id,consentRevision:g.revision,controlRevision:c.revision,descriptorId,policyVersion,day:day(t),
           reservedPicoUsd:amount,inputRatePicoUsd:price.inputRatePicoUsd,outputRatePicoUsd:price.outputRatePicoUsd,maxInputTokens,maxOutputTokens,
@@ -101,14 +102,14 @@ function createLiveAdmission({authorizeSession,authorizeAdmin,authorizeReconcili
       const s=scope(s0);check(uuid(operationId));await permitted(s,'DISPATCH');
       return tx(async session=>{await permitted(s,'DISPATCH');const t=clock(),key=attemptId(s,operationId),a=await get(A,key,session),c=await liveControl(s,session),g=await get(S,consentId(s),session);
         check(a&&scopeEqual(a,s)&&a.state==='CLAIMED'&&a.controlRevision===c.revision&&a.consentRevision===g?.revision&&a.day===day(t),'LIVE_AI_DISPATCH_DENIED');
-        await guard(s,c,g,t,session);await patch(A,{_id:key,state:'CLAIMED'},{state:'DISPATCHING',updatedAtMs:t},session);
+        await market(s,g,'DISPATCH');await guard(s,c,g,t,session);await patch(A,{_id:key,state:'CLAIMED'},{state:'DISPATCHING',updatedAtMs:t},session);
         await event(session,s,'DISPATCH',key,c.revision,t);return {attemptId:key};});
     },
     async assertDisclosure(s0,operationId){
       const s=scope(s0);check(uuid(operationId));await permitted(s,'DISCLOSE');
       const a=await read(A.findById(attemptId(s,operationId))),c=await read(C.findById(s.tenantId)),g=await read(S.findById(consentId(s)));
       check(a&&scopeEqual(a,s)&&['DISPATCHING','SETTLED'].includes(a.state)&&c?.enabled===true&&c.revision===a.controlRevision&&g?.active===true&&g.revision===a.consentRevision&&g.expiresAtMs>clock()&&scopeEqual(g,s),'LIVE_AI_DISCLOSURE_DENIED');
-      await permitted(s,'DISCLOSE');return true;
+      await market(s,g,'DISCLOSE');await permitted(s,'DISCLOSE');return true;
     },
     // Reconciliation runs independently of consent, session expiry and pause.
     // An authenticated, separately authorized billing worker supplies evidence.
