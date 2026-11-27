@@ -106,7 +106,7 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
       router.post('/conversations/'+op,audited('CHAT_'+op.toUpperCase()+'_OFFLINE',
         authority.extend(schemas[op].shape).strict(),async(input,permit,scope,addFence)=>{
           const {accountId:ignoredAccount,connectionId:ignoredConnection,...payload}=input;
-          const result=await conversations.execute(scope,op,payload,permit);
+          const result=await conversations.execute({...scope,connectionId:input.connectionId},op,payload,permit);
           if(result.fence)addFence(result.fence);
           return {contractVersion,runtimeEnabled:false,...result.value};
         }));
