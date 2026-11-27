@@ -4,7 +4,7 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "node scripts/ai-luna-railway-once.js",
+    "startCommand": "env NODE_ENV=acg-ai-live-smoke CI=false node scripts/ai-luna-railway-once.js",
     "restartPolicyType": "NEVER",
     "numReplicas": 1
   }
