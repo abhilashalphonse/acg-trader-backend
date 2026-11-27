@@ -20,10 +20,11 @@ const {buildWireRequest}=require('../src/modules/ai/providers/provider-wire');
 const {assertIsolated}=require('../src/modules/ai/providers/credit-ledger-store');
 const {createOfflineOrchestrator}=require('../src/modules/ai/providers/offline-orchestrator');
 const {createOfflineBudget}=require('../src/modules/ai/providers/compute-budget');
-async function runPhase4TransportIntegration({auth,gateway,gs,token,foreignToken,readRequest}){
+async function runPhase4TransportIntegration({auth,gateway,gs,token,foreignToken,readRequest,marketTest}){
   assertIsolated();
   const {channel,...scope}=scopeFor(await auth.authenticateSessionToken(token),readRequest.accountId,Date.now());
   const vs={tenantId:scope.tenantId,actorId:scope.actorId,sessionId:scope.sessionId};
+  const marketScope=marketTest?Object.fromEntries(Object.entries(scopeFor(await auth.authenticateSessionToken(marketTest.token),marketTest.readRequest.accountId,Date.now())).filter(([k])=>k!=='channel')):null;
   const rev=(await gs.control(scope.tenantId)).revision;
   const providers=['openai','anthropic','gemini','deepseek','openrouter'],modelId='fixture-transport-v1';
   const registry=createModelRegistry({allowSynthetic:true,descriptors:providers.map(providerId=>({
@@ -70,13 +71,18 @@ async function runPhase4TransportIntegration({auth,gateway,gs,token,foreignToken
         const parts=[];for await(const part of req)parts.push(part);
         const raw=Buffer.concat(parts).toString('utf8'),wire=JSON.parse(raw);
         assert.equal(req.method,'POST');assert.equal(req.headers['accept-encoding'],'identity');
-        assert.ok(!raw.includes(secret));for(const v of Object.values(scope))assert.ok(!raw.includes(v));
+        assert.ok(!raw.includes(secret));for(const v of [...Object.values(scope),...Object.values(marketScope??{})])assert.ok(!raw.includes(v));
         const p=req.url.startsWith('/v1beta/')?'gemini':req.url==='/v1/messages'?'anthropic':req.url.startsWith('/api/v1/')?'openrouter':
           req.url==='/chat/completions'?'deepseek':'openai';
         assert.equal(req.headers[p==='gemini'?'x-goog-api-key':p==='anthropic'?'x-api-key':'authorization'],
           ['gemini','anthropic'].includes(p)?secret:'Bearer '+secret);
         const data=JSON.parse(p==='gemini'?wire.contents[0].parts[0].text:wire.messages.at(-1).content);
-        const candidate=JSON.stringify({schemaVersion:'candidate-response-v2',status:'ANSWER',observations:[],interpretations:[],
+        const fact=data.evidence?.references.find(r=>r.type==='FACT'&&r.data.kind==='LAST_CLOSED_PRICE');
+        const structure=data.evidence?.references.find(r=>r.type==='STRUCTURE_SUMMARY');
+        const candidate=JSON.stringify(data.evidence?{schemaVersion:'candidate-response-v2',status:'ANSWER',
+          observations:[{referenceId:mode==='forged'?'f'.repeat(64):fact.referenceId}],
+          interpretations:structure?[{referenceId:structure.referenceId,code:'BREAK_HISTORY'}]:[],education:[]}:
+          {schemaVersion:'candidate-response-v2',status:'ANSWER',observations:[],interpretations:[],
           education:[{knowledgeId:mode==='forged'?'f'.repeat(64):data.knowledge.entries.find(k=>k.id==='MARKET_STRUCTURE').knowledgeId}]});
         if(mode==='redirect'){res.writeHead(302,{location:'https://invalid.example/never-follow'});res.end('not read');return;}
         if(mode==='timeout')return;
@@ -150,6 +156,11 @@ async function runPhase4TransportIntegration({auth,gateway,gs,token,foreignToken
     const {runPhase4ConversationProviderIntegration}=require('./ai-phase4-conversation-provider-integration');
     await runPhase4ConversationProviderIntegration({auth,gateway,gs,token,foreignToken,readRequest,scope,registry,
       credentialStore:store,crypto,transport,admission,requests:()=>requests,setMode:v=>{mode=v;},setHook:v=>{hook=v;}});
+    if(marketTest){
+      const {runPhase4MarketProviderIntegration}=require('./ai-phase4-market-provider-integration');
+      await runPhase4MarketProviderIntegration({...marketTest,auth,gateway,gs,scope:marketScope,registry,credentialStore:store,
+        crypto,transport,admission,secret,requests:()=>requests,setMode:v=>{mode=v;},setHook:v=>{hook=v;}});
+    }
   }finally{for(const s of sockets)s.destroy();if(server)await new Promise(resolve=>server.close(resolve));rmSync(dir,{recursive:true,force:true});}
 }
 module.exports={runPhase4TransportIntegration};
