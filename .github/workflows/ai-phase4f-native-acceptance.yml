@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: abhilashalphonse/acg-trader-frontend
-          ref: 7ed30caafe202f2a1b71716625c759386952e8c9
+          ref: 12a59b63a907f0b085f62577f55a6fe81029d9a8
           token: ${{ secrets.ACG_E2E_REPO_READ_TOKEN }}
           path: frontend
           persist-credentials: false
