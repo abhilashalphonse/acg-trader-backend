@@ -107,10 +107,11 @@ async function runPhase2Integration({auth,gateway,gs,token,readRequest,foreignTo
   const {runPhase4WorkspaceIntegration}=require('./ai-phase4-workspace-integration');
   await runPhase4WorkspaceIntegration({auth,gateway,gs,token,foreignToken,readRequest,scope,source,asOf});
   // Later Phase 1 test changes actual control revision and revokes actual grant.
-  return async phase=>{
+  const verifyDenied=async phase=>{
     await assert.rejects(assembler.assemble(req),{code:'CONTEXT_FORBIDDEN'});
     if(phase==='PAUSED')await security.assertPaused();
     if(phase==='REVOKED')await security.assertRevoked();
   };
+  return Object.assign(verifyDenied,{source,asOf});
 }
 module.exports={runPhase2Integration};
