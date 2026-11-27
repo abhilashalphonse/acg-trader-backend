@@ -121,3 +121,11 @@ test('streamed candidate must pass real Phase 2 verifier before disclosure',asyn
   const verified=await engine.verify({ticket,scope,candidate:v.candidate});
   assert.equal(verified.verified,true);assert.equal(verified.response.education[0].id,'MARKET_STRUCTURE');
 });
+
+test('Gemini completed response requires exact reported model and consistent terminal usage',async()=>{
+  const q=make('gemini');
+  const missing=geminiStream().replaceAll('"modelVersion":"'+modelId+'",','');
+  assert.equal((await run(q,missing)).status,'FAILED');
+  const conflicting=geminiStream()+event({modelVersion:modelId,usageMetadata:{...geminiUsage,totalTokenCount:23}});
+  assert.equal((await run(q,conflicting)).status,'FAILED');
+});
