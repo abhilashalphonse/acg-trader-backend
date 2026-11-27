@@ -66,6 +66,15 @@ async function runGuardedNative({auth,gateway,gs,token,scope,readRequest,selecti
   const fifth=await append();assert.equal((await generate(fifth)).status,403);
   revision=(await service.setControl(actor,{...limits,enabled:true,expectedRevision:revision})).revision;
   assert.equal((await generate(fifth)).status,403);assert.equal(requests(),start+4);
-  console.log('PASS guarded native runtime: consent, settled usage, replay, revocation, unknown hold and pause/resume against real TLS fixture');
+  // A fresh consent cannot override an exhausted durable spending limit.
+  const low={...limits,tenantDailyPicoUsd:500000,actorDailyPicoUsd:500000};
+  revision=(await service.setControl(actor,{...low,enabled:true,expectedRevision:revision})).revision;
+  await grant();
+  const denied=await generate(fifth);
+  assert.equal(denied.status,200);assert.ok(!denied.body.verifiedMarket);
+  assert.equal(await rowFor(denied.body),null);
+  assert.equal(requests(),start+4);
+  await service.setControl(actor,{...low,enabled:false,expectedRevision:revision});
+  console.log('PASS guarded native runtime: consent, settled usage, replay, revocation, unknown hold, pause/resume and budget denial against real TLS fixture');
 }
 module.exports={runGuardedNative};
