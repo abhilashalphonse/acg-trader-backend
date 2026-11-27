@@ -89,6 +89,11 @@ function windowRange(bars,startMs,endMs,timeframe,asOfMs){
   return {startMs,endMs,observedBars:selected.length,expectedBars:expected,status:selected.length===expected?'COMPLETE_OBSERVED_BUCKETS':'PARTIAL',
     high:Math.max(...selected.map(b=>b.high)),low:Math.min(...selected.map(b=>b.low)),firstOpenTimeMs:selected[0].openTimeMs,lastCloseTimeMs:selected.at(-1).closeTimeMs};
 }
+function sizingSpecifications(i){
+  const decimal=value=>value==null?null:String(value);
+  return {...Object.fromEntries(['pipSize','contractSize','minVolume','maxVolume','volumeStep','marginRate','commissionPerLot','commissionPerLotPerSide','commissionRate'].map(k=>[k,decimal(i[k])])),
+    quoteCurrency:i.quoteCurrency??null,pnlCurrency:i.pnlCurrency||i.quoteCurrency||null,marginCurrency:i.marginCurrency||i.quoteCurrency||null,defaultLeverage:i.defaultLeverage??null};
+}
 function compactReference(r){
   // Keep factual values and timestamps, omit redundant hashes; original
   // reference-only path still retains its signed reference IDs.
@@ -140,7 +145,7 @@ async function readAdaptiveMarket({source,runtime,scope,workspace,authorize,now=
   const previousDay=daily?.bars.at(-1)??null;
   return {schemaVersion:'adaptive-market-v1',symbol:workspace.symbol,provider:instrument.provider,asOfMs,quoteStatus:quote.status,quote,
     selectedTimeframe:workspace.timeframe,requestedTimeframes:frames,
-    instrument:{assetClass:instrument.assetClass??null,quoteCurrency:instrument.quoteCurrency??null,digits:instrument.digits??null,
+    instrument:{sizingSpecifications:sizingSpecifications(finalInstrument),assetClass:instrument.assetClass??null,quoteCurrency:instrument.quoteCurrency??null,digits:instrument.digits??null,
       pipSize:decimalToNumber(instrument.pipSize,null),tickSize:decimalToNumber(instrument.tickSize,null),contractSize:decimalToNumber(instrument.contractSize,null),
       defaultLeverage:instrument.defaultLeverage??null,marketOpen:validSchedule(finalInstrument)?isInstrumentSessionOpen(finalInstrument,asOfMs):null,
       timezone:finalInstrument.timezone,sessionOpenMs:validSchedule(finalInstrument)?activeSessionOpenTimeMs(finalInstrument,asOfMs):null,
