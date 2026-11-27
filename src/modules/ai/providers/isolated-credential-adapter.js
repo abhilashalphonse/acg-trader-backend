@@ -60,9 +60,12 @@ function createIsolatedCredentialAdapter({scope,selection,registry,store,crypto,
         outcome=await transport.exchange(q,secret,{signal,timeoutMs});
         secret.fill(0);
         // Record only disposition and bounded usage, never candidate or key.
-        await admission.finish(owner,q,operationId,lease,outcome);
+        const disposition=await admission.finish(owner,q,operationId,lease,outcome);
         await permitted(q,'DISCLOSE',row);
         if(!same(row,await read())||signal?.aborted||now()>=q.expiresAtMs)return hidden();
+        // Retain sanitized error codes for diagnostics, but never release a
+        // completed candidate with missing or over-bound usage.
+        if(outcome.status==='COMPLETED'&&disposition!=='ACCOUNTED_OFFLINE')return hidden();
         return outcome;
       }catch{
         // If no outcome was durably recorded, the claim remains reserved.
