@@ -20,7 +20,7 @@ const parse=(schema,value)=>{const p=schema.safeParse(value);if(!p.success)throw
 const scopeEqual=(a,b)=>['tenantId','actorId','sessionId','accountId'].every(k=>a[k]===b[k]);
 const contractVersion='native-chat-v1';
 // This API is an isolated contract rehearsal, not a production route.
-// No prompt, message history, credential, provider transport, pricing or order API.
+// Optional bounded conversation storage; no provider dispatch, credentials, pricing or orders.
 function createIsolatedChatRouter({authService,gateway,governance,quota,authorizePurpose,
   registry=createModelRegistry(),conversations=null,now=Date.now}={}){
   assertIsolated();
