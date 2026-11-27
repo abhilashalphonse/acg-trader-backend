@@ -104,6 +104,11 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
     return {owner,workspace,binding,admission,allowed,recordUsage};
   }
   const runtime=Object.freeze({
+    async quotaPrincipal(token,input,principal){
+      if(!funded)return principal;
+      const s=await funded.resolve(token,input.accountId,input.connectionId);
+      return {tenantId:s.tenantId,userId:s.actorId};
+    },
     async status(token,input){
       const x=await context(token,input);await x.allowed('GRANT');
       const key=hash(['consent',...['tenantId','actorId','sessionId','accountId','connectionId'].map(k=>x.owner[k])]);
