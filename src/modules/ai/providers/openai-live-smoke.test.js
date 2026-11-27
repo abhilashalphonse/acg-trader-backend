@@ -8,13 +8,13 @@ test('public OpenAI smoke excludes private, reserved and non-IPv4 destinations',
     assert.equal(publicIPv4(v),false,v);
   assert.equal(publicIPv4('8.8.8.8'),true);
 });
-test('fixed synthetic request, pinned model and output cap; no exported internal catalog or context',()=>{
+test('fixed synthetic request, fixed requested model and output cap; no exported internal catalog or context',()=>{
   const b=makeBody(reference);
-  assert.equal(b.model,MODEL);assert.equal(b.store,false);assert.equal(b.stream,false);assert.equal(b.max_completion_tokens,512);
+  assert.equal(MODEL,'gpt-6-luna');assert.equal(b.model,MODEL);assert.equal(b.reasoning_effort,'none');assert.equal(b.service_tier,'default');assert.equal(b.store,false);assert.equal(b.stream,false);assert.equal(b.max_completion_tokens,512);
   const raw=JSON.stringify(b);assert.ok(raw.includes(reference));assert.ok(!raw.includes('tenantId'));assert.ok(!raw.includes('ACG_INTERNAL_ORIGINAL'));assert.ok(!Object.hasOwn(b,'tools'));
   assert.throws(()=>makeBody('bad'),{code:'SMOKE_INVALID_REFERENCE'});
 });
-test('actual response parser requires pinned model, complete candidate and bounded usage',()=>{
+test('actual response parser requires fixed requested model, complete candidate and bounded usage',()=>{
   const raw={model:MODEL,choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:'{}'}}],
     usage:{prompt_tokens:123,completion_tokens:22,total_tokens:145}};
   assert.deepEqual(parseResponse(raw),{candidate:'{}',inputTokens:123,outputTokens:22});
