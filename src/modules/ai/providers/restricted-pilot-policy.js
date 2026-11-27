@@ -29,7 +29,7 @@ function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resol
       if(workspace.descriptorId!==pinned.descriptorId||workspace.policyVersion!==policyVersion)return false;
       const a=await resolveAccount(scope);
       if(!a||a.tenantId!==scope.tenantId||a.accountId!==scope.accountId||a.actorId!==scope.actorId||
-        a.accountType!=='DEMO'||a.active!==true||a.ownership!=='INTERNAL_OWNER')return false;
+        a.accountType!=='DEMO'||a.active!==true||a.ownership!=='ACG_TRADER_PERSONAL_V1')return false;
       if(await resolveMembership(scope,policyVersion)!==true)return false;
       if(await resolveDataRights({scope,symbol:workspace.symbol,timeframe:workspace.timeframe,policyVersion,providerId:'openai'})!==true)return false;
       return now()<pinned.expiresAtMs&&await verifyApproval(Object.freeze({policyVersion,descriptorId}))===true;
@@ -52,4 +52,15 @@ function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resol
     }
   });
 }
-module.exports={createRestrictedPilotPolicy};
+// Reuse the actual personal-demo grant/account policy. The returned projection
+// contains no financial state and is never included in the provider payload.
+function createPersonalDemoPilotAccountResolver({store,now=Date.now}={}){
+  if(typeof store?.account!=='function'||typeof now!=='function')throw fail();
+  return async scope=>{
+    if(!['tenantId','actorId','accountId'].every(k=>id(scope?.[k])))return null;
+    const row=await store.account(scope,now());
+    return row?{tenantId:scope.tenantId,actorId:scope.actorId,accountId:scope.accountId,
+      accountType:'DEMO',active:true,ownership:'ACG_TRADER_PERSONAL_V1'}:null;
+  };
+}
+module.exports={createRestrictedPilotPolicy,createPersonalDemoPilotAccountResolver};
