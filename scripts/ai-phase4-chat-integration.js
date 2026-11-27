@@ -17,10 +17,12 @@ async function runPhase4ChatIntegration({auth,gateway,gs,token,foreignToken,read
     {...descriptor,modelId:'planned-model',reviewStatus:'PROPOSED'},
     {...descriptor,modelId:'filtered-model'}]});
   let allowed=true,lateDeny=false,checks=0;
+  // Distinct deterministic quota bucket, to avoid disturbing Phase 1's shared-window test.
+  const quotaNow=Date.now()+3600000;
   const app=express();
   // Synthetic-only HTTP listener and real current identity/grant/quota/audit.
   app.use('/v1/ai/chat',createIsolatedChatRouter({authService:auth,gateway,governance:createAiGovernance({store:gs}),
-    quota:createAiQuota({store:createAiQuotaStore(),now:()=>Date.now(),limit:100}),registry,
+    quota:createAiQuota({store:createAiQuotaStore(),now:()=>quotaNow,limit:30}),registry,
     authorizePurpose:async x=>{
       assert.equal(x.externalExport,false);assert.equal(x.offlineOnly,true);
       assert.equal(x.scope.actorId,scope.actorId);
