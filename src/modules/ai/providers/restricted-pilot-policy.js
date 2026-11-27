@@ -16,11 +16,13 @@ function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resol
     !Array.isArray(policy.members)||policy.members.length>10||!policy.members.every(m=>exact(m,['tenantId','actorId','accountId'])&&Object.values(m).every(id))||
     !Array.isArray(policy.instruments)||policy.instruments.length>10||!policy.instruments.every(i=>exact(i,['symbol','timeframe'])&&
       typeof i.symbol==='string'&&/^[A-Z0-9._-]{1,32}$/.test(i.symbol)&&['1m','5m','15m','30m','1h','4h','1d','1w'].includes(i.timeframe)))throw fail();
-  const pinned=structuredClone(policy),{policyVersion,...fields}=pinned;
+  const pinned=structuredClone(policy),{policyVersion,descriptorId,...fields}=pinned;
+  // The descriptor pins the policy hash. Approval separately binds both hashes
+  // to avoid a circular digest dependency.
   if(hash(fields)!==policyVersion)throw fail();
   const allowed=async(scope,workspace,purpose)=>{
     try{
-      if(pinned.enabled!==true||now()>=pinned.expiresAtMs||await verifyApproval(policyVersion)!==true||
+      if(pinned.enabled!==true||now()>=pinned.expiresAtMs||await verifyApproval(Object.freeze({policyVersion,descriptorId}))!==true||
         !pinned.members.some(m=>['tenantId','actorId','accountId'].every(k=>m[k]===scope?.[k]))||
         !pinned.instruments.some(i=>i.symbol===workspace?.symbol&&i.timeframe===workspace?.timeframe)||
         !['GRANT','CLAIM','DISPATCH','DISCLOSE','EXPORT'].includes(purpose))return false;
@@ -30,7 +32,7 @@ function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resol
         a.accountType!=='DEMO'||a.active!==true||a.ownership!=='INTERNAL_OWNER')return false;
       if(await resolveMembership(scope,policyVersion)!==true)return false;
       if(await resolveDataRights({scope,symbol:workspace.symbol,timeframe:workspace.timeframe,policyVersion,providerId:'openai'})!==true)return false;
-      return now()<pinned.expiresAtMs&&await verifyApproval(policyVersion)===true;
+      return now()<pinned.expiresAtMs&&await verifyApproval(Object.freeze({policyVersion,descriptorId}))===true;
     }catch{return false;}
   };
   return Object.freeze({
