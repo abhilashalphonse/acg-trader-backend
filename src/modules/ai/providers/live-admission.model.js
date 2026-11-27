@@ -11,7 +11,7 @@ const options={strict:'throw',versionKey:false,autoIndex:false,autoCreate:false}
 const control=new Schema({_id:id,enabled:{type:Boolean,required:true},revision:int,fence:int,
   tenantDailyPicoUsd:int,actorDailyPicoUsd:int,tenantDailyRequests:int,actorDailyRequests:int},options);
 const consent=new Schema({_id:hash,tenantId:id,actorId:id,sessionId:id,accountId:id,connectionId:uuid,
-  revision:int,fence:int,active:{type:Boolean,required:true},expiresAtMs:int,
+  revision:int,fence:int,controlRevision:int,active:{type:Boolean,required:true},expiresAtMs:int,
   descriptorId:hash,policyVersion:hash,symbol:{type:String,required:true,match:/^[A-Z0-9._-]{1,32}$/},
   timeframe:{type:String,required:true,enum:['1m','5m','15m','30m','1h','4h','1d','1w']}},options);
 const budget=new Schema({_id:hash,tenantId:id,actorId:{type:String,default:null,match:/^[a-f0-9]{24}$/},
