@@ -9,10 +9,10 @@ const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
 // Infrastructure-only adapter. No plaintext returned to the app, no credential
 // acceptance from an HTTP request, no model activation. A fresh authorization
 // and vault revision/generation are checked before and after transport.
-function createIsolatedCredentialAdapter({scope,selection,registry,store,crypto,transport,authorize,admission,now=Date.now}={}){
+function createIsolatedCredentialAdapter({scope,selection,registry,store,crypto,transport,authorize,admission,operationId,now=Date.now}={}){
   assertIsolated();
   if(!['tenantId','actorId','sessionId','accountId'].every(k=>id(scope?.[k]))||
-    selection?.fundingMode!=='BYO_API'||typeof authorize!=='function'||
+    typeof operationId!=='string'||!/^[a-f0-9-]{36}$/.test(operationId)||selection?.fundingMode!=='BYO_API'||typeof authorize!=='function'||
     typeof store?.get!=='function'||typeof crypto?.decrypt!=='function'||
     typeof transport?.exchange!=='function'||typeof admission?.claim!=='function'||typeof admission?.finish!=='function')
     throw deny('TRANSPORT_CONFIG_INVALID');
@@ -22,7 +22,7 @@ function createIsolatedCredentialAdapter({scope,selection,registry,store,crypto,
   const binding=d=>({tenantId:owner.tenantId,actorId:owner.actorId,providerId,connectionId:key,generation:d.generation});
   async function permitted(q,operation,credential){
     assertIsolated();
-    if(await authorize(freeze({scope:owner,selection:picked,requestId:q.requestId,operation,
+    if(await authorize(freeze({scope:owner,selection:picked,requestId:q.requestId,operationId,operation,
       credentialRevision:credential.revision,credentialGeneration:credential.generation,offlineOnly:true,externalExport:false}))!==true)
       throw deny('TRANSPORT_FORBIDDEN');
   }
@@ -54,20 +54,20 @@ function createIsolatedCredentialAdapter({scope,selection,registry,store,crypto,
         secret=crypto.decrypt(row.envelope,binding(row));
         // Durable one-shot claim before any socket opens. A failed or uncertain
         // claim is never retried by this adapter, including after restart.
-        lease=await admission.claim(owner,q);
+        lease=await admission.claim(owner,q,operationId);
         await permitted(q,'DISPATCH',row);
         if(!same(row,await read())||signal?.aborted||now()>=q.expiresAtMs)throw deny('TRANSPORT_CREDENTIAL_CHANGED');
         outcome=await transport.exchange(q,secret,{signal,timeoutMs});
         secret.fill(0);
         // Record only disposition and bounded usage, never candidate or key.
-        await admission.finish(owner,q,lease,outcome);
+        await admission.finish(owner,q,operationId,lease,outcome);
         await permitted(q,'DISCLOSE',row);
         if(!same(row,await read())||signal?.aborted||now()>=q.expiresAtMs)return hidden();
         return outcome;
       }catch{
         // If no outcome was durably recorded, the claim remains reserved.
         // No automatic retries; even a pre-socket error can consume a slot.
-        if(lease&&!outcome)try{await admission.finish(owner,q,lease,hidden());}catch{}
+        if(lease&&!outcome)try{await admission.finish(owner,q,operationId,lease,hidden());}catch{}
         return hidden();
       }finally{secret?.fill(0);}
     },
