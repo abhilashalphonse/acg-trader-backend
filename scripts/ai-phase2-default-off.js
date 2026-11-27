@@ -14,7 +14,7 @@ async function main(){
       assert.equal((await fetch(root+'/health/live')).status,200);
       assert.equal((await fetch(root+'/v1/ai/read/tools')).status,enabled?401:404);
       assert.equal((await fetch(root+'/v1/internal/ai/control')).status,enabled?401:404);
-      for(const path of ['/v1/ai/chat/capabilities','/v1/ai/chat/preflight','/v1/ai/chat/messages',...['create','list','history','append','cancel','delete','analyze'].map(op=>'/v1/ai/chat/conversations/'+op)]){
+      for(const path of ['/v1/ai/chat/capabilities','/v1/ai/chat/preflight','/v1/ai/chat/messages',...['create','list','history','append','cancel','delete','analyze','generate'].map(op=>'/v1/ai/chat/conversations/'+op)]){
         for(const method of ['GET','POST'])assert.equal((await fetch(root+path,{method,...(method==='POST'?{headers:{'content-type':'application/json'},body:'{}'}:{})})).status,404);
       }
       for(const route of ['/v1/ai/intelligence','/v1/ai/context','/v1/ai/response','/v1/ai/chat','/v1/ai/providers','/v1/ai/connections','/v1/ai/credentials','/v1/ai/credits','/v1/ai/credits/purchases','/v1/ai/payments/webhook','/v1/internal/ai/payments/reconcile']){
