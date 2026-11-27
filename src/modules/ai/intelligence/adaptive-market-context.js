@@ -5,6 +5,7 @@ const {createTrustedContextAssembler,quoteEvidence}=require('./trusted-context')
 const {compilePromptPackage}=require('./prompt-compiler');
 const {TIMEFRAME_MS,candleBucketOpenTimeMs}=require('../../market-data/market.constants');
 const {validSchedule}=require('./calendar-coverage');
+const {scheduleHash}=require('../../instruments/schedule-identity');
 const {isInstrumentSessionOpen,zonedParts,zonedDateTimeToUtcMs,activeSessionOpenTimeMs,nextSessionOpenTimeMs}=require('../../instruments/session-calendar');
 const {isDeepStrictEqual}=require('node:util');
 const {decimalToNumber}=require('../../market-data/market.utils');
@@ -47,7 +48,28 @@ function terminalQuote(raw,instrument,asOfMs){
   const source=raw?.source;
   const supported=source===instrument.provider||source===instrument.provider+'-rest';
   const q=quoteEvidence(supported?{...raw,source:instrument.provider}:raw,instrument,asOfMs);
-  return {...q,originalSource:typeof source==='string'&&supported?source:null,observedAtMs:asOfMs};
+  const result={...q,originalSource:typeof source==='string'&&supported?source:null,observedAtMs:asOfMs};
+  if(q.status==='RECENT_PROVIDER_EVENT')return {...result,sessionVerification:'MATCHES_CONFIGURED_SCHEDULE'};
+  if(q.reason!=='SESSION_CLOSED_OR_UNKNOWN')return result;
+  const calendarKnown=validSchedule(instrument);
+  const configuredOpen=calendarKnown?isInstrumentSessionOpen(instrument,asOfMs):null;
+  const providerTimeOpen=calendarKnown?isInstrumentSessionOpen(instrument,raw.providerTimestampMs):null;
+  const sessionVerification=!calendarKnown?'SCHEDULE_UNAVAILABLE':
+    configuredOpen===false||providerTimeOpen===false?'CONFIGURED_SESSION_CLOSED':
+    raw.sessionOpen!==true?'FEED_SESSION_NOT_OPEN':'SESSION_UNVERIFIED';
+  // quoteEvidence has already checked identity and timing before rejecting the
+  // session. Prices are checked below because the strict gate checks them later.
+  // Do not export this fallback for a known closed session, stale feed, closed
+  // feed flag, mismatched source, missing timestamps or invalid bid/ask.
+  if(!calendarKnown&&raw.sessionOpen===true&&supported&&validPrice(raw.bid)&&validPrice(raw.ask)&&raw.ask>=raw.bid&&typeof raw.isSyntheticSpread==='boolean'){
+    return {...result,sessionVerification,observedQuote:{
+      status:'RECENT_OBSERVATION_SESSION_UNVERIFIED',bid:raw.bid,ask:raw.ask,
+      source,providerTimestampMs:raw.providerTimestampMs,receivedAtMs:raw.receivedAtMs,
+      ageMs:asOfMs-raw.providerTimestampMs,validUntilMs:raw.providerTimestampMs+instrument.maxQuoteAgeMs,
+      isSyntheticSpread:raw.isSyntheticSpread,executable:false
+    }};
+  }
+  return {...result,sessionVerification};
 }
 function sessionClocks(asOfMs){
   return [['TOKYO','Asia/Tokyo',9,18],['LONDON','Europe/London',8,17],['NEW_YORK','America/New_York',8,17]].map(([name,timezone,start,end])=>{
@@ -105,7 +127,8 @@ async function readAdaptiveMarket({source,runtime,scope,workspace,authorize,now=
   if(await authorize()!==true)throw Error('Workspace denied');
   const finalInstrument=await source.instrument(workspace.symbol);
   if(!finalInstrument||finalInstrument.provider!==instrument.provider||finalInstrument.providerSymbol!==instrument.providerSymbol||
-    finalInstrument.scheduleVersion!==instrument.scheduleVersion)throw Error('Instrument changed');
+    finalInstrument.scheduleVersion!==instrument.scheduleVersion||finalInstrument.maxQuoteAgeMs!==instrument.maxQuoteAgeMs||
+    scheduleHash(finalInstrument)!==scheduleHash(instrument))throw Error('Instrument changed');
   const raw=source.quote(workspace.symbol),asOfMs=now();
   if(asOfMs-start>=10000)throw Error('Context expired');
   const quote=terminalQuote(raw,finalInstrument,asOfMs);

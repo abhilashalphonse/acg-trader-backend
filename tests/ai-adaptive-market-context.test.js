@@ -69,3 +69,22 @@ test('workspace prompt uses natural conversation without mandatory report sectio
   assert.match(policy,/Do not invent market prices/);
   assert.equal(body.response_format.json_schema.name,'acg_workspace_answer');
 });
+
+test('recent observation survives unavailable schedule without granting execution or verified session',()=>{
+  const raw={symbol:'EURUSD',providerSymbol:'EUR/USD',source:'twelve-data',providerTimestampMs:t-200,receivedAtMs:t-100,
+    bid:1.09740,ask:1.09742,isStale:false,sessionOpen:true,isSyntheticSpread:true};
+  const unknown={...instrument,scheduleVersion:undefined};
+  const quote=terminalQuote(raw,unknown,t);
+  assert.equal(quote.status,'UNAVAILABLE');assert.equal(quote.reason,'SESSION_CLOSED_OR_UNKNOWN');
+  assert.equal(quote.sessionVerification,'SCHEDULE_UNAVAILABLE');
+  assert.equal(quote.observedQuote.status,'RECENT_OBSERVATION_SESSION_UNVERIFIED');
+  assert.equal(quote.observedQuote.bid,raw.bid);assert.equal(quote.observedQuote.executable,false);
+  assert.equal(quote.observedQuote.validUntilMs,raw.providerTimestampMs+instrument.maxQuoteAgeMs);
+  assert.equal(terminalQuote(raw,instrument,t).sessionVerification,'MATCHES_CONFIGURED_SCHEDULE');
+  const closed={...instrument,tradingSessions:[{days:[0],open:'00:00',close:'23:59'}]};
+  assert.equal(terminalQuote(raw,closed,t).sessionVerification,'CONFIGURED_SESSION_CLOSED');
+  assert.equal(terminalQuote(raw,closed,t).observedQuote,undefined);
+  for(const altered of [{isStale:true},{sessionOpen:false},{providerSymbol:'WRONG'},{source:'unrecognized'},{bid:2},{ask:NaN},{providerTimestampMs:t+1},{providerTimestampMs:t-31000}]){
+    assert.equal(terminalQuote({...raw,...altered},unknown,t).observedQuote,undefined);
+  }
+});

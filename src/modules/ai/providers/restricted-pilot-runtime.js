@@ -156,7 +156,9 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
           operationId:input.operationId,authorizeMessage:allowed,signal});
         if(result.state==='ANSWERED'){await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);}
         return {...result,operationId:input.operationId,workspace:{symbol:input.symbol,timeframe:input.timeframe},
-          context:{market:!!snapshot.market,account:!!snapshot.account,marketAsOfMs:snapshot.market?.asOfMs??null,accountAsOfMs:snapshot.account?.asOfMs??null}};
+          context:{market:!!snapshot.market,account:!!snapshot.account,marketAsOfMs:snapshot.market?.asOfMs??null,accountAsOfMs:snapshot.account?.asOfMs??null,
+            quoteStatus:snapshot.market?.quote?.status??null,quoteReason:snapshot.market?.quote?.reason??null,
+            quoteSessionVerification:snapshot.market?.quote?.sessionVerification??null,quoteObservationAvailable:!!snapshot.market?.quote?.observedQuote}};
       }
       const q=(educationOnly?educationQuestions:questions)[input.intent];guard(q);
       guard(!Object.hasOwn(input,'question')&&!Object.hasOwn(input,'history')&&!Object.hasOwn(input,'includeAccount')&&!Object.hasOwn(input,'includeMarket'));
