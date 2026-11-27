@@ -138,12 +138,12 @@ async function main() {
     const {runPhase4TransportIntegration}=require('./ai-phase4-transport-integration');
     const gb=await send('/read/grants',tb,{accountId:b.id,toolIds:['account.valuation.read']});
     assert.equal(gb.status,201);
-    await runPhase4TransportIntegration({auth,gateway,gs,token:ta,foreignToken:tb,readRequest:req,
-      marketTest:{token:tb,foreignToken:ta,readRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,
-        toolId:'account.valuation.read',args:{}},source:assertPhase2Denied.source,asOf:assertPhase2Denied.asOf}});
     const {runLiveReadiness}=require('./ai-live-readiness-integration');
     await runLiveReadiness({auth,gateway,token:ta,foreignToken:tb,readRequest:req,
       foreignReadRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,toolId:'account.valuation.read',args:{}}});
+    await runPhase4TransportIntegration({auth,gateway,gs,token:ta,foreignToken:tb,readRequest:req,
+      marketTest:{token:tb,foreignToken:ta,readRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,
+        toolId:'account.valuation.read',args:{}},source:assertPhase2Denied.source,asOf:assertPhase2Denied.asOf}});
     const {runPhase3CreditIntegration}=require('./ai-phase3-credit-integration');
     await runPhase3CreditIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
     const {runPhase3PurchaseIntegration}=require('./ai-phase3-purchase-integration');
