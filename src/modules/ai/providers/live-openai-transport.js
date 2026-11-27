@@ -43,9 +43,9 @@ function parseResponse(raw,d){
 }
 // Shared bounded HTTP mechanics. Target is determined by the two internal
 // factories, never by a customer or caller-supplied URL.
-async function exchange({target,body,key,deadlineMs,beforeWrite,signal}){
+async function exchange({target,body,key,deadlineMs,beforeWrite,signal,maxDurationMs=10000}){
   requireTrue(Buffer.isBuffer(key)&&key.length>=20&&key.length<=4096&&key.every(v=>v>=33&&v<=126));
-  requireTrue(integer(deadlineMs)&&deadlineMs>Date.now()&&deadlineMs-Date.now()<=10000);
+  requireTrue(integer(deadlineMs)&&deadlineMs>Date.now()&&deadlineMs-Date.now()<=maxDurationMs&&maxDurationMs<=30000);
   const controller=new AbortController(),start=performance.now(),duration=deadlineMs-Date.now();
   const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});
   if(signal?.aborted)abort();
@@ -88,16 +88,29 @@ async function publicTarget(signal){
 // provide the server-created prompt + verification ticket, a durable message
 // operation, approved export and conservative tokenizer/price policy. No
 // customer transport can be activated merely by setting an environment flag.
-function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperBound,recordUsage,verifyCandidate,educationOnly=false}={}){
+function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperBound,recordUsage,verifyCandidate,educationOnly=false,workspaceChat=false,isolatedLoopback=null}={}){
   assertLiveRuntime(config);
   requireTrue([authorizeExport,countUpperBound,recordUsage,verifyCandidate].every(f=>typeof f==='function')&&
     ['assertConsent','claim','beginDispatch','assertDispatch','assertDisclosure'].every(k=>typeof admission?.[k]==='function'));
   const d=config.descriptor;
+  let target=publicTarget;
+  if(isolatedLoopback!==null){
+    assertIsolated();requireTrue(workspaceChat&&Number.isInteger(isolatedLoopback.port)&&isolatedLoopback.port>0&&isolatedLoopback.port<=65535&&
+      Buffer.isBuffer(isolatedLoopback.ca)&&isolatedLoopback.ca.length>0&&isolatedLoopback.ca.length<=65536);
+    const {port}=isolatedLoopback,ca=Buffer.from(isolatedLoopback.ca);
+    target=async()=>{assertIsolated();return {hostname:'127.0.0.1',port,ca};};
+  }
   return Object.freeze({
-    async run({scope,workspace,prompt,ticket,operationId,authorizeMessage,signal}){
+    async run({scope,workspace,prompt,ticket,operationId,authorizeMessage,signal,workspaceBody=null}){
       assertLiveRuntime(config);
       requireTrue(typeof authorizeMessage==='function'&&hex(prompt?.packageId));
-      if(educationOnly){
+      if(workspaceChat){
+        requireTrue(!educationOnly&&workspaceBody?.model===d.modelId&&workspaceBody.store===false&&workspaceBody.stream===false&&
+          workspaceBody.n===1&&workspaceBody.service_tier==='default'&&workspaceBody.max_completion_tokens===d.maxOutputTokens&&
+          workspaceBody.response_format?.json_schema?.name==='acg_workspace_answer'&&
+          digest(workspaceBody)===prompt.packageId&&workspaceBody.messages?.length===2&&
+          !Object.hasOwn(workspaceBody,'tools')&&!Object.hasOwn(workspaceBody,'functions'));
+      }else if(educationOnly){
         requireTrue(workspace?.includeChartContext===false&&workspace.symbol==='EDUCATION'&&workspace.timeframe==='1m'&&
           prompt.payload.data.profile==='EDUCATION'&&prompt.payload.data.evidence===null&&
           ['Explain market structure and break of structure.','Explain potential liquidity references.','Explain fair value gaps.'].includes(prompt.payload.data.question));
@@ -105,8 +118,8 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
         requireTrue(workspace?.includeChartContext===true&&prompt.payload.data.evidence?.symbol===workspace.symbol&&prompt.payload.data.evidence?.frames?.length===1&&
           prompt.payload.data.evidence.frames[0].timeframe===workspace.timeframe&&prompt.payload.data.evidence.quoteStatus==='UNAVAILABLE');
       }
-      const body=buildBody(d,prompt),wireDigest=digest(body);
-      const deadlineMs=Math.min(prompt.expiresAtMs,Date.now()+8000);
+      const body=workspaceChat?structuredClone(workspaceBody):buildBody(d,prompt),wireDigest=digest(body);
+      const deadlineMs=Math.min(prompt.expiresAtMs,Date.now()+(workspaceChat?26000:8000));
       const expected={descriptorId:d.descriptorId,policyVersion:d.policyVersion,symbol:workspace.symbol,timeframe:workspace.timeframe};
       const check=async()=>{
         assertLiveRuntime(config);requireTrue(!signal?.aborted&&Date.now()<deadlineMs&&await authorizeMessage()===true);
@@ -126,7 +139,7 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
         const raw=await withLiveSecret(config,async key=>{
           requireTrue(!invoked);invoked=true;
           const copy=Buffer.isBuffer(key)?Buffer.from(key):null;
-          try{return await exchange({target:publicTarget,body,key:copy,deadlineMs,signal,beforeWrite:async()=>{
+          try{return await exchange({target,body,key:copy,deadlineMs,signal,maxDurationMs:workspaceChat?30000:10000,beforeWrite:async()=>{
             await check();await admission.assertDispatch(scope,operationId);await check();
           }});}finally{copy?.fill(0);}
         });
@@ -140,6 +153,13 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
         requireTrue(settlement?.state==='SETTLED');recorded=true;
         await admission.assertDisclosure(scope,operationId);await check();
         if(!parsed.candidate)return {state:'FAILED',usage};
+        if(workspaceChat){
+          let answer;try{answer=JSON.parse(parsed.candidate);}catch{return {state:'FAILED',usage};}
+          requireTrue(answer&&Object.keys(answer).length===1&&typeof answer.answer==='string'&&answer.answer.trim()&&
+            Buffer.byteLength(answer.answer,'utf8')<=12000);
+          await admission.assertDisclosure(scope,operationId);await check();
+          return {state:'ANSWERED',answer:answer.answer.trim(),usage};
+        }
         const verified=await verifyCandidate({ticket,scope,candidate:parsed.candidate});
         requireTrue(verified?.verified===true&&verified.response?.verification==='RECOMPUTED_REFERENCE_SELECTION_ONLY'&&
           verified.response.packageId===prompt.packageId&&verified.response.symbol===(educationOnly?null:workspace.symbol)&&Date.now()<verified.response.expiresAtMs);

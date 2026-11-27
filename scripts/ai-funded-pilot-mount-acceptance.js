@@ -29,8 +29,10 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
     authorizeAdmin:async x=>x.actorId===actor.actorId,authorizePlatformAdmin:async x=>x.actorId===actor.actorId,
     authorizeReconciliation:async()=>false,resolvePrice:async()=>null});
   const prior=await LivePlatform.findById('platform').lean();
+  assert.equal(prior,null,'Funded acceptance requires a fresh dedicated live ledger');
+  assert.equal(await LiveAttempt.countDocuments({}),0);
   const caps={dailyPicoUsd:1000000000000,dailyRequests:20,maxOutstandingPicoUsd:1000000000000,maxOutstandingRequests:1};
-  const platform=(await admin.setPlatformControl(actor,{...caps,enabled:true,expectedRevision:prior.revision}));
+  const platform=(await admin.setPlatformControl(actor,{...caps,enabled:true,expectedRevision:0}));
   await admin.setControl(actor,{enabled:true,expectedRevision:0,tenantDailyPicoUsd:1000000000000,actorDailyPicoUsd:1000000000000,tenantDailyRequests:20,actorDailyRequests:20});
   const fields={enabled:true,expiresAtMs:Date.now()+120000,members:[actor],instruments:[{symbol:'XAUUSD',timeframe:'1m'}],approvalDigest:'a'.repeat(64)};
   const policyVersion=digest(fields);
@@ -127,12 +129,91 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
     assert.ok((await eduCall('generate',{intent:'EDUCATION_FVG',operationId:randomUUID()})).status>=400);
     assert.equal(examined,1);assert.equal(secretReads,0);assert.equal(await LiveAttempt.countDocuments({}),count);
     console.log('PASS Funded education-only actual mounted API rejects chart intents and exports only canonical original catalog, no provider calls');
+    server.closeAllConnections();await new Promise(resolve=>server.close(resolve));server=null;
+    const https=require('node:https'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+    const {execFileSync}=require('node:child_process');
+    const {Instrument}=require('../src/modules/instruments/instrument.model');
+    const {Candle}=require('../src/modules/market-data/candle.model');
+    const {InstrumentRegistry}=require('../src/modules/market-data/instrument-registry');
+    const {QuoteStore}=require('../src/modules/market-data/quote-store');
+    const symbol='AIWORKSPACE',start=Math.floor(Date.now()/60000)*60000-25*60000;
+    await Instrument.create({symbol,displaySymbol:symbol,name:'Synthetic workspace',assetClass:'METAL',quoteCurrency:'USD',
+      digits:2,tickSize:'0.01',pipSize:'0.1',contractSize:'100',minVolume:'0.01',maxVolume:'100',volumeStep:'0.01',
+      defaultLeverage:50,providerMappings:{twelveData:'TEST/USD'},tradingSessions:[{days:[0,1,2,3,4,5,6],open:'00:00',close:'23:59'}],
+      timezone:'UTC',maxQuoteAgeMs:30000,scheduleVersion:1,chartEnabled:true,status:'ACTIVE'});
+    await Candle.insertMany(Array.from({length:24},(_,i)=>({symbol,timeframe:'1m',openTime:new Date(start+i*60000),
+      closeTime:new Date(start+(i+1)*60000),open:String(100+i),high:String(101+i),low:String(99+i),close:String(100+i),
+      complete:true,synthetic:false,source:'BACKFILL',provider:'twelve-data'})));
+    const instrumentRegistry=new InstrumentRegistry({symbols:[symbol],defaultMaxQuoteAgeMs:30000,logger:{warn(){}}});
+    await instrumentRegistry.load();
+    const marketRuntime={enabled:true,symbols:[symbol],timeframes:['1m'],instrumentRegistry,quoteStore:new QuoteStore(),health:()=>({enabled:true})};
+    const wsEnv={...flags,ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED:'true',
+      ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:String(Date.now()+120000),ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-workspace-'.padEnd(40,'x')};
+    const ws=await loadFundedPilotBootstrap({env:wsEnv,marketRuntime});
+    assert.equal(ws.workspaceChat,true);assert.equal(ws.educationOnly,false);
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'acg-ws-tls-'));
+    let tls,requests=0,wireError=null;
+    try{
+      execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=127.0.0.1','-addext','subjectAltName=IP:127.0.0.1',
+        '-keyout',path.join(dir,'key.pem'),'-out',path.join(dir,'cert.pem')],{stdio:'ignore'});
+      const ca=fs.readFileSync(path.join(dir,'cert.pem'));
+      tls=https.createServer({key:fs.readFileSync(path.join(dir,'key.pem')),cert:ca},async(req,res)=>{
+        try{
+          requests++;
+          const parts=[];for await(const p of req)parts.push(p);
+          const raw=Buffer.concat(parts).toString(),body=JSON.parse(raw),data=JSON.parse(body.messages[1].content);
+          assert.equal(body.model,'gpt-6-luna');assert.equal(body.store,false);assert.equal(body.stream,false);
+          assert.equal(body.response_format.json_schema.name,'acg_workspace_answer');
+          assert.equal(data.question,'Review my account and chart.');
+          assert.equal(data.account.state.balance,'10000');assert.equal(data.account.source,'PERSISTED_ACCOUNT_SNAPSHOT');
+          assert.equal(data.market.symbol,symbol);assert.equal(data.market.provider,'twelve-data');
+          assert.ok(data.market.frames.length===1);assert.ok(data.knowledge.length>0);
+          for(const value of [tenantId,actor.actorId,staff,...ids,'staff-owner',wsEnv.ACG_AI_FUNDED_OPENAI_API_KEY])
+            assert.ok(!raw.includes(value));
+          res.writeHead(200,{'content-type':'application/json'});
+          res.end(JSON.stringify({id:'workspace-fixture-'+randomUUID(),model:'gpt-6-luna',service_tier:'default',
+            choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:JSON.stringify({answer:'Synthetic workspace answer.'})}}],
+            usage:{prompt_tokens:1000,completion_tokens:40,total_tokens:1040}}));
+        }catch(e){wireError=e;res.destroy();}
+      });
+      await new Promise(resolve=>tls.listen(0,'127.0.0.1',resolve));
+      const app=createApp({marketRuntime,tradingRuntime:{enabled:true,health:()=>({enabled:true})},authRuntime:{authService:auth},
+        restrictedPilotBootstrap:{...ws,isolatedWorkspaceLoopback:{port:tls.address().port,ca}}});
+      server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
+      const wsRoot='http://127.0.0.1:'+server.address().port,wsBase={...base,connectionId:randomUUID(),symbol};
+      const wsCall=async(op,extra={},token=session.accessToken)=>{
+        const res=await fetch(wsRoot+'/v1/ai/pilot/'+op,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+token},
+          body:JSON.stringify({...wsBase,...extra})});return {status:res.status,body:await res.json()};
+      };
+      const status=await wsCall('status');assert.equal(status.status,200);assert.equal(status.body.mode,'WORKSPACE_CHAT');
+      assert.equal((await wsCall('status',{},otherSession.accessToken)).status,403);
+      assert.equal((await wsCall('grant',{expectedRevision:0,explicitConsent:true})).status,200);
+      const op=randomUUID(),input={intent:'WORKSPACE_CHAT',operationId:op,question:'Review my account and chart.',history:[],includeAccount:true,includeMarket:true};
+      assert.ok((await wsCall('generate',{...input,accountId:String(other._id)})).status>=400);
+      const answer=await wsCall('generate',input);
+      if(wireError)throw wireError;
+      assert.equal(answer.status,200,JSON.stringify(answer.body.error??{}));
+      assert.equal(answer.body.state,'ANSWERED',JSON.stringify(answer.body));
+      assert.equal(answer.body.answer,'Synthetic workspace answer.');assert.equal(answer.body.context.account,true);assert.equal(answer.body.context.market,true);
+      const settled=await LiveAttempt.findOne({tenantId,operationId:op}).lean();
+      assert.equal(settled.state,'SETTLED');assert.equal(settled.actualPicoUsd,120000000);
+      assert.equal(requests,1);
+      assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
+      assert.ok((await wsCall('generate',input)).status>=400);assert.equal(requests,1);
+      wsEnv.ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED='false';
+      assert.ok((await wsCall('generate',{...input,operationId:randomUUID()})).status>=400);
+      console.log('PASS actual Funded workspace chat: selected account and synthetic chart, normal response, real TLS fixture, settled budget, replay and export revocation');
+    }finally{
+      if(tls){tls.closeAllConnections();await new Promise(resolve=>tls.close(resolve));}
+      fs.rmSync(dir,{recursive:true,force:true});
+    }
+
 
   }finally{
     if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
     for(const k of Object.keys(flags)){if(original[k]===undefined)delete process.env[k];else process.env[k]=original[k];}
-    await admin.setPlatformControl(actor,{enabled:prior.enabled,expectedRevision:platform.revision,dailyPicoUsd:prior.dailyPicoUsd,
-      dailyRequests:prior.dailyRequests,maxOutstandingPicoUsd:prior.maxOutstandingPicoUsd,maxOutstandingRequests:prior.maxOutstandingRequests});
+    // Dedicated random test database is dropped by the standalone runner.
+    // Never restore, reset or overwrite another suite's ledger.
   }
 }
 module.exports={runFundedPilotMountAcceptance};

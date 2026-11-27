@@ -52,6 +52,13 @@ function aiSafeError(error,req,res,next) {
   const status=Number.isInteger(raw)&&raw>=400&&raw<=599?raw:500;
   const code=error instanceof AppError && safeCode(error.code) && status<500
     ? error.code : status===413?'AI_PAYLOAD_TOO_LARGE':status===415?'AI_UNSUPPORTED_MEDIA':status>=500?'AI_UNAVAILABLE':'AI_INVALID_REQUEST';
+  // Isolated acceptance only: emit a bounded error code and source location,
+  // never the message, payload, full stack or credential. Production is unchanged.
+  if(process.env.NODE_ENV==='test'&&process.env.ACG_AI_ISOLATED_CI==='true'&&req.path==='/generate'&&status>=500){
+    const frame=String(error.stack??'').split('\n').slice(1).find(v=>/\/src\/modules\/ai\//.test(v));
+    const location=frame?.match(/\/src\/modules\/ai\/([A-Za-z0-9_./-]+:\d+:\d+)/)?.[1]??'unknown';
+    console.log('AI_ISOLATED_GENERATE_FAILURE',safeCode(error.code)?error.code:error.name==='TypeError'?'TYPE_ERROR':'UNCLASSIFIED',location);
+  }
   // Never log the raw error, body, URL or credential here.
   req.log?.[status>=500?'error':'warn']({statusCode:status,code},'AI request rejected');
   res.setHeader('Cache-Control','no-store');
