@@ -8,6 +8,7 @@ const {AppError}=require('../../../shared/errors/app-error');
 const base=z.object({accountId:z.string().regex(/^[a-f0-9]{24}$/),connectionId:z.uuid(),
   symbol:z.string().regex(/^[A-Z0-9._-]{1,32}$/),timeframe:z.enum(['1m','5m','15m','30m','1h','4h','1d','1w'])}).strict();
 const schemas={
+  status:base,
   grant:base.extend({expectedRevision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER-1),explicitConsent:z.literal(true)}).strict(),
   revoke:base.extend({expectedRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER-1)}).strict(),
   generate:base.extend({operationId:z.uuid(),intent:z.enum(['HISTORICAL_OVERVIEW','HISTORICAL_STRUCTURE'])}).strict()
@@ -24,7 +25,7 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       if(Object.keys(req.query).length)throw deny('AI_INVALID_REQUEST',400);
       const p=schemas[action].safeParse(req.body);
       if(!p.success)throw deny('AI_INVALID_REQUEST',400);
-      await quota.consume(req.traderPrincipal);
+      await quota.consume(await runtime.quotaPrincipal(bearerToken(req),p.data,req.traderPrincipal));
       if(enabled()!==true)throw deny('AI_PILOT_DISABLED',404);
       const controller=new AbortController(),abort=()=>controller.abort();
       res.once('close',abort);

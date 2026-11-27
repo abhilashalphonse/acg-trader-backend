@@ -48,7 +48,16 @@ async function start() {
   await marketRuntime.start();
   const alertsRuntime = process.env.ACG_ALERTS_ENABLED === 'true' ? await startAlertRuntime({logger}) : null;
 
-  const app = createApp({ marketRuntime, tradingRuntime, authRuntime });
+  let restrictedPilotBootstrap=null;
+  // Preview and trading must remain available if a live AI gate is absent.
+  if(process.env.ACG_AI_FUNDED_LIVE_ENABLED==='true'){
+    try{
+      const {loadFundedPilotBootstrap}=require('./modules/ai/providers/funded-pilot-bootstrap');
+      restrictedPilotBootstrap=await loadFundedPilotBootstrap({marketRuntime});
+      if(!restrictedPilotBootstrap)logger.warn('Funded AI pilot not activated');
+    }catch{logger.warn('Funded AI pilot configuration rejected; trading remains available');}
+  }
+  const app = createApp({ marketRuntime, tradingRuntime, authRuntime,restrictedPilotBootstrap });
   const server = http.createServer(app);
   marketRuntime.attachWebSocket(server, authRuntime.authService, tradingRuntime);
 

@@ -3,15 +3,16 @@ const {createHash}=require('node:crypto');
 const {isDeepStrictEqual}=require('node:util');
 const {createAiReadStore}=require('../ai-read-store');
 const {createLiveAdmission}=require('./live-admission');
-const {LivePlatform,LiveControl}=require('./live-admission.model');
+const {LivePlatform,LiveControl,LiveConsent}=require('./live-admission.model');
 const {createLiveRuntimeConfig,assertLiveRuntime,createLiveSessionAuthority}=require('./live-runtime-config');
 const {createRestrictedPilotPolicy,createPersonalDemoPilotAccountResolver}=require('./restricted-pilot-policy');
 const {createProviderUsageRecorder}=require('./provider-billing-reconciliation');
-const {createLiveOpenAiTransport}=require('./live-openai-transport');
+const {createLiveOpenAiTransport,buildBody}=require('./live-openai-transport');
 const {createMarketContextSource}=require('../intelligence/context-source');
 const {createTrustedContextAssembler}=require('../intelligence/trusted-context');
 const {createResponseEngine}=require('../intelligence/response-engine');
 const {scopeFor}=require('../ai-read-gateway');
+const {createFundedStaffAuthority}=require('./funded-staff-authority');
 const {AppError}=require('../../../shared/errors/app-error');
 const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -27,7 +28,7 @@ const runtimes=new WeakSet();
 // public config, no externally supplied model, prompt, token cap or tools.
 function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretPort,verifyRelease,verifyApproval,
   resolveMembership,resolveDataRights,validatePayload,countUpperBound,resolveBillingActor,authorizeBilling,
-  authService,gateway,governanceStore,marketRuntime}={}){
+  authService,gateway,governanceStore,marketRuntime,fundedStaff=false}={}){
   if(env.ACG_AI_LIVE_PROVIDER_ENABLED!=='true'||env.ACG_AI_RESTRICTED_PILOT_ENABLED!=='true')return null;
   guard([verifyRelease,verifyApproval,resolveMembership,resolveDataRights,validatePayload,countUpperBound,
     resolveBillingActor,authorizeBilling].every(f=>typeof f==='function'));
@@ -36,15 +37,31 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
   const d=config.descriptor;
   guard(policy?.descriptorId===d.descriptorId&&policy?.policyVersion===d.policyVersion&&policy?.enabled===true);
   const expiresAtMs=policy.expiresAtMs;
+  const funded=fundedStaff===true?createFundedStaffAuthority({authService,env}):null;
   const pilot=createRestrictedPilotPolicy({policy,verifyApproval,resolveMembership,resolveDataRights,validatePayload,
-    resolveAccount:createPersonalDemoPilotAccountResolver({store:createAiReadStore()})});
+    resolveAccount:funded?null:createPersonalDemoPilotAccountResolver({store:createAiReadStore()}),fundedStaff:!!funded});
   const source=createMarketContextSource(marketRuntime);
   async function context(token,input){
     assertLiveRuntime(config);
-    const principal=await authService.authenticateSessionToken(token);
-    const {channel,...scope}=scopeFor(principal,input.accountId,Date.now(),input.action!=='revoke');
-    const owner=Object.freeze({...scope,connectionId:input.connectionId});
-    const authz=createLiveSessionAuthority({authService,gateway,governanceStore,sessionToken:()=>token,marketEntitlement:pilot.marketEntitlement});
+    let owner,authz;
+    if(funded){
+      owner=await funded.resolve(token,input.accountId,input.connectionId);
+      const resolve=async(s,purpose)=>{
+        const current=await funded.resolve(token,s.accountId,s.connectionId);
+        guard(isDeepStrictEqual(current,owner)&&isDeepStrictEqual(current,s));
+        return current;
+      };
+      authz={authorizeSession:resolve,authorizeMarket:async(s,w,purpose)=>{
+        await resolve(s,purpose);
+        if(await pilot.marketEntitlement(s,w,purpose)!==true)return false;
+        await resolve(s,purpose);return true;
+      }};
+    }else{
+      const principal=await authService.authenticateSessionToken(token);
+      const {channel,...scope}=scopeFor(principal,input.accountId,Date.now(),input.action!=='revoke');
+      owner=Object.freeze({...scope,connectionId:input.connectionId});
+      authz=createLiveSessionAuthority({authService,gateway,governanceStore,sessionToken:()=>token,marketEntitlement:pilot.marketEntitlement});
+    }
     const workspace=Object.freeze({symbol:input.symbol,timeframe:input.timeframe,includeChartContext:true});
     const binding={descriptorId:d.descriptorId,policyVersion:d.policyVersion,symbol:workspace.symbol,timeframe:workspace.timeframe};
     // A reconciliation witness is local to this authenticated request and
@@ -87,6 +104,17 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
     return {owner,workspace,binding,admission,allowed,recordUsage};
   }
   const runtime=Object.freeze({
+    async quotaPrincipal(token,input,principal){
+      if(!funded)return principal;
+      const s=await funded.resolve(token,input.accountId,input.connectionId);
+      return {tenantId:s.tenantId,userId:s.actorId};
+    },
+    async status(token,input){
+      const x=await context(token,input);await x.allowed('GRANT');
+      const key=hash(['consent',...['tenantId','actorId','sessionId','accountId','connectionId'].map(k=>x.owner[k])]);
+      const g=await LiveConsent.findById(key).read('primary').readConcern('majority').maxTimeMS(2000).lean();
+      return {revision:g?.revision??0,active:g?.active===true&&g.expiresAtMs>Date.now()&&g.descriptorId===d.descriptorId&&g.policyVersion===d.policyVersion&&g.symbol===input.symbol&&g.timeframe===input.timeframe,expiresAtMs:g?.expiresAtMs??null,model:d.modelId};
+    },
     async grant(token,input){
       const x=await context(token,input);await x.allowed('GRANT');
       return x.admission.grant(x.owner,{...x.binding,expectedRevision:input.expectedRevision,explicitConsent:input.explicitConsent,
@@ -109,14 +137,19 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
         authorize:async r=>isDeepStrictEqual(r,request)&&await allowed()});
       const engine=createResponseEngine({authorize:async r=>r.profile===q.profile&&isDeepStrictEqual(r.marketRequest,request)&&await allowed()});
       const chart=await assembler.assemble(request);
+      const sourceProvider=chart.instrument.provider;
+      const sourceApproved=async()=>!funded||await resolveDataRights({scope:x.owner,...x.binding,providerId:'openai',sourceProvider})===true;
+      guard(await sourceApproved());
       const {ticket,prompt}=await engine.prepare({scope,profile:q.profile,question:q.question,context:chart});
-      const transport=createLiveOpenAiTransport({config,admission:x.admission,authorizeExport:pilot.authorizeExport,
+      const body=buildBody(d,prompt);
+      const transport=createLiveOpenAiTransport({config,admission:x.admission,authorizeExport:async request=>
+        isDeepStrictEqual(request.payload,body)&&await sourceApproved()&&await pilot.authorizeExport(request),
         countUpperBound,recordUsage:x.recordUsage,verifyCandidate:({ticket,candidate})=>engine.verify({ticket,scope,candidate})});
       const result=await transport.run({scope:x.owner,workspace:x.workspace,prompt,ticket,operationId:input.operationId,
         authorizeMessage:allowed,signal});
       // A late revocation or pause suppresses a verified answer, not billing.
       if(result.state==='VERIFIED'){await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);}
-      return result;
+      return {...result,source:{provider:sourceProvider},workspace:x.workspace,operationId:input.operationId};
     }
   });
   runtimes.add(runtime);return runtime;
