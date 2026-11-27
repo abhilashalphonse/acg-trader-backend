@@ -72,7 +72,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
       const initial=original.messages.find(m=>m.messageId===x.messageId);
       if(!initial||initial.status!=='STORED_OFFLINE')throw deny('AI_CHAT_NOT_FOUND',404);
       const market=original.profile==='STRUCTURE'||original.profile==='MARKET_OVERVIEW';
-      if((market?original.workspace?.includeChartContext!==true:original.profile!=='EDUCATION'||original.workspace!==null)||original.selection?.fundingMode!=='BYO_API')throw deny('AI_CHAT_PROVIDER_DISABLED',403);
+      if((market?(original.workspace?.includeChartContext!==true||conversationProvider.marketEnabled!==true):original.profile!=='EDUCATION'||original.workspace!==null)||original.selection?.fundingMode!=='BYO_API')throw deny('AI_CHAT_PROVIDER_DISABLED',403);
       model(original.selection);
       // Fence against delete/recreate, expiry, message mutation, cancellation
       // and selection changes. Unrelated message appends do not invalidate a run.
