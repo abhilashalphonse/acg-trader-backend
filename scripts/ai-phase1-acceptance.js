@@ -136,7 +136,11 @@ async function main() {
     const {runPhase3VaultIntegration}=require('./ai-phase3-vault-integration');
     await runPhase3VaultIntegration({auth,token:ta,foreignToken:tb});
     const {runPhase4TransportIntegration}=require('./ai-phase4-transport-integration');
-    await runPhase4TransportIntegration({auth,gateway,gs,token:ta,foreignToken:tb,readRequest:req});
+    const gb=await send('/read/grants',tb,{accountId:b.id,toolIds:['account.valuation.read']});
+    assert.equal(gb.status,201);
+    await runPhase4TransportIntegration({auth,gateway,gs,token:ta,foreignToken:tb,readRequest:req,
+      marketTest:{token:tb,foreignToken:ta,readRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,
+        toolId:'account.valuation.read',args:{}},source:assertPhase2Denied.source,asOf:assertPhase2Denied.asOf}});
     const {runPhase3CreditIntegration}=require('./ai-phase3-credit-integration');
     await runPhase3CreditIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
     const {runPhase3PurchaseIntegration}=require('./ai-phase3-purchase-integration');
@@ -157,8 +161,6 @@ async function main() {
     console.log('PASS Phase 2 actual governance suspension/revision and grant revocation boundary');
     console.log('PASS control CAS, rollback, suspension, revocation and resume cannot restore revoked grant');
     // A current account grant is independently required, even if a session exists.
-    const gb=await send('/read/grants',tb,{accountId:b.id,toolIds:['account.valuation.read']});
-    assert.equal(gb.status,201);
     await AccountAccessGrant.updateOne({accountId:b.account._id,userId:b.user._id},{$set:{status:'REVOKED',revokedAt:new Date()}});
     assert.equal((await send('/read/invoke',tb,{...req,accountId:b.id,connectionId:gb.body.grant.connectionId})).status,403);
     // Revocation of the normal authenticated session must also deny AI access.
