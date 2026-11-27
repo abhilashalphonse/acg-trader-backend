@@ -33,3 +33,14 @@ test('fixed request and strict response parsing; malformed usage never accepted'
     assert.throws(()=>parseResponse(mutated,descriptor));
   assert.throws(()=>buildBody(descriptor,{...prompt,packageId:'f'.repeat(64)}));
 });
+
+test('completed usage with no answer preserves provider finish classification',()=>{
+  const raw={id:'fixture-response',model:fields.modelId,choices:[{index:0,finish_reason:'length',message:{role:'assistant',content:null}}],usage:{prompt_tokens:100,completion_tokens:512,total_tokens:612,completion_tokens_details:{reasoning_tokens:512}}};
+  const incomplete=parseResponse(raw,descriptor);
+  assert.equal(incomplete.candidate,null);assert.equal(incomplete.failureReason,'COMPLETION_LIMIT');
+  assert.equal(incomplete.usage.outputTokens,512);assert.equal(incomplete.usage.reasoningOutputTokens,512);
+  const refused=parseResponse({...raw,choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:null,refusal:'fixture'}}]},descriptor);
+  assert.equal(refused.candidate,null);assert.equal(refused.failureReason,'PROVIDER_REFUSED');
+  const completed=parseResponse({...raw,choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:'{}'}}]},descriptor);
+  assert.equal(completed.failureReason,null);assert.equal(completed.candidate,'{}');
+});

@@ -39,7 +39,8 @@ function parseResponse(raw,d){
     raw.usage.total_tokens===usage.inputTokens+usage.outputTokens&&usage.inputTokens<=d.maxInputTokens&&usage.outputTokens<=d.maxOutputTokens);
   const complete=choice.finish_reason==='stop'&&m.refusal==null;
   if(complete)requireTrue(typeof m.content==='string'&&m.content.trim()&&Buffer.byteLength(m.content)<=16384);
-  return {providerResponseId:raw.id,usage,candidate:complete?m.content:null};
+  return {providerResponseId:raw.id,usage,candidate:complete?m.content:null,
+    failureReason:complete?null:choice.finish_reason==='length'?'COMPLETION_LIMIT':'PROVIDER_REFUSED'};
 }
 // Shared bounded HTTP mechanics. Target is determined by the two internal
 // factories, never by a customer or caller-supplied URL.
@@ -152,11 +153,11 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
           descriptorId:d.descriptorId,...usage});
         requireTrue(settlement?.state==='SETTLED');recorded=true;
         await admission.assertDisclosure(scope,operationId);await check();
-        if(!parsed.candidate)return {state:'FAILED',usage};
+        if(!parsed.candidate)return {state:'FAILED',usage,...(workspaceChat?{failureReason:parsed.failureReason}: {})};
         if(workspaceChat){
-          let answer;try{answer=JSON.parse(parsed.candidate);}catch{return {state:'FAILED',usage};}
-          requireTrue(answer&&Object.keys(answer).length===1&&typeof answer.answer==='string'&&answer.answer.trim()&&
-            Buffer.byteLength(answer.answer,'utf8')<=12000);
+          let answer;try{answer=JSON.parse(parsed.candidate);}catch{return {state:'FAILED',usage,failureReason:'INVALID_ANSWER'};}
+          if(!(answer&&Object.keys(answer).length===1&&typeof answer.answer==='string'&&answer.answer.trim()&&
+            Buffer.byteLength(answer.answer,'utf8')<=12000))return {state:'FAILED',usage,failureReason:'INVALID_ANSWER'};
           await admission.assertDisclosure(scope,operationId);await check();
           return {state:'ANSWERED',answer:answer.answer.trim(),usage};
         }
@@ -168,7 +169,7 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
       }catch{
         if(began&&!recorded)try{await recordUsage({attemptId:claim.attemptId,kind:'UNKNOWN',descriptorId:d.descriptorId});}catch{}
         // Preserve ambiguous claims even when a socket was never opened.
-        return {state:recorded?'FAILED':'HELD_UNKNOWN'};
+        return {state:recorded?'FAILED':'HELD_UNKNOWN',...(workspaceChat?{failureReason:recorded?'DELIVERY_UNAVAILABLE':'OUTCOME_UNKNOWN'}:{})};
       }
     }
   });
