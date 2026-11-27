@@ -18,6 +18,7 @@ function createIsolatedConversationProvider({registry,store,crypto,transport,adm
   assertIsolated();
   const budget=createOfflineBudget({policies:{BYO_API:policy,ACG_CREDITS:policy}});
   return Object.freeze({
+    marketEnabled:typeof marketSource?.instrument==='function'&&typeof marketSource?.candles==='function',
     async run({scope,selection,profile,workspace=null,question,operationId,authorize}){
       assertIsolated();
       const market=profile==='STRUCTURE'||profile==='MARKET_OVERVIEW';
@@ -58,6 +59,14 @@ function createIsolatedConversationProvider({registry,store,crypto,transport,adm
         u.status!=='PROVIDER_REPORTED'||!Number.isSafeInteger(u.inputTokens)||!Number.isSafeInteger(u.outputTokens)||
         receipt.budget?.status!=='ACCOUNTED_OFFLINE'||Date.now()>=r.expiresAtMs||!await permitted())
         throw deny('AI_CHAT_PROVIDER_UNVERIFIED');
+      // The first market response UI supports only the existing bounded fact
+      // and break-history contract. Reject unsupported selections, not silently
+      // truncate or substitute them. No price or quote is current/executable.
+      const factKinds=new Set(['LAST_CLOSED_PRICE','OBSERVED_RANGE_HIGH','OBSERVED_RANGE_LOW','SMA_20','MEAN_TRUE_RANGE_14','CONFIRMED_SWING_HIGH','CONFIRMED_SWING_LOW']);
+      if(market&&(r.education.length||r.observations.length>8||r.interpretations.length>1||
+        r.observations.some(o=>o.type!=='FACT'||o.timeframe!==workspace.timeframe||!factKinds.has(o.data.kind)||o.data.unit!=='price')||
+        r.interpretations.some(i=>i.code!=='BREAK_HISTORY'||i.reference.type!=='STRUCTURE_SUMMARY'||i.reference.timeframe!==workspace.timeframe)||
+        !['ANSWER','INSUFFICIENT_EVIDENCE'].includes(r.status)))return {state:'FAILED'};
       // Persist only independently verified reference IDs and fixture usage,
       // never the candidate or generated prose. Freshness is separate from
       // historical persistence and is checked again by the caller.
