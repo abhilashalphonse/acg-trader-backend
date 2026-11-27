@@ -14,7 +14,7 @@ const authority=z.object({accountId:id,connectionId:z.uuid()}).strict();
 const selection=z.object({providerId:z.enum(['openai','anthropic','gemini','deepseek','openrouter']),
   modelId:z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/),
   descriptorId:z.string().regex(/^[a-f0-9]{64}$/),fundingMode:z.enum(['BYO_API','ACG_CREDITS'])}).strict();
-const preflight=authority.extend({selection,profile:z.literal('EDUCATION')}).strict();
+const preflight=authority.extend({selection,profile:z.enum(['EDUCATION','MARKET_OVERVIEW','STRUCTURE']),workspace:schemas.create.shape.workspace}).strict();
 const deny=(code,statusCode=403)=>new AppError('AI chat request denied',{code,statusCode});
 const parse=(schema,value)=>{const p=schema.safeParse(value);if(!p.success)throw deny('AI_INVALID_REQUEST',400);return p.data;};
 const scopeEqual=(a,b)=>['tenantId','actorId','sessionId','accountId'].every(k=>a[k]===b[k]);
@@ -22,7 +22,7 @@ const contractVersion='native-chat-v1';
 // This API is an isolated contract rehearsal, not a production route.
 // Optional bounded conversation storage and local TLS fixture only; no public provider, pricing or orders.
 function createIsolatedChatRouter({authService,gateway,governance,quota,authorizePurpose,
-  registry=createModelRegistry(),conversations=null,fixtureProviderEnabled=false,now=Date.now}={}){
+  registry=createModelRegistry(),conversations=null,fixtureProviderEnabled=false,workspaceAnalysisEnabled=false,now=Date.now}={}){
   assertIsolated();
   if(typeof authService?.authenticateSessionToken!=='function'||typeof gateway?.assertDisclosure!=='function'||
     typeof governance?.run!=='function'||typeof quota?.consume!=='function'||typeof authorizePurpose!=='function'||
@@ -82,18 +82,22 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
     }
     return {contractVersion,registryVersion:REGISTRY_VERSION,runtimeEnabled:false,sendEnabled:false,
       fixtureProviderEnabled:fixtureProviderEnabled===true&&conversations!==null,
+      workspaceAnalysisEnabled:workspaceAnalysisEnabled===true&&conversations!==null,
       providers:registry.providers().map(p=>({id:p.id,name:p.name,integrationStatus:'PLANNED',runtimeEnabled:false})),
       rehearsalOptions:options,fundingModes:[{id:'BYO_API',runtimeEnabled:false},{id:'ACG_CREDITS',runtimeEnabled:false}],
-      profiles:[{id:'EDUCATION',rehearsalOnly:true}],maxQuestionBytes:4096};
+      profiles:[{id:'EDUCATION',rehearsalOnly:true},...(workspaceAnalysisEnabled===true&&conversations!==null?
+        ['MARKET_OVERVIEW','STRUCTURE'].map(id=>({id,rehearsalOnly:true,requiresChartConsent:true})):[])],maxQuestionBytes:4096};
   }));
   router.post('/preflight',audited('CHAT_PREFLIGHT_OFFLINE',preflight,async(input,permit)=>{
     const s=input.selection;
     if(s.fundingMode!=='BYO_API')throw deny('AI_CHAT_FUNDING_DISABLED');
     let d;try{d=registry.resolveForOfflineTest(s);}catch{throw deny('AI_CHAT_MODEL_UNAVAILABLE',409);}
     if(s.descriptorId!==d.descriptorId)throw deny('AI_CHAT_MODEL_CHANGED',409);
-    await permit(s,input.profile);
+    if((input.profile==='EDUCATION')===Boolean(input.workspace))throw deny('AI_WORKSPACE_INVALID',400);
+    if(input.workspace&&(workspaceAnalysisEnabled!==true||conversations===null))throw deny('AI_WORKSPACE_DISABLED');
+    await permit(s,input.profile,input.workspace??null);
     return {contractVersion,status:'VALIDATED_OFFLINE_ONLY',runtimeEnabled:false,sendEnabled:false,
-      selection:s,profile:input.profile,dispatchAllowed:false,creditDeducted:false};
+      selection:s,profile:input.profile,...(input.workspace?{workspace:input.workspace}:{}),dispatchAllowed:false,creditDeducted:false};
   }));
   if(conversations!==null){
     if(typeof conversations.execute!=='function')throw deny('AI_CHAT_CONFIG',503);
