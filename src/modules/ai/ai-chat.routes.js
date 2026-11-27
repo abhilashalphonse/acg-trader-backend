@@ -8,6 +8,7 @@ const {scopeFor}=require('./ai-read-gateway');
 const {assertIsolated}=require('./providers/credit-ledger-store');
 const {createModelRegistry,REGISTRY_VERSION}=require('./providers/model-registry');
 const {freeze}=require('./intelligence/candle-evidence');
+const {schemas}=require('./ai-conversations');
 const id=z.string().regex(/^[a-f0-9]{24}$/);
 const authority=z.object({accountId:id,connectionId:z.uuid()}).strict();
 const selection=z.object({providerId:z.enum(['openai','anthropic','gemini','deepseek','openrouter']),
@@ -21,20 +22,20 @@ const contractVersion='native-chat-v1';
 // This API is an isolated contract rehearsal, not a production route.
 // No prompt, message history, credential, provider transport, pricing or order API.
 function createIsolatedChatRouter({authService,gateway,governance,quota,authorizePurpose,
-  registry=createModelRegistry(),now=Date.now}={}){
+  registry=createModelRegistry(),conversations=null,now=Date.now}={}){
   assertIsolated();
   if(typeof authService?.authenticateSessionToken!=='function'||typeof gateway?.assertDisclosure!=='function'||
     typeof governance?.run!=='function'||typeof quota?.consume!=='function'||typeof authorizePurpose!=='function'||
     typeof registry?.models!=='function'||typeof registry?.providers!=='function')throw deny('AI_CHAT_CONFIG',503);
   const router=express.Router(),admit=createConcurrencyGate(8);
-  router.use(aiJsonBoundary());
+  router.use(aiJsonBoundary({maxStringLength:conversations?4096:512}));
   router.use((_req,_res,next)=>{try{assertIsolated();next();}catch(e){next(e);}});
   router.use(requireTraderSession(authService));
   const audited=(operation,schema,work)=>async(req,res)=>{
     const result=await admit(async()=>{
       const principal=req.traderPrincipal;
       await quota.consume(principal);
-      let scope,readRequest,disclosures=[];
+      let scope,readRequest,disclosures=[],fences=[];
       async function check(selection=null,profile=null){
         const fresh=await authService.authenticateSessionToken(bearerToken(req));
         if(!scopeEqual(scope,scopeFor(fresh,readRequest.accountId,now())))throw deny('AI_SCOPE_CHANGED');
@@ -51,11 +52,12 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
         scope=scopeFor(principal,input.accountId,now());
         readRequest=freeze({accountId:input.accountId,connectionId:input.connectionId,toolId:'account.valuation.read',args:{}});
         await check();
-        const value=await work(input,async(s,p)=>{await check(s,p);disclosures.push([s,p]);});
+        const value=await work(input,async(s,p)=>{await check(s,p);disclosures.push([s,p]);},scope,f=>fences.push(f));
         return freeze(value);
       },async()=>{
         await check();
         for(const [s,p] of disclosures)await check(s,p);
+        for(const fence of fences)await fence();
       });
     });
     res.status(200).json(result);
@@ -88,6 +90,18 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
     return {contractVersion,status:'VALIDATED_OFFLINE_ONLY',runtimeEnabled:false,sendEnabled:false,
       selection:s,profile:input.profile,dispatchAllowed:false,creditDeducted:false};
   }));
+  if(conversations!==null){
+    if(typeof conversations.execute!=='function')throw deny('AI_CHAT_CONFIG',503);
+    for(const op of Object.keys(schemas)){
+      router.post('/conversations/'+op,audited('CHAT_'+op.toUpperCase()+'_OFFLINE',
+        authority.extend(schemas[op].shape).strict(),async(input,permit,scope,addFence)=>{
+          const {accountId:ignoredAccount,connectionId:ignoredConnection,...payload}=input;
+          const result=await conversations.execute(scope,op,payload,permit);
+          if(result.fence)addFence(result.fence);
+          return {contractVersion,runtimeEnabled:false,...result.value};
+        }));
+    }
+  }
   router.use(aiSafeError);
   return router;
 }
