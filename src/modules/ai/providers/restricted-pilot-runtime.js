@@ -7,7 +7,7 @@ const {LivePlatform,LiveControl,LiveConsent}=require('./live-admission.model');
 const {createLiveRuntimeConfig,assertLiveRuntime,createLiveSessionAuthority}=require('./live-runtime-config');
 const {createRestrictedPilotPolicy,createPersonalDemoPilotAccountResolver}=require('./restricted-pilot-policy');
 const {createProviderUsageRecorder}=require('./provider-billing-reconciliation');
-const {createLiveOpenAiTransport}=require('./live-openai-transport');
+const {createLiveOpenAiTransport,buildBody}=require('./live-openai-transport');
 const {createMarketContextSource}=require('../intelligence/context-source');
 const {createTrustedContextAssembler}=require('../intelligence/trusted-context');
 const {createResponseEngine}=require('../intelligence/response-engine');
@@ -137,14 +137,19 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
         authorize:async r=>isDeepStrictEqual(r,request)&&await allowed()});
       const engine=createResponseEngine({authorize:async r=>r.profile===q.profile&&isDeepStrictEqual(r.marketRequest,request)&&await allowed()});
       const chart=await assembler.assemble(request);
+      const sourceProvider=chart.instrument.provider;
+      const sourceApproved=async()=>!funded||await resolveDataRights({scope:x.owner,...x.binding,providerId:'openai',sourceProvider})===true;
+      guard(await sourceApproved());
       const {ticket,prompt}=await engine.prepare({scope,profile:q.profile,question:q.question,context:chart});
-      const transport=createLiveOpenAiTransport({config,admission:x.admission,authorizeExport:pilot.authorizeExport,
+      const body=buildBody(d,prompt);
+      const transport=createLiveOpenAiTransport({config,admission:x.admission,authorizeExport:async request=>
+        isDeepStrictEqual(request.payload,body)&&await sourceApproved()&&await pilot.authorizeExport(request),
         countUpperBound,recordUsage:x.recordUsage,verifyCandidate:({ticket,candidate})=>engine.verify({ticket,scope,candidate})});
       const result=await transport.run({scope:x.owner,workspace:x.workspace,prompt,ticket,operationId:input.operationId,
         authorizeMessage:allowed,signal});
       // A late revocation or pause suppresses a verified answer, not billing.
       if(result.state==='VERIFIED'){await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);}
-      return result;
+      return {...result,source:{provider:sourceProvider},workspace:x.workspace,operationId:input.operationId};
     }
   });
   runtimes.add(runtime);return runtime;
