@@ -166,18 +166,18 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
     // Reconciliation runs independently of consent, session expiry and pause.
     // An authenticated, separately authorized billing worker supplies evidence.
     // Unknown usage stays reserved; never release a dispatch on timeout.
-    async reconcile(actor,{attemptId:key,kind,evidenceId,inputTokens,outputTokens}){
-      check(id(actor?.tenantId)&&id(actor?.actorId)&&hex(key)&&['UNKNOWN','SETTLE','NOT_SENT'].includes(kind)&&hex(evidenceId));
-      check(await authorizeReconciliation(actor,key,kind,evidenceId,Object.freeze({inputTokens,outputTokens}))===true,'LIVE_AI_RECONCILE_DENIED');
-      return tx(async session=>{check(await authorizeReconciliation(actor,key,kind,evidenceId,Object.freeze({inputTokens,outputTokens}))===true,'LIVE_AI_RECONCILE_DENIED');
+    async reconcile(actor,{attemptId:key,kind,evidenceId,inputTokens,outputTokens,providerResponseHash}){
+      check(id(actor?.tenantId)&&id(actor?.actorId)&&hex(key)&&['UNKNOWN','SETTLE','NOT_SENT'].includes(kind)&&hex(evidenceId)&&(providerResponseHash===undefined||kind==='SETTLE'&&hex(providerResponseHash)));
+      check(await authorizeReconciliation(actor,key,kind,evidenceId,Object.freeze({inputTokens,outputTokens,providerResponseHash}))===true,'LIVE_AI_RECONCILE_DENIED');
+      return tx(async session=>{check(await authorizeReconciliation(actor,key,kind,evidenceId,Object.freeze({inputTokens,outputTokens,providerResponseHash}))===true,'LIVE_AI_RECONCILE_DENIED');
         const a=await get(A,key,session);check(a?.tenantId===actor.tenantId,'LIVE_AI_RECONCILE_DENIED');
         const state=kind==='SETTLE'?'SETTLED':kind==='UNKNOWN'?'HELD_UNKNOWN':'NOT_SENT';
-        if(a.state===state){check(a.evidenceId===evidenceId&&(kind!=='SETTLE'||a.inputTokens===inputTokens&&a.outputTokens===outputTokens),'LIVE_AI_CHANGED');return {state,actualPicoUsd:a.actualPicoUsd};}
+        if(a.state===state){check(a.evidenceId===evidenceId&&(kind!=='SETTLE'||a.inputTokens===inputTokens&&a.outputTokens===outputTokens&&a.providerResponseHash===providerResponseHash),'LIVE_AI_CHANGED');return {state,actualPicoUsd:a.actualPicoUsd};}
         check(kind==='NOT_SENT'?a.state==='CLAIMED':kind==='UNKNOWN'?a.state==='DISPATCHING':['DISPATCHING','HELD_UNKNOWN'].includes(a.state),'LIVE_AI_RECONCILE_DENIED');
         let actual=null;const fields={state,evidenceId,updatedAtMs:clock()};
         if(kind==='SETTLE'){check(within(inputTokens,0,a.maxInputTokens)&&within(outputTokens,0,a.maxOutputTokens),'LIVE_AI_USAGE_UNVERIFIED');
           actual=cost(inputTokens,outputTokens,a.inputRatePicoUsd,a.outputRatePicoUsd);check(actual<=a.reservedPicoUsd,'LIVE_AI_USAGE_UNVERIFIED');
-          Object.assign(fields,{inputTokens,outputTokens,actualPicoUsd:actual});await release(a,actual,session);}
+          Object.assign(fields,{inputTokens,outputTokens,actualPicoUsd:actual,...(providerResponseHash?{providerResponseHash}:{})});await release(a,actual,session);}
         if(kind==='NOT_SENT'){actual=0;fields.actualPicoUsd=0;await release(a,0,session);}
         await patch(A,{_id:key,state:a.state},fields,session);await event(session,actor,kind,key,a.controlRevision,fields.updatedAtMs);return {state,actualPicoUsd:actual};});
     }
