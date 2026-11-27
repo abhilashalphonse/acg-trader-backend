@@ -12,7 +12,7 @@ function parseSizingQuestion(question,symbol){
   // a named selected instrument (or unambiguous current-chart wording).
   const rates=[...question.matchAll(/(?:^|[^\d.])(\d{1,3}(?:\.\d{1,6})?)\s*%/g)];
   const stops=[...question.matchAll(/(?:^|[^\d.])(\d{1,5}(?:\.\d{1,6})?)\s*[- ]?\s*pips?\b/gi)];
-  if(rates.length!==1||stops.length!==1||!/\b(?:stop loss|stop-loss|SL)\b/i.test(question))return {status:'NEEDS_EXPLICIT_RISK_AND_STOP'};
+  if(/[-−]\s*\d+(?:\.\d+)?\s*(?:%|[- ]?\s*pips?\b)/i.test(question)||rates.length!==1||stops.length!==1||!/\b(?:stop loss|stop-loss|SL)\b/i.test(question))return {status:'NEEDS_EXPLICIT_RISK_AND_STOP'};
   const names=[...question.matchAll(/\b[A-Z][A-Z0-9]{4,11}\b/g)].map(m=>m[0]);
   if(names.some(x=>x!==symbol)||(!names.includes(symbol)&&!/\b(?:current chart|current instrument|selected instrument)\b/i.test(question)))return {status:'NEEDS_SELECTED_SYMBOL'};
   const balance=/\bbalance\b/i.test(question),equity=/\bequity\b/i.test(question);
@@ -39,7 +39,8 @@ function sizingEvidence({question,market,account}){
     const lossPerLot=multiplyDecimal(stopDistance,contract);
     const theoreticalLots=divideDecimal(plannedRisk,lossPerLot,{scale:12,rounding:ROUNDING.DOWN});
     const cap=positive(account.riskPolicy?.maxPositionVolume);
-    const riskLimitedLots=quantizeToStep(min(theoreticalLots,maxVolume,...(cap?[cap]:[])),step,ROUNDING.DOWN);
+    const riskRounded=quantizeToStep(min(theoreticalLots,maxVolume,...(cap?[cap]:[])),step,ROUNDING.DOWN);
+    const riskLimitedLots=compareDecimal(riskRounded,minVolume)<0?'0':riskRounded;
     const result={...base,status:'PRE_COST_ESTIMATE',riskPercent,stopPips,basis,capital,plannedRisk,stopDistance,
       pipSize:pip,contractSize:contract,lossPerLot,volumeStep:step,minVolume,maxVolume,accountCurrency:account.currency,
       theoreticalLots,riskLimitedLots,estimatedStopLoss:multiplyDecimal(lossPerLot,riskLimitedLots),
