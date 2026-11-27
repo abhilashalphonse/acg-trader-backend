@@ -4,7 +4,7 @@ const {randomUUID}=require('node:crypto');
 const {scopeFor}=require('../src/modules/ai/ai-read-gateway');
 const {assertIsolated}=require('../src/modules/ai/providers/credit-ledger-store');
 const {createLiveAdmission}=require('../src/modules/ai/providers/live-admission');
-const {LiveAttempt,LiveBudget,LiveEvent}=require('../src/modules/ai/providers/live-admission.model');
+const {LiveAttempt,LiveBudget,LiveEvent,LivePlatform,LivePlatformDay}=require('../src/modules/ai/providers/live-admission.model');
 async function runLiveReadiness({auth,gateway,token,foreignToken,readRequest,foreignReadRequest}){
   assertIsolated();
   const principal=await auth.authenticateSessionToken(token);
@@ -27,12 +27,15 @@ async function runLiveReadiness({auth,gateway,token,foreignToken,readRequest,for
     // These are synthetic administrator, entitlement and billing policies.
     // Real production authorization adapters must be reviewed separately.
     authorizeMarket:async (_scope,w)=>w.descriptorId===descriptorId&&w.policyVersion===policyVersion&&w.symbol==='XAUUSD'&&w.timeframe==='1m',
+    authorizePlatformAdmin:async a=>!denyAdmin&&a.tenantId===admin.tenantId&&a.actorId===admin.actorId,
     authorizeAdmin:async a=>!denyAdmin&&a.tenantId===admin.tenantId&&a.actorId===admin.actorId,
     authorizeReconciliation:async a=>!denyBilling&&a.tenantId===admin.tenantId&&a.actorId===admin.actorId,
     resolvePrice:async d=>d===descriptorId?price:null
   });}
   const one=service(),two=service();await one.provision();
   const limits={tenantDailyPicoUsd:1000,actorDailyPicoUsd:600,tenantDailyRequests:4,actorDailyRequests:3};
+  const global={dailyPicoUsd:10000000,dailyRequests:100,maxOutstandingPicoUsd:10000000,maxOutstandingRequests:10};
+  await one.setPlatformControl(admin,{...global,enabled:true,expectedRevision:0});
   const config={descriptorId,policyVersion,symbol:'XAUUSD',timeframe:'1m'};
   const grant=(expectedRevision=0)=>({...config,expectedRevision,explicitConsent:true,expiresAtMs:clock+60000});
   const request=(operationId=randomUUID(),consentRevision=1)=>({...config,operationId,consentRevision,maxInputTokens:2,maxOutputTokens:1});
@@ -84,6 +87,38 @@ async function runLiveReadiness({auth,gateway,token,foreignToken,readRequest,for
   const rows=await LiveEvent.find({tenantId:s.tenantId}).lean();
   assert.ok(rows.some(r=>r.kind==='UNKNOWN'));assert.ok(rows.some(r=>r.kind==='CONTROL'));
   assert.ok(rows.every(r=>!Object.hasOwn(r,'prompt')&&!Object.hasOwn(r,'secret')));
+  // Two independent tenant authorities contend for a single platform budget.
+  const foreign={...b,tenantId:'f'.repeat(24)},foreignAdmin={tenantId:foreign.tenantId,actorId:foreign.actorId};
+  const third=createLiveAdmission({now:()=>clock,authorizeSession:async()=>foreign,
+    authorizeMarket:async()=>true,authorizeAdmin:async a=>a.tenantId===foreign.tenantId&&a.actorId===foreign.actorId,
+    authorizePlatformAdmin:async()=>false,authorizeReconciliation:async a=>a.tenantId===foreign.tenantId&&a.actorId===foreign.actorId,
+    resolvePrice:async d=>d===descriptorId?price:null});
+  await code(third.setPlatformControl(foreignAdmin,{...global,enabled:false,expectedRevision:1}),'LIVE_AI_PLATFORM_ADMIN_DENIED');
+  await third.setControl(foreignAdmin,{...limits,expectedRevision:0,enabled:true});
+  const tight={...global,dailyPicoUsd:2000,maxOutstandingPicoUsd:400,maxOutstandingRequests:1};
+  await one.setPlatformControl(admin,{...tight,enabled:true,expectedRevision:1});
+  const before=await LivePlatform.findById('platform').lean();
+  assert.equal(before.outstandingRequests,0);
+  await one.grant(s,grant(2));await third.grant(foreign,grant());
+  const reqA=request(randomUUID(),3),reqB=request();
+  const cross=await Promise.allSettled([one.claim(s,reqA),third.claim(foreign,reqB)]);
+  assert.equal(cross.filter(x=>x.status==='fulfilled').length,1);
+  const winner=cross.findIndex(x=>x.status==='fulfilled');
+  const winnerService=winner===0?one:third,winnerActor=winner===0?admin:foreignAdmin,winnerScope=winner===0?s:foreign,winnerReq=winner===0?reqA:reqB;
+  const claimed=cross[winner].value;
+  await winnerService.beginDispatch(winnerScope,winnerReq.operationId);
+  await winnerService.reconcile(winnerActor,{attemptId:claimed.attemptId,kind:'UNKNOWN',evidenceId});
+  clock+=86400000;
+  await one.grant(s,grant(3));await third.grant(foreign,grant(1));
+  await code(third.claim(foreign,request(randomUUID(),2)),'LIVE_AI_PLATFORM_LIMIT');
+  await winnerService.reconcile(winnerActor,{attemptId:claimed.attemptId,kind:'SETTLE',evidenceId,inputTokens:1,outputTokens:1});
+  assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
+  assert.ok(await LivePlatformDay.countDocuments({})>=1);
+  await one.setPlatformControl(admin,{...global,enabled:false,expectedRevision:2});
+  await code(third.claim(foreign,request(randomUUID(),2)),'LIVE_AI_PLATFORM_PAUSED');
+  await one.setPlatformControl(admin,{...global,enabled:true,expectedRevision:3});
+  await code(third.claim(foreign,request(randomUUID(),2)),'LIVE_AI_CONSENT_REQUIRED');
+  console.log('PASS platform-wide cross-tenant budget race, cross-day uncertain exposure and global pause fencing');
   console.log('PASS live readiness real Mongo transactional admission, auth scope, revocable consent, multi-instance duplicate and budget protection, unknown hold, reconciliation, pause and resume fencing');
 }
 module.exports={runLiveReadiness};
