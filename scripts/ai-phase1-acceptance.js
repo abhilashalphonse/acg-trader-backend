@@ -133,19 +133,25 @@ async function main() {
     // Phase 2 synthetic entitlement + real database source; no public runtime registration.
     const {runPhase2Integration}=require('./ai-phase2-integration');
     const assertPhase2Denied=await runPhase2Integration({auth,gateway,gs,token:ta,readRequest:req,foreignToken:tb});
+    const {runPhase3VaultIntegration}=require('./ai-phase3-vault-integration');
+    await runPhase3VaultIntegration({auth,token:ta,foreignToken:tb});
+    const {runPhase3CreditIntegration}=require('./ai-phase3-credit-integration');
+    await runPhase3CreditIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
+    const {runPhase3PurchaseIntegration}=require('./ai-phase3-purchase-integration');
+    await runPhase3PurchaseIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
     // Verify transactional governance compare-and-swap and rollback.
     const race=await Promise.allSettled([0,1].map(()=>gs.updateControl({tenantId:tid,actorId:'fixture',expectedRevision:1,enabled:false,reason:'INCIDENT_RESPONSE'})));
     assert.equal(race.filter(x=>x.status==='fulfilled').length,1);
     assert.equal(race.find(x=>x.status==='rejected').reason.code,'AI_CONTROL_CONFLICT');
     assert.equal((await gs.control(tid)).revision,2);
-    await assertPhase2Denied();
+    await assertPhase2Denied('PAUSED');
     await assert.rejects(gs.updateControl({tenantId:tid,actorId:'fixture',expectedRevision:2,enabled:true,reason:'x'.repeat(65)}));
     assert.deepEqual(await gs.control(tid).then(c=>({enabled:c.enabled,revision:c.revision})),{enabled:false,revision:2});
     assert.equal((await send('/read/invoke',ta,req)).status,403);
     assert.equal((await send('/read/grants/revoke',ta,{accountId:a.id,connectionId:grant.connectionId})).body.revoked,true);
     await gs.updateControl({tenantId:tid,actorId:'fixture',expectedRevision:2,enabled:true,reason:'PILOT_APPROVAL'});
     assert.equal((await send('/read/invoke',ta,req)).status,403);
-    await assertPhase2Denied();
+    await assertPhase2Denied('REVOKED');
     console.log('PASS Phase 2 actual governance suspension/revision and grant revocation boundary');
     console.log('PASS control CAS, rollback, suspension, revocation and resume cannot restore revoked grant');
     // A current account grant is independently required, even if a session exists.
@@ -156,7 +162,7 @@ async function main() {
     // Revocation of the normal authenticated session must also deny AI access.
     await TraderSession.updateOne({_id:b.session.session.id},{$set:{revokedAt:new Date()}});
     assert.equal((await send('/read/invoke',tb,{...req,accountId:b.id,connectionId:gb.body.grant.connectionId})).status,401);
-    const audit=await send('/admin/audit',admin.apiKey,undefined,'GET',admin.clientId);
+    const audit=await send('/admin/audit?limit=100',admin.apiKey,undefined,'GET',admin.clientId);
     assert.equal(audit.status,200);
     assert.ok(audit.body.events.some(e=>e.stage==='DENIED'&&e.reason==='AI_FINANCIAL_BOUNDARY_DENIED'));
     assert.ok(audit.body.events.every(e=>e.tenantId===tid));

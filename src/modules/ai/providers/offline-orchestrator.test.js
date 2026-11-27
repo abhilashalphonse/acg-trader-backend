@@ -1,0 +1,305 @@
+'use strict';
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {randomUUID}=require('node:crypto');
+const {createModelRegistry}=require('./model-registry');
+const {createResponseEngine}=require('../intelligence/response-engine');
+const {createOfflineOrchestrator}=require('./offline-orchestrator');
+const {createPricingRegistry}=require('./compute-pricing');
+const {createOfflineBudget}=require('./compute-budget');
+const {createOfflineEducationCache}=require('./education-cache');
+const {normalizeFixtureResponse}=require('./provider-response');
+const {normalizeOfflineOutcome,CONTRACT_VERSION}=require('./provider-contract');
+const scope={tenantId:'a'.repeat(24),actorId:'b'.repeat(24),sessionId:'c'.repeat(24),accountId:'d'.repeat(24)};
+const selection={providerId:'openai',modelId:'offline-fixture-v1',fundingMode:'BYO_API'};
+const nowMs=Date.UTC(2026,0,1);
+const usage={status:'PROVIDER_REPORTED',inputTokens:100,outputTokens:30,cachedInputTokens:null,reasoningOutputTokens:null};
+const input=(extra={})=>({idempotencyKey:randomUUID(),scope,selection,profile:'EDUCATION',question:'Explain BOS.',
+  inputTokenUpperBound:4096,maxOutputTokens:1024,timeoutMs:5000,...extra});
+function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
+const candidate=q=>JSON.stringify({schemaVersion:'candidate-response-v2',status:'ANSWER',observations:[],interpretations:[],
+  education:[{knowledgeId:q.request.data.knowledge.entries.find(k=>k.id==='MARKET_STRUCTURE').knowledgeId}]});
+function output(q,extra={}){
+  return normalizeOfflineOutcome(q,{requestId:q.requestId,providerId:q.providerId,modelId:q.modelId,descriptorId:q.descriptorId,
+    status:'COMPLETED',candidate:candidate(q),usage,errorCode:'NONE',...extra});
+}
+function setup({generate=async q=>output(q),authorize=async()=>true,engineAuthorize=async()=>true,options={},now=()=>nowMs}={}){
+  let calls=0;
+  const descriptor={providerId:selection.providerId,modelId:selection.modelId,revision:'test-1',
+    reviewStatus:'SYNTHETIC_TEST_ONLY',fundingModes:['BYO_API','ACG_CREDITS'],
+    capabilities:{input:'TEXT',responseMode:'JSON_SCHEMA',separateInstructionChannel:true,streaming:true,
+      usageReporting:'PROVIDER_REPORTED',maxContextTokens:8192,maxOutputTokens:2048}};
+  const registry=createModelRegistry({descriptors:[descriptor],allowSynthetic:true});
+  const model=registry.resolveForOfflineTest(selection);
+  const pricingRegistry=createPricingRegistry({allowSynthetic:true,prices:[{
+    providerId:model.providerId,modelId:model.modelId,descriptorId:model.descriptorId,revision:'fixture-price-1',
+    effectiveFromMs:nowMs-1,effectiveUntilMs:null,currency:'USD',rateUnit:'MICRO_USD_PER_MILLION_TOKENS',
+    reviewStatus:'SYNTHETIC_TEST_ONLY',source:'OFFLINE_FIXTURE',additionalFees:'NONE_SYNTHETIC',
+    input:{standard:'1000000',cacheRead:null,cacheWriteMode:'NONE',cacheWrite:null,cacheWrite5m:null,cacheWrite1h:null},
+    output:{standard:'2000000',reasoning:null}}]});
+  const responseEngine=createResponseEngine({authorize:engineAuthorize,now});
+  const adapter={contractVersion:CONTRACT_VERSION,executionMode:'OFFLINE_TEST_ONLY',
+    providerId:selection.providerId,modelId:selection.modelId,
+    async generate(q,opts){calls++;return generate(q,opts);}};
+  const service=createOfflineOrchestrator({registry,responseEngine,adapters:[adapter],authorize,now,pricingRegistry,...options});
+  return {service,calls:()=>calls};
+}
+test('explicit provider and funding selection, real Phase 2 verification and receipt-only replay',async()=>{
+  const {service,calls}=setup(),x=input();
+  const r=await service.run(x);
+  assert.equal(r.receipt.status,'COMPLETED');assert.equal(r.receipt.dispatch,'OUTCOME_RECEIVED');
+  assert.equal(r.receipt.fundingMode,'BYO_API');assert.equal(r.receipt.usage.totalTokens,130);
+  assert.equal(r.response.education[0].id,'MARKET_STRUCTURE');
+  assert.equal(r.receipt.usageDisposition,'UNSETTLED');
+  const replay=await service.run({...x,idempotencyKey:x.idempotencyKey.toUpperCase()});
+  assert.equal(replay.replayed,true);assert.equal(replay.response,null);
+  assert.deepEqual(replay.receipt,r.receipt);assert.equal(calls(),1);
+  const receipt=await service.status(scope,x.idempotencyKey);
+  assert.deepEqual(receipt,r.receipt);assert.ok(!JSON.stringify(receipt).includes(x.question));
+  await assert.rejects(service.run({...x,question:'A different question'}),{code:'IDEMPOTENCY_CONFLICT'});
+  await assert.rejects(service.run({...x,scope:{...scope,accountId:'e'.repeat(24)}}),{code:'ORCHESTRATOR_FORBIDDEN'});
+  await assert.rejects(service.status({...scope,actorId:'e'.repeat(24)},x.idempotencyKey),{code:'ORCHESTRATOR_FORBIDDEN'});
+  const c=await service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(c.receipt.fundingMode,'ACG_CREDITS');assert.equal(calls(),2);
+  assert.equal(r.receipt.metering.costPicoUsd,'160000000');
+  assert.equal(r.receipt.metering.proposedCreditDebitPicoUsd,'0');
+  assert.equal(c.receipt.metering.proposedCreditDebitPicoUsd,'160000000');
+  assert.equal(c.receipt.metering.creditDeducted,false);
+});
+test('concurrent identical requests dispatch at most once; owner and global admission bounds',async()=>{
+  const started=deferred(),hold=deferred();
+  const {service,calls}=setup({generate:async q=>{started.resolve();await hold.promise;return output(q);},
+    options:{maxActive:2,maxPerOwner:2,maxPerTenant:2}});
+  const x=input(),p=service.run(x);await started.promise;
+  const duplicate=await service.run(x);assert.equal(duplicate.replayed,true);
+  assert.equal(duplicate.receipt.status,'DISPATCHED');assert.equal(duplicate.response,null);
+  const y=service.run(input());
+  // Admission occurs synchronously before the first await.
+  await assert.rejects(service.run(input()),{code:'ORCHESTRATOR_BUSY'});
+  await assert.rejects(service.run(input({scope:{...scope,tenantId:'e'.repeat(24)}})),{code:'ORCHESTRATOR_BUSY'});
+  hold.resolve();const results=await Promise.all([p,y]);
+  assert.ok(results.every(v=>v.receipt.status==='COMPLETED'));assert.equal(calls(),2);
+});
+test('cancellation after dispatch preserves ambiguity and holds slot until adapter settles',async()=>{
+  const started=deferred(),hold=deferred(),finished=deferred();
+  const {service,calls}=setup({generate:async(q,{signal})=>{
+    started.resolve(signal);await hold.promise;finished.resolve();return output(q);
+  },options:{maxActive:1,maxPerOwner:1,maxPerTenant:1}});
+  const x=input(),p=service.run(x),signal=await started.promise;
+  await service.cancel(scope,x.idempotencyKey);
+  const result=await p;
+  assert.equal(signal.aborted,true);assert.equal(result.receipt.status,'RECONCILIATION_REQUIRED');
+  assert.equal(result.receipt.errorCode,'CANCELLED');assert.equal(result.receipt.dispatch,'ATTEMPTED');
+  assert.equal(result.response,null);assert.equal(result.receipt.usage.status,'UNKNOWN');
+  await assert.rejects(service.run(input()),{code:'ORCHESTRATOR_BUSY'});
+  hold.resolve();await finished.promise;await new Promise(resolve=>setImmediate(resolve));
+  const duplicate=await service.run(x);assert.equal(duplicate.replayed,true);assert.equal(calls(),1);
+  assert.deepEqual(duplicate.receipt,result.receipt);
+});
+test('deadline after dispatch and thrown adapter never trigger retry or fallback',async()=>{
+  const hold=deferred();
+  const a=setup({generate:async()=>hold.promise});
+  const x=input({timeoutMs:500});const r=await a.service.run(x);
+  assert.equal(r.receipt.status,'RECONCILIATION_REQUIRED');assert.equal(r.receipt.errorCode,'TIMEOUT');
+  assert.equal(r.receipt.automaticRetry,false);assert.equal(r.receipt.automaticFallback,false);
+  hold.resolve(null);
+  const b=setup({generate:async()=>{throw Error('synthetic confidential error');}});
+  const y=input(),failed=await b.service.run(y);
+  assert.equal(failed.receipt.status,'RECONCILIATION_REQUIRED');assert.equal(failed.receipt.errorCode,'UNKNOWN');
+  assert.equal(JSON.stringify(failed).includes('confidential'),false);
+  assert.equal((await b.service.run(y)).replayed,true);assert.equal(b.calls(),1);
+});
+test('authorization denial, invalid candidate, expired response and unknown usage suppress disclosure',async()=>{
+  const a=setup({authorize:async()=>false});
+  await assert.rejects(a.service.run(input()),{code:'ORCHESTRATOR_FORBIDDEN'});assert.equal(a.calls(),0);
+  let n=0;const b=setup({authorize:async()=>++n<3});
+  const denied=await b.service.run(input());assert.equal(denied.receipt.status,'DENIED');
+  assert.equal(denied.response,null);assert.equal(denied.receipt.usage.totalTokens,130);
+  const c=setup({generate:async q=>output(q,{candidate:'{"invented":true}'})});
+  assert.equal((await c.service.run(input())).receipt.errorCode,'VERIFICATION_REJECTED');
+  const d=setup({generate:async q=>output(q,{usage:{status:'UNKNOWN'}})});
+  const unknown=await d.service.run(input());assert.equal(unknown.receipt.status,'RECONCILIATION_REQUIRED');assert.equal(unknown.response,null);
+  let clock=nowMs;const e=setup({now:()=>clock,generate:async q=>{clock=nowMs+10000;return output(q);}});
+  const expired=await e.service.run(input());assert.equal(expired.receipt.errorCode,'TIMEOUT');assert.equal(expired.response,null);
+});
+test('pre-dispatch cancellation, record capacity and strict routing validation',async()=>{
+  const a=setup(),controller=new AbortController();controller.abort();
+  await assert.rejects(a.service.run(input(),{signal:controller.signal}),{code:'CANCELLED'});assert.equal(a.calls(),0);
+  await assert.rejects(a.service.run(input({selection:{...selection,fundingMode:'AUTO'}})),{code:'ORCHESTRATOR_REQUEST_INVALID'});
+  const b=setup({options:{maxRecords:1}});
+  await b.service.run(input());
+  await assert.rejects(b.service.run(input()),{code:'ORCHESTRATOR_RECORD_LIMIT'});
+  assert.equal(b.calls(),1);
+});
+test('actual Phase 3C SSE adapter pipeline through orchestration and Phase 2 verification',async()=>{
+  const {service}=setup({generate:async(q,{signal,timeoutMs})=>{
+    const event=v=>'data: '+(typeof v==='string'?v:JSON.stringify(v))+'\n\n';
+    const s=event({model:q.modelId,choices:[{index:0,delta:{content:candidate(q)},finish_reason:null}]})+
+      event({model:q.modelId,choices:[{index:0,delta:{},finish_reason:'stop'}]})+
+      event({model:q.modelId,choices:[],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}})+event('[DONE]');
+    return normalizeFixtureResponse(q,{httpStatus:200,contentType:'text/event-stream',chunks:[Buffer.from(s)],signal,timeoutMs,now:()=>nowMs});
+  }});
+  const r=await service.run(input({stream:true}));
+  assert.equal(r.receipt.status,'COMPLETED');assert.equal(r.response.education[0].id,'MARKET_STRUCTURE');
+});
+
+test('stalled pre-dispatch authorization holds admission until the work settles',async()=>{
+  const hold=deferred(),started=deferred(),controller=new AbortController();
+  const {service,calls}=setup({authorize:async()=>{started.resolve();return hold.promise;},
+    options:{maxActive:1,maxPerOwner:1,maxPerTenant:1}});
+  const p=service.run(input(),{signal:controller.signal});
+  await started.promise;controller.abort();
+  await assert.rejects(p,{code:'CANCELLED'});
+  await assert.rejects(service.run(input()),{code:'ORCHESTRATOR_BUSY'});
+  assert.equal(calls(),0);
+  hold.resolve(true);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal((await service.run(input())).receipt.status,'COMPLETED');
+});
+test('provider mismatch and usage overrun require reconciliation; no candidate release',async()=>{
+  const a=setup({generate:async q=>({...output(q),modelId:'wrong-model'})});
+  const bad=await a.service.run(input());
+  assert.equal(bad.receipt.status,'RECONCILIATION_REQUIRED');assert.equal(bad.receipt.errorCode,'INVALID_RESPONSE');
+  assert.equal(bad.response,null);
+  const b=setup({generate:async q=>output(q,{usage:{...usage,inputTokens:4097}})});
+  const over=await b.service.run(input());assert.equal(over.receipt.status,'RECONCILIATION_REQUIRED');
+  assert.equal(over.receipt.usage.inputTokens,4097);assert.equal(over.response,null);
+});
+
+test('managed compute requires price before dispatch; BYO can continue without a quote',async()=>{
+  const a=setup({options:{pricingRegistry:createPricingRegistry()}});
+  const managed=await a.service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(managed.receipt.status,'FAILED');assert.equal(managed.receipt.errorCode,'PRICE_UNAVAILABLE');
+  assert.equal(managed.receipt.dispatch,'NOT_DISPATCHED');assert.equal(a.calls(),0);
+  const byo=await a.service.run(input());
+  assert.equal(byo.receipt.status,'COMPLETED');assert.equal(byo.receipt.metering.status,'PRICE_NOT_AVAILABLE');
+  assert.equal(byo.receipt.metering.costPicoUsd,null);assert.equal(byo.receipt.metering.proposedCreditDebitPicoUsd,'0');
+});
+
+test('ambiguous outcome with reported usage cannot propose debit; cache write fields survive revalidation',async()=>{
+  const a=setup({generate:async q=>output(q,{status:'UNKNOWN',candidate:null,errorCode:'UNKNOWN'})});
+  const v=await a.service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(v.receipt.status,'RECONCILIATION_REQUIRED');
+  assert.equal(v.receipt.metering.reason,'PROVIDER_OUTCOME_UNKNOWN');
+  assert.equal(v.receipt.metering.proposedCreditDebitPicoUsd,null);
+  assert.equal(v.receipt.usage.totalTokens,130);
+  const b=setup({generate:async q=>output(q,{usage:{...usage,cacheWriteInputTokens:3,
+    cacheWrite5mInputTokens:1,cacheWrite1hInputTokens:2}})});
+  const u=await b.service.run(input());
+  assert.equal(u.receipt.usage.cacheWrite1hInputTokens,2);
+  assert.equal(u.receipt.metering.reason,'CACHE_WRITE_UNSUPPORTED');
+  assert.equal(u.receipt.status,'RECONCILIATION_REQUIRED');
+  assert.equal(u.response,null);
+});
+
+const testPolicy=(extra={})=>({maxInputTokens:4096,maxOutputTokens:1024,maxRequestsPerUtcDay:3,maxTokensPerUtcDay:10240,
+  maxCostPicoUsdPerRequest:null,maxCostPicoUsdPerUtcDay:null,...extra});
+const budgetFor=(now,extra={})=>createOfflineBudget({now,policies:{BYO_API:testPolicy(extra),ACG_CREDITS:testPolicy(extra)}});
+test('budget caps reject before dispatch, actual usage replaces planning holds, funding is isolated',async()=>{
+  const budget=budgetFor(()=>nowMs,{maxRequestsPerUtcDay:2,maxTokensPerUtcDay:6000});
+  const {service,calls}=setup({options:{computeBudget:budget}});
+  const first=await service.run(input());
+  assert.equal(first.receipt.status,'COMPLETED');assert.equal(first.receipt.budget.status,'ACCOUNTED_OFFLINE');
+  assert.equal(first.receipt.budget.tokens,130);
+  assert.equal((await service.run(input())).receipt.status,'COMPLETED');
+  const denied=await service.run(input());
+  assert.equal(denied.receipt.errorCode,'BUDGET_DAILY_LIMIT');assert.equal(denied.receipt.dispatch,'NOT_DISPATCHED');
+  assert.equal(calls(),2);
+  const view=budget.usage(scope,'BYO_API');
+  assert.equal(view.tokens,260);assert.equal(view.requests,2);assert.equal(view.costPicoUsd,null);
+  assert.equal(view.outstandingHolds,0);
+  assert.equal((await service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}))).receipt.status,'COMPLETED');
+  assert.equal(budget.usage(scope,'ACG_CREDITS').requests,1);
+  const excessive=await service.run(input({inputTokenUpperBound:4097}));
+  assert.equal(excessive.receipt.errorCode,'BUDGET_REQUEST_LIMIT');
+});
+test('priced budget holds are exact, daily cost and missing prices block dispatch',async()=>{
+  const budget=budgetFor(()=>nowMs,{maxCostPicoUsdPerRequest:'7000000000',maxCostPicoUsdPerUtcDay:'6200000000'});
+  const a=setup({options:{computeBudget:budget}});
+  const v=await a.service.run(input());
+  assert.equal(v.receipt.budget.costPicoUsd,'160000000');
+  assert.equal(budget.usage(scope,'BYO_API').costPicoUsd,'160000000');
+  const denied=await a.service.run(input());
+  assert.equal(denied.receipt.errorCode,'BUDGET_DAILY_LIMIT');assert.equal(a.calls(),1);
+  const b=setup({options:{computeBudget:budgetFor(()=>nowMs,{maxCostPicoUsdPerRequest:'1'})}});
+  assert.equal((await b.service.run(input())).receipt.errorCode,'BUDGET_REQUEST_LIMIT');assert.equal(b.calls(),0);
+  const c=setup({options:{computeBudget:budgetFor(()=>nowMs,{maxCostPicoUsdPerRequest:'7000000000'}),
+    pricingRegistry:createPricingRegistry()}});
+  assert.equal((await c.service.run(input())).receipt.errorCode,'BUDGET_PRICE_REQUIRED');assert.equal(c.calls(),0);
+});
+test('uncertain usage retains full budget across midnight and prevents oversubscription',async()=>{
+  let at=nowMs;
+  const budget=budgetFor(()=>at,{maxRequestsPerUtcDay:1,maxTokensPerUtcDay:5120});
+  const a=setup({now:()=>at,options:{computeBudget:budget},generate:async q=>output(q,{usage:{status:'UNKNOWN'}})});
+  const v=await a.service.run(input());
+  assert.equal(v.receipt.status,'RECONCILIATION_REQUIRED');assert.equal(v.receipt.budget.status,'HELD_FOR_RECONCILIATION');
+  assert.equal(budget.usage(scope,'BYO_API').tokens,5120);
+  at+=86400000;
+  const next=budget.usage(scope,'BYO_API');assert.equal(next.carriedHolds,1);assert.equal(next.carriedTokens,5120);
+  assert.equal((await a.service.run(input())).receipt.errorCode,'BUDGET_DAILY_LIMIT');
+  assert.equal(a.calls(),1);
+  at=nowMs;assert.throws(()=>budget.usage(scope,'BYO_API'),{code:'BUDGET_CLOCK_ROLLBACK'});
+});
+test('pre-dispatch ledger failure releases budget and preserves no-dispatch receipt',async()=>{
+  const budget=budgetFor(()=>nowMs);
+  const ledger={reserve:async()=>{throw Error('fixture reject');},claimDispatch:async()=>{},recordOutcome:async()=>{},releaseBeforeDispatch:async()=>{}};
+  const {service,calls}=setup({options:{computeBudget:budget,creditLedger:ledger}});
+  const r=await service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(r.receipt.dispatch,'NOT_DISPATCHED');assert.equal(r.receipt.budget.status,'RELEASED_BEFORE_ATTEMPT');
+  assert.equal(budget.usage(scope,'ACG_CREDITS').tokens,0);assert.equal(calls(),0);
+});
+test('context-free BYO education cache skips inference and budget only after fresh verification',async()=>{
+  let at=nowMs;
+  const budget=budgetFor(()=>at,{maxRequestsPerUtcDay:1});
+  const cache=createOfflineEducationCache({now:()=>at,ttlMs:2000});
+  const {service,calls}=setup({now:()=>at,options:{computeBudget:budget,educationCache:cache,cachePolicyEpoch:'fixture-1'}});
+  const original=await service.run(input());assert.equal(original.receipt.cache,'MISS');
+  at+=10;
+  const hit=await service.run(input());
+  assert.equal(hit.receipt.status,'COMPLETED');assert.equal(hit.receipt.cache,'HIT_REVERIFIED');
+  assert.equal(hit.receipt.dispatch,'NOT_DISPATCHED');assert.equal(hit.receipt.usage.status,'NOT_DISPATCHED');
+  assert.equal(hit.receipt.metering.costPicoUsd,'0');assert.equal(hit.receipt.metering.proposedCreditDebitPicoUsd,'0');
+  assert.equal(hit.response.verifiedAtMs,at);assert.notEqual(hit.response.responseId,original.response.responseId);
+  assert.equal(calls(),1);assert.equal(budget.usage(scope,'BYO_API').requests,1);
+  const other=await service.run(input({question:'Different question'}));assert.equal(other.receipt.errorCode,'BUDGET_DAILY_LIMIT');
+  at+=2001;
+  assert.equal((await service.run(input())).receipt.errorCode,'BUDGET_DAILY_LIMIT');assert.equal(calls(),1);
+});
+test('cache misses across scope, policy epoch, funding and explicit invalidation',async()=>{
+  const cache=createOfflineEducationCache({now:()=>nowMs,maxEntries:8});
+  const a=setup({options:{educationCache:cache,cachePolicyEpoch:'fixture-1'}});
+  await a.service.run(input());
+  const foreign=await a.service.run(input({scope:{...scope,actorId:'e'.repeat(24)}}));
+  assert.equal(foreign.receipt.cache,'MISS');
+  const session=await a.service.run(input({scope:{...scope,sessionId:'e'.repeat(24)}}));
+  assert.equal(session.receipt.cache,'MISS');
+  const managed=await a.service.run(input({selection:{...selection,fundingMode:'ACG_CREDITS'}}));
+  assert.equal(managed.receipt.cache,'NOT_USED');
+  const b=setup({options:{educationCache:cache,cachePolicyEpoch:'fixture-2'}});
+  assert.equal((await b.service.run(input())).receipt.cache,'MISS');assert.equal(b.calls(),1);
+  cache.invalidateAll();
+  assert.equal((await a.service.run(input())).receipt.cache,'MISS');assert.equal(a.calls(),5);
+});
+test('cache cannot bypass current Phase 2 authorization or cache-specific permission',async()=>{
+  let engineAllowed=true,cacheAllowed=true;
+  const cache=createOfflineEducationCache({now:()=>nowMs});
+  const a=setup({engineAuthorize:async()=>engineAllowed,
+    authorize:async req=>!req.operation.startsWith('CACHE_')||cacheAllowed,
+    options:{educationCache:cache,cachePolicyEpoch:'fixture-1'}});
+  await a.service.run(input());engineAllowed=false;
+  assert.equal((await a.service.run(input())).receipt.status,'DENIED');assert.equal(a.calls(),1);
+  engineAllowed=true;cacheAllowed=false;
+  const v=await a.service.run(input());assert.equal(v.receipt.cache,'MISS');assert.equal(a.calls(),2);
+});
+
+test('invalidation during cache verification suppresses disclosure without dispatch',async()=>{
+  const cache=createOfflineEducationCache({now:()=>nowMs});
+  let invalidate=false;
+  const a=setup({engineAuthorize:async()=>{if(invalidate)cache.invalidateAll();return true;},
+    authorize:async req=>{if(req.operation==='CACHE_READ')invalidate=true;return true;},
+    options:{educationCache:cache,cachePolicyEpoch:'fixture-1'}});
+  const initial=await a.service.run(input());
+  assert.equal(initial.receipt.status,'COMPLETED');assert.equal(a.calls(),1);
+  invalidate=false;
+  const next=await a.service.run(input());
+  assert.equal(next.receipt.errorCode,'CACHE_EXPIRED_OR_INVALIDATED');assert.equal(next.response,null);assert.equal(a.calls(),1);
+});
