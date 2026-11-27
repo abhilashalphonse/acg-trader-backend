@@ -107,15 +107,18 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
   // candle; keep the most recent primary evidence and every frame's status.
   const oversized=()=>Buffer.byteLength(JSON.stringify(body),'utf8')+4096>descriptor.maxInputTokens;
   const refresh=()=>{body.messages[1].content=JSON.stringify(data);};
+  const observationRank=x=>x.type==='STRUCTURE_SUMMARY'?5:
+    ['STRUCTURE_EVENT','FVG_ZONE'].includes(x.type)?4:
+    x.type==='FACT'&&['LAST_CLOSED_PRICE','OBSERVED_RANGE_HIGH','OBSERVED_RANGE_LOW'].includes(x.kind)?3:
+    ['LIQUIDITY_REFERENCE','EQUAL_LEVEL'].includes(x.type)?2:1;
+  const leastImportant=items=>items.reduce((best,x,i)=>observationRank(x)<observationRank(items[best])?i:best,0);
   if(data.market?.schemaVersion==='adaptive-market-v1'){
     const frames=data.market.frames;
     while(oversized()){
       const f=frames.filter(x=>x.observations?.length>(x.timeframe===data.market.selectedTimeframe?12:6)).sort((a,b)=>Number(a.timeframe===data.market.selectedTimeframe)-Number(b.timeframe===data.market.selectedTimeframe)||b.observations.length-a.observations.length)[0];
       if(!f)break;
       // Keep price/range facts and most recent references where possible.
-      const index=f.observations.findIndex(x=>x.type!=='FACT'&&x.type!=='STRUCTURE_SUMMARY');
-      const removable=index>=0?index:f.observations.findIndex(x=>x.type==='FACT'&&!['LAST_CLOSED_PRICE','OBSERVED_RANGE_HIGH','OBSERVED_RANGE_LOW'].includes(x.kind));
-      f.observations.splice(removable<0?0:removable,1);f.omittedObservations=(f.omittedObservations??0)+1;refresh();
+      f.observations.splice(leastImportant(f.observations),1);f.omittedObservations=(f.omittedObservations??0)+1;refresh();
     }
     // Keep the regime and dealing range even if detailed secondary references
     // need trimming. Explicitly count omitted advanced observations.
@@ -169,12 +172,7 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
         const f=frames.filter(x=>x.observations?.length>(selected(x)?primary:secondary))
           .sort((a,b)=>Number(selected(a))-Number(selected(b))||b.observations.length-a.observations.length)[0];
         if(!f)break;
-        const rank=x=>x.type==='STRUCTURE_SUMMARY'?4:
-          ['STRUCTURE_EVENT','FVG_ZONE'].includes(x.type)?3:
-          x.type==='FACT'&&['LAST_CLOSED_PRICE','OBSERVED_RANGE_HIGH','OBSERVED_RANGE_LOW'].includes(x.kind)?2:1;
-        let index=0;
-        for(let i=1;i<f.observations.length;i++)if(rank(f.observations[i])<rank(f.observations[index]))index=i;
-        f.observations.splice(index,1);f.omittedObservations=(f.omittedObservations??0)+1;refresh();
+        f.observations.splice(leastImportant(f.observations),1);f.omittedObservations=(f.omittedObservations??0)+1;refresh();
       }
     };
     trimObservations(8,2);
