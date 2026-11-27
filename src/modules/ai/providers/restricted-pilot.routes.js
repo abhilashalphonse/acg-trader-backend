@@ -11,7 +11,7 @@ const schemas={
   status:base,
   grant:base.extend({expectedRevision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER-1),explicitConsent:z.literal(true)}).strict(),
   revoke:base.extend({expectedRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER-1)}).strict(),
-  generate:base.extend({operationId:z.uuid(),intent:z.enum(['HISTORICAL_OVERVIEW','HISTORICAL_STRUCTURE'])}).strict()
+  generate:base.extend({operationId:z.uuid(),intent:z.enum(['HISTORICAL_OVERVIEW','HISTORICAL_STRUCTURE','EDUCATION_STRUCTURE','EDUCATION_LIQUIDITY','EDUCATION_FVG'])}).strict()
 };
 const deny=(code='AI_PILOT_DENIED',statusCode=403)=>new AppError('Restricted AI pilot unavailable',{code,statusCode});
 function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
@@ -32,7 +32,7 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       try{
         const value=await runtime[action](bearerToken(req),p.data,{signal:controller.signal});
         if(controller.signal.aborted||enabled()!==true)throw deny('AI_PILOT_DISABLED',404);
-        return {contractVersion:'restricted-pilot-v1',mode:'HISTORICAL_REFERENCE_ONLY',executionAllowed:false,...value};
+        return {contractVersion:'restricted-pilot-v1',mode:runtime.mode,executionAllowed:false,...value};
       }finally{res.removeListener('close',abort);}
     });
     res.json(result);
