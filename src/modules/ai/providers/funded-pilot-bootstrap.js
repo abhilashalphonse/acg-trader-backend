@@ -34,7 +34,7 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
     /^sk-[\x21-\x7e]{20,4090}$/.test(env.ACG_AI_FUNDED_OPENAI_API_KEY));
   const actorId=hash(['funded-staff-ai-v1',a.tenantId,staff]).slice(0,24);
   const billingActor=Object.freeze({tenantId:a.tenantId,actorId:hash(['funded-ai-internal-billing-v1',a.tenantId]).slice(0,24)});
-  const policyFields={enabled:true,expiresAtMs:a.expiresAtMs,members:[{tenantId:a.tenantId,actorId}],instruments:a.instruments};
+  const policyFields={enabled:true,expiresAtMs:a.expiresAtMs,members:[{tenantId:a.tenantId,actorId}],instruments:a.instruments,approvalDigest:hash(a)};
   const policyVersion=hash(policyFields);
   // Official standard rates reviewed 2026-11-27; pico-USD per token.
   // Treat cached tokens as uncached for the reservation. No tools or other tiers.
