@@ -14,7 +14,7 @@ function createIsolatedHttpsTransport({port,ca,now=Date.now}={}){
   if(!Number.isInteger(port)||port<1||port>65535||!Buffer.isBuffer(ca)||!ca.length||ca.length>65536)throw fail('TRANSPORT_CONFIG_INVALID');
   const trustedCa=Buffer.from(ca);
   return Object.freeze({
-    async exchange(q,secret,{signal,timeoutMs=3000}={}){
+    async exchange(q,secret,{signal,timeoutMs=3000,beforeWrite=null}={}){
       assertIsolated();
       const wire=buildWireRequest(q);
       if(q.fundingMode!=='BYO_API'||!Buffer.isBuffer(secret)||secret.length<1||secret.length>4096||
@@ -45,6 +45,8 @@ function createIsolatedHttpsTransport({port,ca,now=Date.now}={}){
       signal?.addEventListener('abort',onAbort,{once:true});
       if(signal?.aborted)onAbort();
       try{
+        if(beforeWrite!==null){if(typeof beforeWrite!=='function')throw fail('TRANSPORT_CONFIG_INVALID');await beforeWrite();}
+        if(controller.signal.aborted||now()>=q.expiresAtMs)return failure('UNKNOWN','TIMEOUT');
         response=await new Promise((resolve,reject)=>{
           request=https.request({hostname:'127.0.0.1',port,method:'POST',path:target.pathname+target.search,
             headers,ca:trustedCa,rejectUnauthorized:true,minVersion:'TLSv1.2',agent:false,signal:controller.signal,
