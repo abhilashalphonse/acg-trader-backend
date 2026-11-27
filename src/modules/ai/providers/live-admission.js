@@ -87,7 +87,7 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
       const s=scope(s0),{operationId,descriptorId,policyVersion,symbol,timeframe,consentRevision,maxInputTokens,maxOutputTokens}=input;
       check(uuid(operationId)&&hex(descriptorId)&&hex(policyVersion)&&positive(consentRevision)&&within(maxInputTokens,1,32768)&&within(maxOutputTokens,1,4096));
       await permitted(s,'CLAIM');const price=await resolvePrice(descriptorId);
-      check(price?.descriptorId===descriptorId&&price.approved===true&&positive(price.inputRatePicoUsd)&&positive(price.outputRatePicoUsd),'LIVE_AI_PRICE_UNAPPROVED');
+      check(price?.descriptorId===descriptorId&&price.approved===true&&price.policyVersion===policyVersion&&within(maxInputTokens,1,price.maxInputTokens)&&within(maxOutputTokens,1,price.maxOutputTokens)&&positive(price.inputRatePicoUsd)&&positive(price.outputRatePicoUsd),'LIVE_AI_PRICE_UNAPPROVED');
       const amount=cost(maxInputTokens,maxOutputTokens,price.inputRatePicoUsd,price.outputRatePicoUsd);
       return tx(async session=>{await permitted(s,'CLAIM');const t=clock(),c=await liveControl(s,session),g=await get(S,consentId(s),session);
         check(g?.revision===consentRevision&&g.descriptorId===descriptorId&&g.policyVersion===policyVersion&&g.symbol===symbol&&g.timeframe===timeframe,'LIVE_AI_CONSENT_REQUIRED');
