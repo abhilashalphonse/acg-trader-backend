@@ -4,7 +4,7 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "sh -c 'test \"$RAILWAY_SERVICE_ID\" = ed682eab-b46b-4ccd-af7e-1b27dec46b39 && test \"$RAILWAY_ENVIRONMENT_ID\" = 8362c789-033d-4543-9523-39f8a141436a && test \"$RAILWAY_VOLUME_MOUNT_PATH\" = /data && grep -q \" /data \" /proc/self/mountinfo && exec node scripts/ai-openai-live-smoke.js'",
+    "startCommand": "node scripts/ai-luna-railway-once.js",
     "restartPolicyType": "NEVER",
     "numReplicas": 1
   }
