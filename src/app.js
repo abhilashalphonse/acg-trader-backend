@@ -148,6 +148,12 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime, restrictedPilot
       app.use('/v1/ai/pilot', createRestrictedPilotRouter({ runtime, authService, quota, enabled: pilotEnabled }));
     }
   }
+  if (process.env.ACG_AI_STAFF_PREVIEW_ENABLED === 'true') {
+    const { createStaffPreviewRouter } = require('./modules/ai/providers/staff-preview.routes');
+    app.use('/v1/ai/staff-preview', (req, res, next) =>
+      rejectUntrustedAuthOrigin(req, res, next, env.corsOrigins, env.isProduction));
+    app.use('/v1/ai/staff-preview', createStaffPreviewRouter({ authService }));
+  }
   if (process.env.ACG_ALERTS_ENABLED === 'true') app.use('/v1/alerts', createAlertRouter({authService,marketRuntime}));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
   if (env.identity.tradingSessionsEnabled) {
