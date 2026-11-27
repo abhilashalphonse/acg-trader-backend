@@ -193,7 +193,15 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.ok(data.market.frames.every(f=>f.advanced.displacements.length===0));
           assert.equal(data.market.quote.bid,123.99);assert.equal(data.market.quote.ask,124.01);
           assert.equal(data.market.quote.status,'RECENT_PROVIDER_EVENT');
-          assert.equal(data.market.frames[1].freshness.state,'LATEST_EXPECTED_UTC_BUCKET');
+          // The fixture can cross a five-minute boundary between seeding and reading.
+          // Assert the classification against the actual snapshot clock and last
+          // closed bar rather than assuming the wall clock stayed in one bucket.
+          const five=data.market.frames[1];
+          const expectedFiveOpen=candleBucketOpenTimeMs(five.asOfMs,'5m');
+          assert.equal(five.freshness.currentBucketOpenMs,expectedFiveOpen);
+          const lastFiveClose=five.closedCandles.at(-1)[0]+TIMEFRAME_MS['5m'];
+          assert.equal(five.freshness.latestClosedAtMs,lastFiveClose);
+          assert.equal(five.freshness.state,lastFiveClose===expectedFiveOpen?'LATEST_EXPECTED_UTC_BUCKET':'MISSING_RECENT_CLOSED_BUCKET');
           assert.equal(data.market.sessionClocks.length,3);assert.ok(data.knowledge.length>0);
           for(const value of [tenantId,actor.actorId,staff,...ids,'staff-owner',wsEnv.ACG_AI_FUNDED_OPENAI_API_KEY])
             assert.ok(!raw.includes(value));
