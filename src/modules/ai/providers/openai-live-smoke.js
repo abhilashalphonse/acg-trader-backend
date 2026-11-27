@@ -8,7 +8,7 @@ const {createResponseEngine}=require('../intelligence/response-engine');
 const {CANDIDATE_JSON_SCHEMA}=require('./provider-contract');
 const {consumeBytes}=require('./bounded-stream');
 const {mapUsage}=require('./provider-response');
-const MODEL='gpt-5.4-mini-2026-03-17',HOST='api.openai.com',PATH='/v1/chat/completions';
+const MODEL='gpt-6-luna',HOST='api.openai.com',PATH='/v1/chat/completions';
 const INPUT_PLANNING_TOKENS=8192,MAX_OUTPUT_TOKENS=512,MAX_REQUEST_BYTES=8192;
 const APPROVAL='ONE_SYNTHETIC_OPENAI_REQUEST';
 const fail=code=>Object.assign(Error('OpenAI smoke unavailable'),{code});
@@ -27,7 +27,7 @@ function makeBody(knowledgeId){
   // Deliberately do not export the internal knowledge catalog, market data,
   // account/session IDs, real user questions or even the internal prompt package.
   return {model:MODEL,store:false,stream:false,n:1,max_completion_tokens:MAX_OUTPUT_TOKENS,
-    reasoning_effort:'none',messages:[
+    reasoning_effort:'none',service_tier:'default',messages:[
       {role:'system',content:'Synthetic integration test. Select the supplied knowledge reference in a candidate-response-v2 JSON object. Do not provide prose, tools, or any market facts.'},
       {role:'user',content:JSON.stringify({exercise:'Fictional educational reference selection only.',
         allowedKnowledgeId:knowledgeId,expectedStatus:'ANSWER',observations:[],interpretations:[]})}],
