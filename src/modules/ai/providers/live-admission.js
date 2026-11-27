@@ -1,7 +1,7 @@
 'use strict';
 const mongoose=require('mongoose');
 const {createHash,randomUUID}=require('node:crypto');
-const {LiveControl:C,LiveConsent:S,LiveBudget:B,LiveAttempt:A,LiveEvent:E,models}=require('./live-admission.model');
+const {LiveControl:C,LiveConsent:S,LiveBudget:B,LiveAttempt:A,LiveEvent:E,LivePlatform:P,LivePlatformDay:D,models}=require('./live-admission.model');
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
 const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
@@ -28,14 +28,31 @@ async function event(session,s,kind,subject,revision,atMs){await E.create([{_id:
 // authorizeSession must reauthenticate and return the actual account/connection
 // authority, not echo client input. Admin and reconciliation authorities are
 // separate; pricing must come from an approved server-owned descriptor.
-function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,authorizeReconciliation,resolvePrice,now=Date.now}={}){
-  check([authorizeSession,authorizeMarket,authorizeAdmin,authorizeReconciliation,resolvePrice,now].every(f=>typeof f==='function'));
+function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,authorizePlatformAdmin,authorizeReconciliation,resolvePrice,now=Date.now}={}){
+  check([authorizeSession,authorizeMarket,authorizeAdmin,authorizePlatformAdmin,authorizeReconciliation,resolvePrice,now].every(f=>typeof f==='function'));
   function clock(){const t=now();check(positive(t)&&t<8640000000000000);return t;}
   const day=t=>new Date(t).toISOString().slice(0,10);
   async function permitted(s,purpose){check(scopeEqual(s,scope(await authorizeSession(s,purpose))),'LIVE_AI_SCOPE_CHANGED');}
   async function market(s,g,purpose){check(await authorizeMarket(s,{descriptorId:g.descriptorId,policyVersion:g.policyVersion,symbol:g.symbol,timeframe:g.timeframe},purpose)===true,'LIVE_AI_MARKET_DENIED');}
   async function admin(a,purpose){check(id(a?.tenantId)&&id(a?.actorId)&&await authorizeAdmin({tenantId:a.tenantId,actorId:a.actorId},purpose)===true,'LIVE_AI_ADMIN_DENIED');}
   async function liveControl(s,session){const c=await get(C,s.tenantId,session);check(c?.enabled===true,'LIVE_AI_PAUSED');return c;}
+  async function platform(session){const p=await get(P,'platform',session);check(p?.enabled===true,'LIVE_AI_PLATFORM_PAUSED');return p;}
+  async function platformFence(p,session,fields={}){await patch(P,{_id:'platform',revision:p.revision,fence:p.fence},{...fields,fence:sum(p.fence,1)},session);}
+  async function reservePlatform(p,d,amount,session){
+    const row=await get(D,d,session),requests=sum(row?.requests??0,1),reservedPicoUsd=sum(row?.reservedPicoUsd??0,amount);
+    const outstandingPicoUsd=sum(p.outstandingPicoUsd,amount),outstandingRequests=sum(p.outstandingRequests,1);
+    check(requests<=p.dailyRequests&&sum(reservedPicoUsd,row?.settledPicoUsd??0)<=p.dailyPicoUsd&&
+      outstandingPicoUsd<=p.maxOutstandingPicoUsd&&outstandingRequests<=p.maxOutstandingRequests,'LIVE_AI_PLATFORM_LIMIT');
+    await platformFence(p,session,{outstandingPicoUsd,outstandingRequests});
+    if(row)await patch(D,{_id:d,requests:row.requests,reservedPicoUsd:row.reservedPicoUsd,settledPicoUsd:row.settledPicoUsd},{requests,reservedPicoUsd},session);
+    else await D.create([{_id:d,requests,reservedPicoUsd,settledPicoUsd:0}],{session});
+  }
+  async function releasePlatform(a,actual,session){
+    const p=await get(P,'platform',session),r=await get(D,a.day,session);
+    check(p&&r&&p.outstandingRequests>0&&p.outstandingPicoUsd>=a.reservedPicoUsd&&r.reservedPicoUsd>=a.reservedPicoUsd,'LIVE_AI_LEDGER_INVALID');
+    await platformFence(p,session,{outstandingRequests:p.outstandingRequests-1,outstandingPicoUsd:p.outstandingPicoUsd-a.reservedPicoUsd});
+    await patch(D,{_id:a.day,reservedPicoUsd:r.reservedPicoUsd,settledPicoUsd:r.settledPicoUsd},{reservedPicoUsd:r.reservedPicoUsd-a.reservedPicoUsd,settledPicoUsd:sum(r.settledPicoUsd,actual)},session);
+  }
   async function guard(s,c,g,t,session){check(g?.active===true&&scopeEqual(s,g)&&g.expiresAtMs>t&&g.controlRevision===c.revision,'LIVE_AI_CONSENT_REQUIRED');
     // Write both documents, not just snapshot reads: concurrent revocation
     // and kill-switch commits conflict with claim/dispatch transactions.
@@ -54,40 +71,51 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
     }
   }
   async function release(a,actual,session){
+    await releasePlatform(a,actual,session);
     for(const key of budgetIds(a,a.day)){const r=await get(B,key,session);check(r&&r.reservedPicoUsd>=a.reservedPicoUsd,'LIVE_AI_LEDGER_INVALID');
       await patch(B,{_id:key,reservedPicoUsd:r.reservedPicoUsd,settledPicoUsd:r.settledPicoUsd},{reservedPicoUsd:r.reservedPicoUsd-a.reservedPicoUsd,settledPicoUsd:sum(r.settledPicoUsd,actual)},session);}
   }
   async function currentConsent(s,expected,purpose){
     await permitted(s,purpose);
-    const c=await read(C.findById(s.tenantId)),g=await read(S.findById(consentId(s)));
+    const c=await read(C.findById(s.tenantId)),g=await read(S.findById(consentId(s))),p=await read(P.findById('platform'));
+    check(p?.enabled===true,'LIVE_AI_PLATFORM_PAUSED');
     check(c?.enabled===true,'LIVE_AI_PAUSED');
-    check(g?.active===true&&scopeEqual(s,g)&&g.controlRevision===c.revision&&g.expiresAtMs>clock()&&
+    check(g?.active===true&&scopeEqual(s,g)&&g.controlRevision===c.revision&&g.platformRevision===p.revision&&g.expiresAtMs>clock()&&
       ['descriptorId','policyVersion','symbol','timeframe'].every(k=>g[k]===expected[k])&&
       (expected.consentRevision===undefined||g.revision===expected.consentRevision),'LIVE_AI_CONSENT_REQUIRED');
     await market(s,g,purpose);await permitted(s,purpose);
     // Re-read after the asynchronous external authorization callbacks. A
     // final network/disclosure race cannot be eliminated by a read fence.
-    const latestC=await read(C.findById(s.tenantId)),latestG=await read(S.findById(g._id));
-    check(latestC?.enabled===true&&latestC.revision===c.revision&&latestG?.active===true&&
+    const latestC=await read(C.findById(s.tenantId)),latestG=await read(S.findById(g._id)),latestP=await read(P.findById('platform'));
+    check(latestP?.enabled===true&&latestP.revision===p.revision&&latestC?.enabled===true&&latestC.revision===c.revision&&latestG?.active===true&&
       latestG.revision===g.revision&&latestG.expiresAtMs>clock(),'LIVE_AI_CONSENT_REQUIRED');
-    return {consentRevision:g.revision,controlRevision:c.revision};
+    return {consentRevision:g.revision,controlRevision:c.revision,platformRevision:p.revision};
   }
   async function assertAttempt(s,operationId,allowedStates,purpose){
     check(uuid(operationId));await permitted(s,purpose);
     const key=attemptId(s,operationId),a=await read(A.findById(key)),c=await read(C.findById(s.tenantId)),g=await read(S.findById(consentId(s)));
-    const allowed=(a,c,g)=>a&&scopeEqual(a,s)&&allowedStates.includes(a.state)&&c?.enabled===true&&c.revision===a.controlRevision&&
+    const allowed=(a,c,g,p)=>p?.enabled===true&&a?.platformRevision===p.revision&&g?.platformRevision===p.revision&&a&&scopeEqual(a,s)&&allowedStates.includes(a.state)&&c?.enabled===true&&c.revision===a.controlRevision&&
       g?.active===true&&g.revision===a.consentRevision&&g.controlRevision===c.revision&&g.expiresAtMs>clock()&&scopeEqual(g,s)&&
       g.descriptorId===a.descriptorId&&g.policyVersion===a.policyVersion&&
       (purpose!=='DISPATCH'||a.day===day(clock()));
-    check(allowed(a,c,g),'LIVE_AI_DISCLOSURE_DENIED');
+    check(allowed(a,c,g,await read(P.findById('platform'))),'LIVE_AI_DISCLOSURE_DENIED');
     await market(s,g,purpose);await permitted(s,purpose);
-    check(allowed(await read(A.findById(key)),await read(C.findById(s.tenantId)),await read(S.findById(g._id))),'LIVE_AI_DISCLOSURE_DENIED');
+    check(allowed(await read(A.findById(key)),await read(C.findById(s.tenantId)),await read(S.findById(g._id)),await read(P.findById('platform'))),'LIVE_AI_DISCLOSURE_DENIED');
     return true;
   }
   return Object.freeze({
     async assertConsent(s0,expected){return currentConsent(scope(s0),expected,'CLAIM');},
     async assertDispatch(s0,operationId){return assertAttempt(scope(s0),operationId,['DISPATCHING'],'DISPATCH');},
     async provision(){for(const m of models){await m.createCollection();await m.createIndexes();}},
+    async setPlatformControl(actor,{expectedRevision,enabled,dailyPicoUsd,dailyRequests,maxOutstandingPicoUsd,maxOutstandingRequests}){
+      check(id(actor?.tenantId)&&id(actor?.actorId)&&integer(expectedRevision)&&typeof enabled==='boolean'&&[dailyPicoUsd,dailyRequests,maxOutstandingPicoUsd,maxOutstandingRequests].every(positive));
+      const authorize=async()=>check(await authorizePlatformAdmin({tenantId:actor.tenantId,actorId:actor.actorId})===true,'LIVE_AI_PLATFORM_ADMIN_DENIED');
+      await authorize();
+      return tx(async session=>{await authorize();const p=await get(P,'platform',session);check((p?.revision??0)===expectedRevision,'LIVE_AI_CHANGED');
+        const next={enabled,revision:sum(expectedRevision,1),dailyPicoUsd,dailyRequests,maxOutstandingPicoUsd,maxOutstandingRequests};
+        if(p)await platformFence(p,session,next);else await P.create([{_id:'platform',...next,fence:1,outstandingPicoUsd:0,outstandingRequests:0}],{session});
+        await event(session,actor,'PLATFORM_CONTROL','platform',next.revision,clock());return {enabled,revision:next.revision};});
+    },
     async setControl(actor,{expectedRevision,enabled,tenantDailyPicoUsd,actorDailyPicoUsd,tenantDailyRequests,actorDailyRequests}){
       check(integer(expectedRevision)&&typeof enabled==='boolean'&&[tenantDailyPicoUsd,actorDailyPicoUsd,tenantDailyRequests,actorDailyRequests].every(positive)&&actorDailyPicoUsd<=tenantDailyPicoUsd&&actorDailyRequests<=tenantDailyRequests);
       await admin(actor,'CONTROL');
@@ -100,9 +128,9 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
       const s=scope(s0),{expectedRevision,explicitConsent,descriptorId,policyVersion,symbol,timeframe,expiresAtMs}=input;
       check(integer(expectedRevision)&&explicitConsent===true&&hex(descriptorId)&&hex(policyVersion)&&typeof symbol==='string'&&/^[A-Z0-9._-]{1,32}$/.test(symbol)&&['1m','5m','15m','30m','1h','4h','1d','1w'].includes(timeframe)&&positive(expiresAtMs));
       await permitted(s,'GRANT');
-      return tx(async session=>{await permitted(s,'GRANT');await market(s,input,'GRANT');const t=clock();check(expiresAtMs>t&&expiresAtMs-t<=3600000);const c=await liveControl(s,session),key=consentId(s),g=await get(S,key,session);
+      return tx(async session=>{await permitted(s,'GRANT');await market(s,input,'GRANT');const t=clock();check(expiresAtMs>t&&expiresAtMs-t<=3600000);const c=await liveControl(s,session),p=await platform(session),key=consentId(s),g=await get(S,key,session);await platformFence(p,session);
         check((g?.revision??0)===expectedRevision,'LIVE_AI_CHANGED');await patch(C,{_id:c._id,revision:c.revision,fence:c.fence},{fence:sum(c.fence,1)},session);
-        const next={...s,revision:sum(expectedRevision,1),fence:sum(g?.fence??0,1),controlRevision:c.revision,active:true,expiresAtMs,descriptorId,policyVersion,symbol,timeframe};
+        const next={...s,revision:sum(expectedRevision,1),fence:sum(g?.fence??0,1),controlRevision:c.revision,platformRevision:p.revision,active:true,expiresAtMs,descriptorId,policyVersion,symbol,timeframe};
         if(g)await patch(S,{_id:key,revision:g.revision,fence:g.fence},next,session);else await S.create([{_id:key,...next}],{session});
         await event(session,s,'CONSENT',key,next.revision,t);return {consentId:key,revision:next.revision,expiresAtMs};});
     },
@@ -118,20 +146,20 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
       await permitted(s,'CLAIM');const price=await resolvePrice(descriptorId);
       check(price?.descriptorId===descriptorId&&price.approved===true&&price.policyVersion===policyVersion&&within(maxInputTokens,1,price.maxInputTokens)&&within(maxOutputTokens,1,price.maxOutputTokens)&&positive(price.inputRatePicoUsd)&&positive(price.outputRatePicoUsd),'LIVE_AI_PRICE_UNAPPROVED');
       const amount=cost(maxInputTokens,maxOutputTokens,price.inputRatePicoUsd,price.outputRatePicoUsd);
-      return tx(async session=>{await permitted(s,'CLAIM');const t=clock(),c=await liveControl(s,session),g=await get(S,consentId(s),session);
-        check(g?.revision===consentRevision&&g.descriptorId===descriptorId&&g.policyVersion===policyVersion&&g.symbol===symbol&&g.timeframe===timeframe,'LIVE_AI_CONSENT_REQUIRED');
+      return tx(async session=>{await permitted(s,'CLAIM');const t=clock(),c=await liveControl(s,session),p=await platform(session),g=await get(S,consentId(s),session);
+        check(g?.platformRevision===p.revision&&g?.revision===consentRevision&&g.descriptorId===descriptorId&&g.policyVersion===policyVersion&&g.symbol===symbol&&g.timeframe===timeframe,'LIVE_AI_CONSENT_REQUIRED');
         await market(s,g,'CLAIM');const key=attemptId(s,operationId);check(!await get(A,key,session),'LIVE_AI_ALREADY_CLAIMED');
-        await guard(s,c,g,t,session);await reserve(s,day(t),c,amount,session);
-        await A.create([{_id:key,...s,operationId,consentId:g._id,consentRevision:g.revision,controlRevision:c.revision,descriptorId,policyVersion,day:day(t),
+        await guard(s,c,g,t,session);await reserve(s,day(t),c,amount,session);await reservePlatform(p,day(t),amount,session);
+        await A.create([{_id:key,...s,operationId,consentId:g._id,consentRevision:g.revision,controlRevision:c.revision,platformRevision:p.revision,descriptorId,policyVersion,day:day(t),
           reservedPicoUsd:amount,inputRatePicoUsd:price.inputRatePicoUsd,outputRatePicoUsd:price.outputRatePicoUsd,maxInputTokens,maxOutputTokens,
           state:'CLAIMED',createdAtMs:t,updatedAtMs:t}],{session});
         await event(session,s,'CLAIM',key,c.revision,t);return {attemptId:key,reservedPicoUsd:amount};});
     },
     async beginDispatch(s0,operationId){
       const s=scope(s0);check(uuid(operationId));await permitted(s,'DISPATCH');
-      return tx(async session=>{await permitted(s,'DISPATCH');const t=clock(),key=attemptId(s,operationId),a=await get(A,key,session),c=await liveControl(s,session),g=await get(S,consentId(s),session);
-        check(a&&scopeEqual(a,s)&&a.state==='CLAIMED'&&a.controlRevision===c.revision&&a.consentRevision===g?.revision&&a.day===day(t),'LIVE_AI_DISPATCH_DENIED');
-        await market(s,g,'DISPATCH');await guard(s,c,g,t,session);await patch(A,{_id:key,state:'CLAIMED'},{state:'DISPATCHING',updatedAtMs:t},session);
+      return tx(async session=>{await permitted(s,'DISPATCH');const t=clock(),key=attemptId(s,operationId),a=await get(A,key,session),c=await liveControl(s,session),p=await platform(session),g=await get(S,consentId(s),session);
+        check(a?.platformRevision===p.revision&&g?.platformRevision===p.revision&&a&&scopeEqual(a,s)&&a.state==='CLAIMED'&&a.controlRevision===c.revision&&a.consentRevision===g?.revision&&a.day===day(t),'LIVE_AI_DISPATCH_DENIED');
+        await market(s,g,'DISPATCH');await platformFence(p,session);await guard(s,c,g,t,session);await patch(A,{_id:key,state:'CLAIMED'},{state:'DISPATCHING',updatedAtMs:t},session);
         await event(session,s,'DISPATCH',key,c.revision,t);return {attemptId:key};});
     },
     async assertDisclosure(s0,operationId){return assertAttempt(scope(s0),operationId,['DISPATCHING','SETTLED'],'DISCLOSE');},
