@@ -135,6 +135,8 @@ async function main() {
     const assertPhase2Denied=await runPhase2Integration({auth,gateway,gs,token:ta,readRequest:req,foreignToken:tb});
     const {runPhase3VaultIntegration}=require('./ai-phase3-vault-integration');
     await runPhase3VaultIntegration({auth,token:ta,foreignToken:tb});
+    const {runPhase4TransportIntegration}=require('./ai-phase4-transport-integration');
+    await runPhase4TransportIntegration({auth,gateway,gs,token:ta,foreignToken:tb,readRequest:req});
     const {runPhase3CreditIntegration}=require('./ai-phase3-credit-integration');
     await runPhase3CreditIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
     const {runPhase3PurchaseIntegration}=require('./ai-phase3-purchase-integration');
