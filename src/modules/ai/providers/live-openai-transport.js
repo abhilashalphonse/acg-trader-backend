@@ -88,7 +88,7 @@ async function publicTarget(signal){
 // provide the server-created prompt + verification ticket, a durable message
 // operation, approved export and conservative tokenizer/price policy. No
 // customer transport can be activated merely by setting an environment flag.
-function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperBound,recordUsage,verifyCandidate}={}){
+function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperBound,recordUsage,verifyCandidate,educationOnly=false}={}){
   assertLiveRuntime(config);
   requireTrue([authorizeExport,countUpperBound,recordUsage,verifyCandidate].every(f=>typeof f==='function')&&
     ['assertConsent','claim','beginDispatch','assertDispatch','assertDisclosure'].every(k=>typeof admission?.[k]==='function'));
@@ -96,9 +96,15 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
   return Object.freeze({
     async run({scope,workspace,prompt,ticket,operationId,authorizeMessage,signal}){
       assertLiveRuntime(config);
-      requireTrue(workspace?.includeChartContext===true&&typeof authorizeMessage==='function'&&hex(prompt?.packageId));
-      requireTrue(prompt.payload.data.evidence?.symbol===workspace.symbol&&prompt.payload.data.evidence?.frames?.length===1&&
-        prompt.payload.data.evidence.frames[0].timeframe===workspace.timeframe&&prompt.payload.data.evidence.quoteStatus==='UNAVAILABLE');
+      requireTrue(typeof authorizeMessage==='function'&&hex(prompt?.packageId));
+      if(educationOnly){
+        requireTrue(workspace?.includeChartContext===false&&workspace.symbol==='EDUCATION'&&workspace.timeframe==='1m'&&
+          prompt.payload.data.profile==='EDUCATION'&&prompt.payload.data.evidence===null&&
+          ['Explain market structure and break of structure.','Explain potential liquidity references.','Explain fair value gaps.'].includes(prompt.payload.data.question));
+      }else{
+        requireTrue(workspace?.includeChartContext===true&&prompt.payload.data.evidence?.symbol===workspace.symbol&&prompt.payload.data.evidence?.frames?.length===1&&
+          prompt.payload.data.evidence.frames[0].timeframe===workspace.timeframe&&prompt.payload.data.evidence.quoteStatus==='UNAVAILABLE');
+      }
       const body=buildBody(d,prompt),wireDigest=digest(body);
       const deadlineMs=Math.min(prompt.expiresAtMs,Date.now()+8000);
       const expected={descriptorId:d.descriptorId,policyVersion:d.policyVersion,symbol:workspace.symbol,timeframe:workspace.timeframe};
@@ -136,7 +142,7 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
         if(!parsed.candidate)return {state:'FAILED',usage};
         const verified=await verifyCandidate({ticket,scope,candidate:parsed.candidate});
         requireTrue(verified?.verified===true&&verified.response?.verification==='RECOMPUTED_REFERENCE_SELECTION_ONLY'&&
-          verified.response.packageId===prompt.packageId&&verified.response.symbol===workspace.symbol&&Date.now()<verified.response.expiresAtMs);
+          verified.response.packageId===prompt.packageId&&verified.response.symbol===(educationOnly?null:workspace.symbol)&&Date.now()<verified.response.expiresAtMs);
         await admission.assertDisclosure(scope,operationId);await check();
         return {state:'VERIFIED',response:verified.response,usage};
       }catch{
