@@ -55,6 +55,7 @@ async function start() {
       const {loadFundedPilotBootstrap}=require('./modules/ai/providers/funded-pilot-bootstrap');
       restrictedPilotBootstrap=await loadFundedPilotBootstrap({marketRuntime});
       if(!restrictedPilotBootstrap)logger.warn('Funded AI pilot not activated');
+      else logger.info({mode:restrictedPilotBootstrap.educationOnly?'EDUCATION_ONLY':'HISTORICAL_REFERENCE_ONLY',dailyUsd:1,dailyRequests:20,maxConcurrent:1},'Funded AI ledger verified and runtime activated');
     }catch{logger.warn('Funded AI pilot configuration rejected; trading remains available');}
   }
   const app = createApp({ marketRuntime, tradingRuntime, authRuntime,restrictedPilotBootstrap });
