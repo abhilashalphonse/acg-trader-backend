@@ -4,7 +4,7 @@ const {createLiveAdmission}=require('../src/modules/ai/providers/live-admission'
 const {createLiveSessionAuthority}=require('../src/modules/ai/providers/live-runtime-config');
 const {createGuardedFixtureMarket}=require('../src/modules/ai/providers/guarded-fixture-market');
 const {assertIsolated}=require('../src/modules/ai/providers/credit-ledger-store');
-const {LiveControl,LiveConsent,LiveAttempt}=require('../src/modules/ai/providers/live-admission.model');
+const {LiveControl,LiveConsent,LiveAttempt,LivePlatform}=require('../src/modules/ai/providers/live-admission.model');
 
 // Test fixture only. All data, rates and authorizations belong to disposable CI.
 async function runGuardedNative({auth,gateway,gs,token,scope,readRequest,selection,workspace,
@@ -21,11 +21,14 @@ async function runGuardedNative({auth,gateway,gs,token,scope,readRequest,selecti
   const authz=createLiveSessionAuthority({authService:auth,gateway,governanceStore:gs,sessionToken:()=>token,
     marketEntitlement:async (s,w)=>entitled&&s.actorId===actorId&&Object.keys(config).every(k=>config[k]===w[k])});
   const ledger=()=>createLiveAdmission({...authz,
+    authorizePlatformAdmin:async a=>a.tenantId===tenantId&&a.actorId===actorId,
     authorizeAdmin:async a=>a.tenantId===tenantId&&a.actorId===actorId,
     authorizeReconciliation:async a=>a.tenantId===tenantId&&a.actorId===actorId,
     resolvePrice:async id=>id===price.descriptorId?price:null});
   const service=ledger();
   const control=await LiveControl.findById(tenantId).lean();
+  const platform=await LivePlatform.findById('platform').lean();
+  await service.setPlatformControl(actor,{expectedRevision:platform.revision,enabled:true,dailyPicoUsd:20000000,dailyRequests:100,maxOutstandingPicoUsd:10000000,maxOutstandingRequests:10});
   const limits={tenantDailyPicoUsd:10000000,actorDailyPicoUsd:8000000,tenantDailyRequests:16,actorDailyRequests:12};
   let revision=(await service.setControl(actor,{...limits,enabled:true,expectedRevision:control.revision})).revision;
   const makeGuard=()=>createGuardedFixtureMarket({admission:ledger(),policyVersion,
