@@ -169,7 +169,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime, restrictedPilot
     const { createStaffPreviewRouter } = require('./modules/ai/providers/staff-preview.routes');
     app.use('/v1/ai/staff-preview', (req, res, next) =>
       rejectUntrustedAuthOrigin(req, res, next, env.corsOrigins, env.isProduction));
-    app.use('/v1/ai/staff-preview', createStaffPreviewRouter({ authService, runtimeAvailable: () => fundedPilot && pilotEnabled() && restrictedPilotBootstrap.verifyRelease() === true }));
+    app.use('/v1/ai/staff-preview', createStaffPreviewRouter({ authService, runtimeAvailable: () => fundedPilot && pilotEnabled() && restrictedPilotBootstrap.verifyRelease() === true, runtimeMode: () => restrictedPilotBootstrap?.educationOnly===true?'EDUCATION_ONLY':'HISTORICAL_REFERENCE_ONLY' }));
   }
   if (process.env.ACG_ALERTS_ENABLED === 'true') app.use('/v1/alerts', createAlertRouter({authService,marketRuntime}));
   app.use('/v1/internal/auth', createInternalAuthRouter(authService));
