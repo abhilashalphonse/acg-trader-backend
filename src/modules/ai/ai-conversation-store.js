@@ -1,6 +1,6 @@
 'use strict';
 const mongoose=require('mongoose');
-const {createHash}=require('node:crypto');
+const {createHash,randomUUID}=require('node:crypto');
 const {AiConversationBucket}=require('./ai-conversation.model');
 const {assertIsolated}=require('./providers/credit-ledger-store');
 const {AppError}=require('../../shared/errors/app-error');
@@ -29,10 +29,10 @@ function createIsolatedConversationStore(){
         const {next,value}=work(current);
         if(next===null)return value;
         const revision=(current?.revision||0)+1;
-        const doc={...filter,revision,expiresAt:new Date(Math.max(...next.map(c=>c.expiresAtMs))),conversations:next};
+        const doc={...filter,generation:current?.generation||randomUUID(),revision,expiresAt:new Date(Math.max(...next.map(c=>c.expiresAtMs))),conversations:next};
         try{
           if(!current){await AiConversationBucket.create(doc);return value;}
-          const result=await AiConversationBucket.replaceOne({...filter,revision:current.revision},doc,
+          const result=await AiConversationBucket.replaceOne({...filter,generation:current.generation,revision:current.revision},doc,
             {runValidators:true,writeConcern:{w:'majority'},maxTimeMS:2000});
           if(result.matchedCount===1)return value;
         }catch(e){
