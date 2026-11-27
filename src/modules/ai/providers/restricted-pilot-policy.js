@@ -9,11 +9,11 @@ const safeTime=v=>Number.isSafeInteger(v)&&v>0;
 const fail=()=>Object.assign(Error('Pilot policy unavailable'),{code:'LIVE_AI_PILOT_POLICY_DENIED'});
 // Staff-only, read-only pilot. Membership and export rights are deployment
 // policy inputs, not browser claims. An unapproved policy cannot enable egress.
-function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resolveMembership,resolveDataRights,validatePayload,now=Date.now}={}){
-  if(![verifyApproval,resolveAccount,resolveMembership,resolveDataRights,validatePayload,now].every(f=>typeof f==='function'))throw fail();
+function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resolveMembership,resolveDataRights,validatePayload,now=Date.now,fundedStaff=false}={}){
+  if(![verifyApproval,resolveMembership,resolveDataRights,validatePayload,now].every(f=>typeof f==='function')||(!fundedStaff&&typeof resolveAccount!=='function'))throw fail();
   if(!policy||!exact(policy,['enabled','expiresAtMs','descriptorId','policyVersion','members','instruments'])||
     typeof policy.enabled!=='boolean'||!safeTime(policy.expiresAtMs)||!hex(policy.descriptorId)||!hex(policy.policyVersion)||
-    !Array.isArray(policy.members)||policy.members.length>10||!policy.members.every(m=>exact(m,['tenantId','actorId','accountId'])&&Object.values(m).every(id))||
+    !Array.isArray(policy.members)||policy.members.length>10||!policy.members.every(m=>exact(m,fundedStaff?['tenantId','actorId']:['tenantId','actorId','accountId'])&&Object.values(m).every(id))||
     !Array.isArray(policy.instruments)||policy.instruments.length>10||!policy.instruments.every(i=>exact(i,['symbol','timeframe'])&&
       typeof i.symbol==='string'&&/^[A-Z0-9._-]{1,32}$/.test(i.symbol)&&['1m','5m','15m','30m','1h','4h','1d','1w'].includes(i.timeframe)))throw fail();
   const pinned=structuredClone(policy),{policyVersion,descriptorId,...fields}=pinned;
@@ -23,13 +23,15 @@ function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resol
   const allowed=async(scope,workspace,purpose)=>{
     try{
       if(pinned.enabled!==true||now()>=pinned.expiresAtMs||await verifyApproval(Object.freeze({policyVersion,descriptorId}))!==true||
-        !pinned.members.some(m=>['tenantId','actorId','accountId'].every(k=>m[k]===scope?.[k]))||
+        !pinned.members.some(m=>(fundedStaff?['tenantId','actorId']:['tenantId','actorId','accountId']).every(k=>m[k]===scope?.[k]))||
         !pinned.instruments.some(i=>i.symbol===workspace?.symbol&&i.timeframe===workspace?.timeframe)||
         !['GRANT','CLAIM','DISPATCH','DISCLOSE','EXPORT'].includes(purpose))return false;
       if(workspace.descriptorId!==pinned.descriptorId||workspace.policyVersion!==policyVersion)return false;
-      const a=await resolveAccount(scope);
-      if(!a||a.tenantId!==scope.tenantId||a.accountId!==scope.accountId||a.actorId!==scope.actorId||
-        a.accountType!=='DEMO'||a.active!==true||a.ownership!=='ACG_TRADER_PERSONAL_V1')return false;
+      if(!fundedStaff){
+        const a=await resolveAccount(scope);
+        if(!a||a.tenantId!==scope.tenantId||a.accountId!==scope.accountId||a.actorId!==scope.actorId||
+          a.accountType!=='DEMO'||a.active!==true||a.ownership!=='ACG_TRADER_PERSONAL_V1')return false;
+      } // Funded branch is permitted only after the separate fresh session/ownership authority.
       if(await resolveMembership(scope,policyVersion)!==true)return false;
       if(await resolveDataRights({scope,symbol:workspace.symbol,timeframe:workspace.timeframe,policyVersion,providerId:'openai'})!==true)return false;
       return now()<pinned.expiresAtMs&&await verifyApproval(Object.freeze({policyVersion,descriptorId}))===true;
