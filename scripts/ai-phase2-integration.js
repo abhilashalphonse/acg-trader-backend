@@ -102,6 +102,8 @@ async function runPhase2Integration({auth,gateway,gs,token,readRequest,foreignTo
   const security=await runPhase3SecurityIntegration({auth,gateway,gs,token,foreignToken,readRequest,source,scope,asOf});
   const {runPhase4ChatIntegration}=require('./ai-phase4-chat-integration');
   await runPhase4ChatIntegration({auth,gateway,gs,token,foreignToken,readRequest,scope});
+  const {runPhase4ConversationIntegration}=require('./ai-phase4-conversation-integration');
+  await runPhase4ConversationIntegration({auth,gateway,gs,token,foreignToken,readRequest,scope});
   // Later Phase 1 test changes actual control revision and revokes actual grant.
   return async phase=>{
     await assert.rejects(assembler.assemble(req),{code:'CONTEXT_FORBIDDEN'});
