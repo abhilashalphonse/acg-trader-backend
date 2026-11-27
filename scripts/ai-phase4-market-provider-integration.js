@@ -29,8 +29,8 @@ async function runPhase4MarketProviderIntegration({auth,gateway,gs,token,foreign
   // candles as current. The provider verifier runs against the real clock.
   const marketSource={instrument:s=>source.instrument(s),async candles(r){reads++;return source.candles({...r,asOfMs:asOf});}};
   const store=createIsolatedConversationStore();
-  const service=()=>createIsolatedConversations({store,registry,workspaceAnalysis:createIsolatedWorkspaceAnalysis({source:marketSource}),
-    conversationProvider:createIsolatedConversationProvider({registry,store:credentialStore,crypto,transport,admission,marketSource})});
+  const service=(marketGuard=null)=>createIsolatedConversations({store,registry,workspaceAnalysis:createIsolatedWorkspaceAnalysis({source:marketSource}),
+    conversationProvider:createIsolatedConversationProvider({registry,store:credentialStore,crypto,transport,admission,marketSource,marketGuard})});
   let current=service();
   const app=express(),quotaNow=Date.now()+18000000;
   app.use('/v1/ai/chat',createIsolatedChatRouter({authService:auth,gateway,governance:createAiGovernance({store:gs}),
@@ -53,7 +53,7 @@ async function runPhase4MarketProviderIntegration({auth,gateway,gs,token,foreign
     return {status:r.status,body:await r.json(),cache:r.headers.get('cache-control')};
   }
   async function ok(op,payload={}){const r=await call(op,payload);assert.equal(r.status,200,op+' '+JSON.stringify(r.body.error||{}));assert.equal(r.cache,'no-store');return r.body;}
-  async function append(){const key={conversationId,messageId:randomUUID()};await ok('append',{...key,text:'What is the historical closed price?'});return key;}
+  async function append(id=conversationId){const key={conversationId:id,messageId:randomUUID()};await ok('append',{...key,text:'What is the historical closed price?'});return key;}
   const start=requests(),candleCount=await Candle.countDocuments({});
   try{
     assert.equal((await call('create',{...config,workspace:{...workspace,includeChartContext:false}})).status,400);
@@ -113,6 +113,15 @@ async function runPhase4MarketProviderIntegration({auth,gateway,gs,token,foreign
       assert.equal(await Candle.countDocuments({}),candleCount);
     }
     console.log('PASS Phase 4F authenticated chart-aware TLS provider, verified historical reference, consent, scope, replay, forged reference and cancellation; no candle writes');
+    const guardedId=randomUUID();
+    const {runGuardedNative}=require('./ai-guarded-native-integration');
+    await runGuardedNative({auth,gateway,gs,token,scope,readRequest,selection,workspace,requests,setHook,setMode,
+      useGuard:guard=>{current=service(guard);},
+      create:()=>ok('create',{...config,conversationId:guardedId}),
+      append:()=>append(guardedId),
+      generate:payload=>call('generate',payload)});
+    await ok('delete',{conversationId:guardedId});
+    assert.equal(await Candle.countDocuments({}),candleCount);
   }finally{setMode('normal');setHook(null);server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
 module.exports={runPhase4MarketProviderIntegration};
