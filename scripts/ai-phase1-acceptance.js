@@ -184,8 +184,8 @@ async function main() {
     assert.equal(String((await TradingAccount.findById(a.id)).state.balance),'10000');
     assert.equal(String((await TradingAccount.findById(b.id)).state.balance),'90000');
     console.log('PASS current account revocation, scoped minimal audit, application immutability and no financial mutations');
-    const {runFundedPilotMountAcceptance}=require('./ai-funded-pilot-mount-acceptance');
-    await runFundedPilotMountAcceptance({auth,foreignToken:ta});
+    // Run Funded acceptance in a separate process, database and ledger.
+    require('node:child_process').execFileSync(process.execPath,[require('node:path').join(__dirname,'ai-funded-workspace-acceptance.js')],{stdio:'inherit',timeout:120000});
   } finally {
     if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
     if(mongoose.connection.readyState===1 && mongoose.connection.name===dbName) await mongoose.connection.dropDatabase();
