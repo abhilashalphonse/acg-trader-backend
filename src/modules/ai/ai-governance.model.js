@@ -13,7 +13,7 @@ const auditSchema = new Schema({
   actorId: { type: String, default: null, maxlength: 64 },
   sessionId: { type: String, default: null, match: /^[a-f0-9]{24}$/ },
   requestedAccountId: { type: String, default: null, match: /^[a-f0-9]{24}$/ },
-  operation: { type: String, required: true, enum: ['DISCOVER','GRANT_GET','GRANT_CREATE','GRANT_REVOKE','TOOL_INVOKE','AI_GENERATE_OFFLINE','CHAT_DISCOVER_OFFLINE','CHAT_PREFLIGHT_OFFLINE','CHAT_CREATE_OFFLINE','CHAT_LIST_OFFLINE','CHAT_HISTORY_OFFLINE','CHAT_APPEND_OFFLINE','CHAT_CANCEL_OFFLINE','CHAT_DELETE_OFFLINE','CHAT_ANALYZE_OFFLINE','CONTROL_CHANGE'] },
+  operation: { type: String, required: true, enum: ['DISCOVER','GRANT_GET','GRANT_CREATE','GRANT_REVOKE','TOOL_INVOKE','AI_GENERATE_OFFLINE','CHAT_DISCOVER_OFFLINE','CHAT_PREFLIGHT_OFFLINE','CHAT_CREATE_OFFLINE','CHAT_LIST_OFFLINE','CHAT_HISTORY_OFFLINE','CHAT_APPEND_OFFLINE','CHAT_CANCEL_OFFLINE','CHAT_DELETE_OFFLINE','CHAT_ANALYZE_OFFLINE','CHAT_GENERATE_OFFLINE','CONTROL_CHANGE'] },
   toolId: { type: String, default: null, maxlength: 80 },
   stage: { type: String, required: true, enum: ['ATTEMPT','ALLOWED','DENIED','FAILED','SUPPRESSED','CONTROL_CHANGED'] },
   reason: { type: String, default: null, maxlength: 64 },
