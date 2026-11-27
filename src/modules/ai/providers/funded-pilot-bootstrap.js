@@ -97,7 +97,11 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
           const {safeQuestion}=require('./funded-workspace-context');
           return keys==='account,history,knowledge,market,question'&&safeQuestion(data.question)&&Array.isArray(data.history)&&data.history.length<=6&&
             data.history.every(m=>['user','assistant'].includes(m.role)&&safeQuestion(m.text))&&
-            (data.market===null||data.market?.symbol===workspace.symbol&&data.market?.frames?.length===1&&data.market.frames[0].timeframe===workspace.timeframe&&['twelve-data','accelpix'].includes(data.market.provider))&&
+            (data.market===null||data.market?.schemaVersion==='adaptive-market-v1'&&data.market.symbol===workspace.symbol&&
+              data.market.selectedTimeframe===workspace.timeframe&&Array.isArray(data.market.frames)&&data.market.frames.length>=1&&data.market.frames.length<=6&&
+              data.market.frames[0].timeframe===workspace.timeframe&&new Set(data.market.frames.map(f=>f.timeframe)).size===data.market.frames.length&&
+              data.market.frames.every(f=>['1m','5m','15m','30m','1h','4h','1d','1w'].includes(f.timeframe)&&Array.isArray(f.closedCandles)&&f.closedCandles.length<=128&&
+                f.closedCandles.every(b=>Array.isArray(b)&&b.length===5&&b.every(Number.isFinite)))&&['twelve-data','accelpix'].includes(data.market.provider))&&
             (data.account===null||data.account?.source==='PERSISTED_ACCOUNT_SNAPSHOT')&&
             payload.response_format?.json_schema?.name==='acg_workspace_answer'&&
             ![scope.tenantId,scope.actorId,scope.sessionId,scope.accountId,staff].some(v=>JSON.stringify(payload).includes(v));
