@@ -11,8 +11,8 @@ const fail=()=>Object.assign(Error('Pilot policy unavailable'),{code:'LIVE_AI_PI
 // policy inputs, not browser claims. An unapproved policy cannot enable egress.
 function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resolveMembership,resolveDataRights,validatePayload,now=Date.now,fundedStaff=false}={}){
   if(![verifyApproval,resolveMembership,resolveDataRights,validatePayload,now].every(f=>typeof f==='function')||(!fundedStaff&&typeof resolveAccount!=='function'))throw fail();
-  if(!policy||!exact(policy,['enabled','expiresAtMs','descriptorId','policyVersion','members','instruments',...(fundedStaff?['approvalDigest']:[])])||
-    (fundedStaff&&!hex(policy.approvalDigest))||
+  if(!policy||!exact(policy,['enabled','expiresAtMs','descriptorId','policyVersion','members','instruments',...(fundedStaff?['approvalDigest']:[]),...(policy?.workspaceChat===true?['workspaceChat']:[])])||
+    (fundedStaff&&!hex(policy.approvalDigest))||(policy.workspaceChat===true&&!fundedStaff)||
     typeof policy.enabled!=='boolean'||!safeTime(policy.expiresAtMs)||!hex(policy.descriptorId)||!hex(policy.policyVersion)||
     !Array.isArray(policy.members)||policy.members.length>10||!policy.members.every(m=>exact(m,fundedStaff?['tenantId','actorId']:['tenantId','actorId','accountId'])&&Object.values(m).every(id))||
     !Array.isArray(policy.instruments)||policy.instruments.length>10||!policy.instruments.every(i=>exact(i,['symbol','timeframe'])&&
@@ -25,7 +25,7 @@ function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resol
     try{
       if(pinned.enabled!==true||now()>=pinned.expiresAtMs||await verifyApproval(Object.freeze({policyVersion,descriptorId}))!==true||
         !pinned.members.some(m=>(fundedStaff?['tenantId','actorId']:['tenantId','actorId','accountId']).every(k=>m[k]===scope?.[k]))||
-        !pinned.instruments.some(i=>i.symbol===workspace?.symbol&&i.timeframe===workspace?.timeframe)||
+        (pinned.workspaceChat!==true&&!pinned.instruments.some(i=>i.symbol===workspace?.symbol&&i.timeframe===workspace?.timeframe))||
         !['GRANT','CLAIM','DISPATCH','DISCLOSE','EXPORT'].includes(purpose))return false;
       if(workspace.descriptorId!==pinned.descriptorId||workspace.policyVersion!==policyVersion)return false;
       if(!fundedStaff){
