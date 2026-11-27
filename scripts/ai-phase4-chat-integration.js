@@ -62,7 +62,7 @@ async function runPhase4ChatIntegration({auth,gateway,gs,token,foreignToken,read
     assert.equal((await send('/messages',{...input,question:'Do not dispatch.'})).status,404);
     allowed=false;assert.equal((await send('/capabilities',a)).status,403);allowed=true;
     lateDeny=true;checks=0;assert.equal((await send('/preflight',input)).status,403);lateDeny=false;
-    const events=await AiAuditEvent.find({tenantId:scope.tenantId,operation:{$in:['CHAT_DISCOVER_OFFLINE','CHAT_PREFLIGHT_OFFLINE']}}).lean();
+    const events=(await Promise.all(['CHAT_DISCOVER_OFFLINE','CHAT_PREFLIGHT_OFFLINE'].map(operation=>AiAuditEvent.find({tenantId:scope.tenantId,operation}).lean()))).flat();
     assert.ok(events.some(e=>e.stage==='ALLOWED'));assert.ok(events.some(e=>e.stage==='DENIED'));
     assert.ok(events.some(e=>e.stage==='SUPPRESSED'));
     assert.ok(events.every(e=>!Object.hasOwn(e,'selection')&&!Object.hasOwn(e,'question')&&!Object.hasOwn(e,'result')));
