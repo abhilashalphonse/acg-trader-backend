@@ -22,13 +22,18 @@ const questions=Object.freeze({
   HISTORICAL_OVERVIEW:{profile:'MARKET_OVERVIEW',question:'Summarize the available historical closed-candle evidence.'},
   HISTORICAL_STRUCTURE:{profile:'STRUCTURE',question:'Describe the historical closed-candle structure using the supplied references.'}
 });
+const educationQuestions=Object.freeze({
+  EDUCATION_STRUCTURE:{profile:'EDUCATION',question:'Explain market structure and break of structure.'},
+  EDUCATION_LIQUIDITY:{profile:'EDUCATION',question:'Explain potential liquidity references.'},
+  EDUCATION_FVG:{profile:'EDUCATION',question:'Explain fair value gaps.'}
+});
 const runtimes=new WeakSet();
 // Only trusted application bootstrap may supply release approval, custody,
 // membership, data licensing and service-authority ports. No defaults, no
 // public config, no externally supplied model, prompt, token cap or tools.
 function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretPort,verifyRelease,verifyApproval,
   resolveMembership,resolveDataRights,validatePayload,countUpperBound,resolveBillingActor,authorizeBilling,
-  authService,gateway,governanceStore,marketRuntime,fundedStaff=false}={}){
+  authService,gateway,governanceStore,marketRuntime,fundedStaff=false,educationOnly=false}={}){
   if(env.ACG_AI_LIVE_PROVIDER_ENABLED!=='true'||env.ACG_AI_RESTRICTED_PILOT_ENABLED!=='true')return null;
   guard([verifyRelease,verifyApproval,resolveMembership,resolveDataRights,validatePayload,countUpperBound,
     resolveBillingActor,authorizeBilling].every(f=>typeof f==='function'));
@@ -40,7 +45,8 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
   const funded=fundedStaff===true?createFundedStaffAuthority({authService,env}):null;
   const pilot=createRestrictedPilotPolicy({policy,verifyApproval,resolveMembership,resolveDataRights,validatePayload,
     resolveAccount:funded?null:createPersonalDemoPilotAccountResolver({store:createAiReadStore()}),fundedStaff:!!funded});
-  const source=createMarketContextSource(marketRuntime);
+  guard(!educationOnly||fundedStaff===true);
+  const source=educationOnly?null:createMarketContextSource(marketRuntime);
   async function context(token,input){
     assertLiveRuntime(config);
     let owner,authz;
@@ -62,7 +68,8 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       owner=Object.freeze({...scope,connectionId:input.connectionId});
       authz=createLiveSessionAuthority({authService,gateway,governanceStore,sessionToken:()=>token,marketEntitlement:pilot.marketEntitlement});
     }
-    const workspace=Object.freeze({symbol:input.symbol,timeframe:input.timeframe,includeChartContext:true});
+    if(educationOnly)guard(input.symbol==='EDUCATION'&&input.timeframe==='1m');
+    const workspace=Object.freeze({symbol:input.symbol,timeframe:input.timeframe,includeChartContext:!educationOnly});
     const binding={descriptorId:d.descriptorId,policyVersion:d.policyVersion,symbol:workspace.symbol,timeframe:workspace.timeframe};
     // A reconciliation witness is local to this authenticated request and
     // tied to its exact provider response. It cannot be submitted by clients.
@@ -104,6 +111,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
     return {owner,workspace,binding,admission,allowed,recordUsage};
   }
   const runtime=Object.freeze({
+    mode:educationOnly?'EDUCATION_ONLY':'HISTORICAL_REFERENCE_ONLY',
     async quotaPrincipal(token,input,principal){
       if(!funded)return principal;
       const s=await funded.resolve(token,input.accountId,input.connectionId);
@@ -125,31 +133,31 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       return x.admission.revoke(x.owner,input.expectedRevision);
     },
     async generate(token,input,{signal}={}){
-      const x=await context(token,input),q=questions[input.intent];guard(q);
+      const x=await context(token,input),q=(educationOnly?educationQuestions:questions)[input.intent];guard(q);
       const pinned=await x.admission.assertConsent(x.owner,x.binding);
       const allowed=async()=>{
         await x.allowed();guard(!signal?.aborted);
         await x.admission.assertConsent(x.owner,{...x.binding,consentRevision:pinned.consentRevision});return true;
       };
       const scope=Object.fromEntries(['tenantId','actorId','sessionId','accountId'].map(k=>[k,x.owner[k]]));
-      const request={scope,symbol:x.workspace.symbol,timeframes:[x.workspace.timeframe],limit:64,sessionWindows:[]};
-      const assembler=createTrustedContextAssembler({source:{instrument:s=>source.instrument(s),candles:r=>source.candles(r),quote:()=>null},
+      const request=educationOnly?null:{scope,symbol:x.workspace.symbol,timeframes:[x.workspace.timeframe],limit:64,sessionWindows:[]};
+      const assembler=educationOnly?null:createTrustedContextAssembler({source:{instrument:s=>source.instrument(s),candles:r=>source.candles(r),quote:()=>null},
         authorize:async r=>isDeepStrictEqual(r,request)&&await allowed()});
       const engine=createResponseEngine({authorize:async r=>r.profile===q.profile&&isDeepStrictEqual(r.marketRequest,request)&&await allowed()});
-      const chart=await assembler.assemble(request);
-      const sourceProvider=chart.instrument.provider;
-      const sourceApproved=async()=>!funded||await resolveDataRights({scope:x.owner,...x.binding,providerId:'openai',sourceProvider})===true;
+      const chart=educationOnly?null:await assembler.assemble(request);
+      const sourceProvider=educationOnly?undefined:chart.instrument.provider;
+      const sourceApproved=async()=>educationOnly||!funded||await resolveDataRights({scope:x.owner,...x.binding,providerId:'openai',sourceProvider})===true;
       guard(await sourceApproved());
       const {ticket,prompt}=await engine.prepare({scope,profile:q.profile,question:q.question,context:chart});
       const body=buildBody(d,prompt);
-      const transport=createLiveOpenAiTransport({config,admission:x.admission,authorizeExport:async request=>
+      const transport=createLiveOpenAiTransport({config,admission:x.admission,educationOnly,authorizeExport:async request=>
         isDeepStrictEqual(request.payload,body)&&await sourceApproved()&&await pilot.authorizeExport(request),
         countUpperBound,recordUsage:x.recordUsage,verifyCandidate:({ticket,candidate})=>engine.verify({ticket,scope,candidate})});
       const result=await transport.run({scope:x.owner,workspace:x.workspace,prompt,ticket,operationId:input.operationId,
         authorizeMessage:allowed,signal});
       // A late revocation or pause suppresses a verified answer, not billing.
       if(result.state==='VERIFIED'){await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);}
-      return {...result,source:{provider:sourceProvider},workspace:x.workspace,operationId:input.operationId};
+      return {...result,source:{provider:educationOnly?'ACG_INTERNAL_ORIGINAL':sourceProvider},workspace:x.workspace,operationId:input.operationId};
     }
   });
   runtimes.add(runtime);return runtime;
