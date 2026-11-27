@@ -60,3 +60,12 @@ test('token pressure removes history and older candle rows explicitly, without m
   assert.ok(data.market.frames.some(f=>f.omittedClosedBars>0));
   assert.equal(frames[0].closedCandles.length,128);
 });
+test('workspace prompt uses natural conversation without mandatory report sections',()=>{
+  const body=buildWorkspaceBody({modelId:'fixture',maxInputTokens:32768,maxOutputTokens:2048},{question:'Did I miss the move today?',history:[],market:null,account:null});
+  const policy=JSON.parse(body.messages[0].content).join(' ');
+  assert.match(policy,/ordinary paragraphs by default/);
+  assert.match(policy,/Never force a report template/);
+  assert.doesNotMatch(policy,/Begin with ## Market outlook|Finish market analysis with ## Current assessment/);
+  assert.match(policy,/Do not invent market prices/);
+  assert.equal(body.response_format.json_schema.name,'acg_workspace_answer');
+});
