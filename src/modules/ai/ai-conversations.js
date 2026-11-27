@@ -71,7 +71,8 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
       const bucket=await store.read(scope),original=find(live(bucket,at),x.conversationId);
       const initial=original.messages.find(m=>m.messageId===x.messageId);
       if(!initial||initial.status!=='STORED_OFFLINE')throw deny('AI_CHAT_NOT_FOUND',404);
-      if(original.profile!=='EDUCATION'||original.workspace!==null||original.selection?.fundingMode!=='BYO_API')throw deny('AI_CHAT_PROVIDER_DISABLED',403);
+      const market=original.profile==='STRUCTURE'||original.profile==='MARKET_OVERVIEW';
+      if((market?original.workspace?.includeChartContext!==true:original.profile!=='EDUCATION'||original.workspace!==null)||original.selection?.fundingMode!=='BYO_API')throw deny('AI_CHAT_PROVIDER_DISABLED',403);
       model(original.selection);
       // Fence against delete/recreate, expiry, message mutation, cancellation
       // and selection changes. Unrelated message appends do not invalidate a run.
@@ -86,7 +87,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
           throw deny('AI_CHAT_CHANGED');
         return {c,m};
       }
-      await permit(original.selection,original.profile,null);
+      await permit(original.selection,original.profile,original.workspace??null);
       const operationId=randomUUID();
       // Claim before any provider action. CAS retries are pure; a concurrent
       // request receives the existing receipt, never another provider call.
@@ -107,7 +108,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
         return {value:freeze({...value,replayed:true}),fence:async()=>{await disclose(claimed.run);}};
       }
       const authorize=async()=>{
-        await permit(original.selection,original.profile,null);
+        await permit(original.selection,original.profile,original.workspace??null);
         const {m}=locate(await store.read(scope),time());
         if(m.providerRun?.operationId!==operationId||m.providerRun.state!=='CLAIMED')throw deny('AI_CHAT_CHANGED');
         return true;
@@ -116,7 +117,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
       // Neither state can be retried, even by a new process or session.
       await authorize();
       const outcome=await conversationProvider.run({scope,selection:original.selection,profile:original.profile,
-        question:initial.text,operationId,authorize});
+        workspace:original.workspace??null,question:initial.text,operationId,authorize});
       await authorize();
       if(!['VERIFIED','FAILED','HELD_UNKNOWN'].includes(outcome?.state))throw deny('AI_CHAT_PROVIDER_UNVERIFIED');
       const value=await store.mutate(scope,b=>{
@@ -130,7 +131,13 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
         m.updatedAtMs=t;c.updatedAtMs=t;
         return {next:cs,value:receipt(c,m)};
       });
-      return {value:freeze({...value,replayed:false}),fence:async()=>{await disclose(value.providerRun,true);}};
+      // Market evidence is ephemeral; history retains only the durable attempt
+      // metadata. Replays must never redispatch or reconstruct stale prices.
+      const report=market&&outcome.state==='VERIFIED'?{conversationId:x.conversationId,messageId:x.messageId,
+        workspace:original.workspace,mode:'FIXTURE_PROVIDER_MARKET_REPORT',semanticAnswer:false,offlineOnly:true,
+        fixtureProviderOnly:true,dispatchAllowed:false,creditDeducted:false,...outcome.marketResponse}:null;
+      return {value:freeze({...value,replayed:false,...(report?{verifiedMarket:report}:{})}),
+        fence:async()=>{await disclose(value.providerRun,true);}};
     }
     if(op==='analyze'){
       if((typeof workspaceAnalysis?.analyze!=='function'||typeof workspaceAnalysis?.assertFresh!=='function'))throw deny('AI_WORKSPACE_DISABLED',403);
