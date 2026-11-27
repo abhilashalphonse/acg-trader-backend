@@ -12,7 +12,12 @@ const SUPPORTED_FACTS=new Set(['LAST_CLOSED_PRICE','OBSERVED_RANGE_HIGH','OBSERV
 function createIsolatedWorkspaceAnalysis({source,now=Date.now}={}){
   assertIsolated();
   if(typeof source?.instrument!=='function'||typeof source?.candles!=='function')throw deny('AI_CHAT_CONFIG',503);
+  function assertFresh(report){
+    const at=now(),r=report?.response;
+    if(!r||!Number.isSafeInteger(at)||at<r.verifiedAtMs||at>=r.expiresAtMs)throw deny('AI_RESPONSE_EXPIRED');
+  }
   return Object.freeze({
+    assertFresh,
     async analyze({scope,workspace,profile,question,authorize}){
       assertIsolated();
       if(!workspace||workspace.includeChartContext!==true||
