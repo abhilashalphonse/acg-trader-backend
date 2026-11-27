@@ -57,7 +57,36 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
     for(const key of budgetIds(a,a.day)){const r=await get(B,key,session);check(r&&r.reservedPicoUsd>=a.reservedPicoUsd,'LIVE_AI_LEDGER_INVALID');
       await patch(B,{_id:key,reservedPicoUsd:r.reservedPicoUsd,settledPicoUsd:r.settledPicoUsd},{reservedPicoUsd:r.reservedPicoUsd-a.reservedPicoUsd,settledPicoUsd:sum(r.settledPicoUsd,actual)},session);}
   }
+  async function currentConsent(s,expected,purpose){
+    await permitted(s,purpose);
+    const c=await read(C.findById(s.tenantId)),g=await read(S.findById(consentId(s)));
+    check(c?.enabled===true,'LIVE_AI_PAUSED');
+    check(g?.active===true&&scopeEqual(s,g)&&g.controlRevision===c.revision&&g.expiresAtMs>clock()&&
+      ['descriptorId','policyVersion','symbol','timeframe'].every(k=>g[k]===expected[k])&&
+      (expected.consentRevision===undefined||g.revision===expected.consentRevision),'LIVE_AI_CONSENT_REQUIRED');
+    await market(s,g,purpose);await permitted(s,purpose);
+    // Re-read after the asynchronous external authorization callbacks. A
+    // final network/disclosure race cannot be eliminated by a read fence.
+    const latestC=await read(C.findById(s.tenantId)),latestG=await read(S.findById(g._id));
+    check(latestC?.enabled===true&&latestC.revision===c.revision&&latestG?.active===true&&
+      latestG.revision===g.revision&&latestG.expiresAtMs>clock(),'LIVE_AI_CONSENT_REQUIRED');
+    return {consentRevision:g.revision,controlRevision:c.revision};
+  }
+  async function assertAttempt(s,operationId,allowedStates,purpose){
+    check(uuid(operationId));await permitted(s,purpose);
+    const key=attemptId(s,operationId),a=await read(A.findById(key)),c=await read(C.findById(s.tenantId)),g=await read(S.findById(consentId(s)));
+    const allowed=(a,c,g)=>a&&scopeEqual(a,s)&&allowedStates.includes(a.state)&&c?.enabled===true&&c.revision===a.controlRevision&&
+      g?.active===true&&g.revision===a.consentRevision&&g.controlRevision===c.revision&&g.expiresAtMs>clock()&&scopeEqual(g,s)&&
+      g.descriptorId===a.descriptorId&&g.policyVersion===a.policyVersion&&
+      (purpose!=='DISPATCH'||a.day===day(clock()));
+    check(allowed(a,c,g),'LIVE_AI_DISCLOSURE_DENIED');
+    await market(s,g,purpose);await permitted(s,purpose);
+    check(allowed(await read(A.findById(key)),await read(C.findById(s.tenantId)),await read(S.findById(g._id))),'LIVE_AI_DISCLOSURE_DENIED');
+    return true;
+  }
   return Object.freeze({
+    async assertConsent(s0,expected){return currentConsent(scope(s0),expected,'CLAIM');},
+    async assertDispatch(s0,operationId){return assertAttempt(scope(s0),operationId,['DISPATCHING'],'DISPATCH');},
     async provision(){for(const m of models){await m.createCollection();await m.createIndexes();}},
     async setControl(actor,{expectedRevision,enabled,tenantDailyPicoUsd,actorDailyPicoUsd,tenantDailyRequests,actorDailyRequests}){
       check(integer(expectedRevision)&&typeof enabled==='boolean'&&[tenantDailyPicoUsd,actorDailyPicoUsd,tenantDailyRequests,actorDailyRequests].every(positive)&&actorDailyPicoUsd<=tenantDailyPicoUsd&&actorDailyRequests<=tenantDailyRequests);
@@ -105,19 +134,14 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
         await market(s,g,'DISPATCH');await guard(s,c,g,t,session);await patch(A,{_id:key,state:'CLAIMED'},{state:'DISPATCHING',updatedAtMs:t},session);
         await event(session,s,'DISPATCH',key,c.revision,t);return {attemptId:key};});
     },
-    async assertDisclosure(s0,operationId){
-      const s=scope(s0);check(uuid(operationId));await permitted(s,'DISCLOSE');
-      const a=await read(A.findById(attemptId(s,operationId))),c=await read(C.findById(s.tenantId)),g=await read(S.findById(consentId(s)));
-      check(a&&scopeEqual(a,s)&&['DISPATCHING','SETTLED'].includes(a.state)&&c?.enabled===true&&c.revision===a.controlRevision&&g?.active===true&&g.revision===a.consentRevision&&g.expiresAtMs>clock()&&scopeEqual(g,s),'LIVE_AI_DISCLOSURE_DENIED');
-      await market(s,g,'DISCLOSE');await permitted(s,'DISCLOSE');return true;
-    },
+    async assertDisclosure(s0,operationId){return assertAttempt(scope(s0),operationId,['DISPATCHING','SETTLED'],'DISCLOSE');},
     // Reconciliation runs independently of consent, session expiry and pause.
     // An authenticated, separately authorized billing worker supplies evidence.
     // Unknown usage stays reserved; never release a dispatch on timeout.
     async reconcile(actor,{attemptId:key,kind,evidenceId,inputTokens,outputTokens}){
       check(id(actor?.tenantId)&&id(actor?.actorId)&&hex(key)&&['UNKNOWN','SETTLE','NOT_SENT'].includes(kind)&&hex(evidenceId));
-      check(await authorizeReconciliation(actor,key,kind,evidenceId)===true,'LIVE_AI_RECONCILE_DENIED');
-      return tx(async session=>{check(await authorizeReconciliation(actor,key,kind,evidenceId)===true,'LIVE_AI_RECONCILE_DENIED');
+      check(await authorizeReconciliation(actor,key,kind,evidenceId,Object.freeze({inputTokens,outputTokens}))===true,'LIVE_AI_RECONCILE_DENIED');
+      return tx(async session=>{check(await authorizeReconciliation(actor,key,kind,evidenceId,Object.freeze({inputTokens,outputTokens}))===true,'LIVE_AI_RECONCILE_DENIED');
         const a=await get(A,key,session);check(a?.tenantId===actor.tenantId,'LIVE_AI_RECONCILE_DENIED');
         const state=kind==='SETTLE'?'SETTLED':kind==='UNKNOWN'?'HELD_UNKNOWN':'NOT_SENT';
         if(a.state===state){check(a.evidenceId===evidenceId&&(kind!=='SETTLE'||a.inputTokens===inputTokens&&a.outputTokens===outputTokens),'LIVE_AI_CHANGED');return {state,actualPicoUsd:a.actualPicoUsd};}
