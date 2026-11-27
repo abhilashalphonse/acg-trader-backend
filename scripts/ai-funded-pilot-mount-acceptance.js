@@ -84,6 +84,13 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
     // any reservation or secret access. No public network is used by this test.
     server.closeAllConnections();await new Promise(resolve=>server.close(resolve));server=null;
     process.env.ACG_AI_FUNDED_LIVE_ENABLED='true';
+    const {loadFundedPilotBootstrap}=require('../src/modules/ai/providers/funded-pilot-bootstrap');
+    const eduEnv={...flags,ACG_AI_FUNDED_EDUCATION_ONLY:'true',ACG_AI_FUNDED_EDUCATION_EXPIRES_AT_MS:String(Date.now()+120000),
+      ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-do-not-send-'.padEnd(40,'x')};
+    const realBootstrap=await loadFundedPilotBootstrap({env:eduEnv,marketRuntime:null});
+    assert.equal(realBootstrap.educationOnly,true);assert.equal(realBootstrap.descriptor.modelId,'gpt-6-luna');
+    assert.equal(await realBootstrap.resolveDataRights({scope:actor,symbol:'XAUUSD',timeframe:'1m',providerId:'openai',policyVersion:realBootstrap.policy.policyVersion}),false);
+    eduEnv.ACG_AI_FUNDED_EDUCATION_ONLY='false';assert.equal(realBootstrap.verifyRelease(),false);
     const eduFields={...fields,instruments:[{symbol:'EDUCATION',timeframe:'1m'}],approvalDigest:'b'.repeat(64)};
     const eduPolicyVersion=digest(eduFields);
     const eduDescriptorFields={...d,policyVersion:eduPolicyVersion};
