@@ -10,8 +10,11 @@ const selection=new Schema({providerId:{type:String,required:true,enum:['openai'
 const message=new Schema({messageId:uuid,sequence:{type:Number,required:true,min:1,max:16,validate:Number.isSafeInteger},
   text:{type:String,required:true,validate:v=>Buffer.byteLength(v,'utf8')<=4096},
   status:{type:String,required:true,enum:['STORED_OFFLINE','CANCELLED']},createdAtMs:time,updatedAtMs:time},{_id:false,strict:'throw'});
+const workspace=new Schema({symbol:{type:String,required:true,match:/^[A-Z0-9._-]{1,32}$/},
+  timeframe:{type:String,required:true,enum:['1m','5m','15m','30m','1h','4h','1d','1w']},
+  includeChartContext:{type:Boolean,required:true,validate:v=>v===true}},{_id:false,strict:'throw'});
 const conversation=new Schema({conversationId:uuid,status:{type:String,required:true,enum:['ACTIVE','DELETED']},
-  selection:{type:selection,default:null},profile:{type:String,enum:['EDUCATION',null],default:null},
+  selection:{type:selection,default:null},profile:{type:String,enum:['EDUCATION','MARKET_OVERVIEW','STRUCTURE',null],default:null},workspace:{type:workspace,default:null},
   createdAtMs:time,updatedAtMs:time,expiresAtMs:time,
   messages:{type:[message],required:true,validate:v=>v.length<=16}},{_id:false,strict:'throw'});
 const bucket=new Schema({_id:{type:String,required:true,match:/^[a-f0-9]{64}$/},tenantId:id,actorId:id,accountId:id,
