@@ -7,6 +7,7 @@ const {createMarketContextSource}=require('../intelligence/context-source');
 const {readAdaptiveMarket}=require('../intelligence/adaptive-market-context');
 const {selectKnowledge}=require('../intelligence/knowledge-catalog');
 const {sizingEvidence}=require('../intelligence/workspace-sizing');
+const {workspaceStage}=require('../ai-http-security');
 const {createHash}=require('node:crypto');
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const deny=()=>Object.assign(Error('Workspace context unavailable'),{code:'AI_WORKSPACE_CONTEXT_DENIED'});
@@ -44,6 +45,7 @@ function createWorkspaceContext({marketRuntime}){
       check(await authorize()===true);
       let account=null,market=null;
       if(includeAccount){
+        account=await workspaceStage('ACCOUNT_CONTEXT',async()=>{
         const filter={tenantId:scope.tenantId,accountId:scope.accountId};
         const accountFilter={tenantId:scope.tenantId,_id:scope.accountId,status:'ACTIVE',federationEnabled:mongoose.trusted({$ne:false})};
         const [row,positions,orders]=await Promise.all([
@@ -55,10 +57,11 @@ function createWorkspaceContext({marketRuntime}){
         // Detect concurrent financial updates rather than represent the three reads as atomic.
         const last=await read(TradingAccount.findOne(accountFilter).select('financialRevision'));
         check(last&&last.financialRevision===row.financialRevision);
-        account=projectAccount(row,positions,orders);
+        return projectAccount(row,positions,orders);
+        });
       }
       if(includeMarket){
-        market=await readAdaptiveMarket({source,runtime:marketRuntime,scope,workspace,authorize});
+        market=await workspaceStage('MARKET_CONTEXT',()=>readAdaptiveMarket({source,runtime:marketRuntime,scope,workspace,authorize}));
       }
       check(await authorize()===true);
       return {account,market};
