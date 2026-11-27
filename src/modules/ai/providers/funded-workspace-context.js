@@ -121,8 +121,32 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
       f.closedCandles.splice(0,Math.min(16,f.closedCandles.length-minimum));
       f.omittedClosedBars=f.availableClosedBars-f.closedCandles.length;refresh();
     }
+    // Last-resort compaction: discard duplicated reference projections before
+    // losing the closed-candle sequence or the primary advanced summary.
+    while(oversized()){
+      const f=frames.filter(x=>x.observations?.length>0)
+        .sort((a,b)=>Number(a.timeframe===data.market.selectedTimeframe)-Number(b.timeframe===data.market.selectedTimeframe)||b.observations.length-a.observations.length)[0];
+      if(!f)break;
+      f.observations.shift();f.omittedObservations=(f.omittedObservations??0)+1;refresh();
+    }
+    if(oversized()){
+      for(const f of frames){
+        if(f.advanced){
+          const count=f.advanced.displacements?.length??0;
+          if(count>1){f.advanced.displacements=f.advanced.displacements.slice(-1);f.advanced.omittedDisplacements=count-1;}
+          if(f.advanced.liquidity){
+            const before=f.advanced.liquidity.levels.length;
+            f.advanced.liquidity.levels=f.advanced.liquidity.levels.filter(l=>l.kind==='EXTERNAL_RANGE_BOUNDARY');
+            f.advanced.omittedLiquidityLevels=(f.advanced.omittedLiquidityLevels??0)+before-f.advanced.liquidity.levels.length;
+          }
+        }
+        // Shared methodological caveats remain in the market and system policy.
+        if(f.limitations){f.omittedFrameLimitations=f.limitations.length;delete f.limitations;}
+      }
+      refresh();
+    }
   }
-  check(!oversized());
+  if(oversized())throw Object.assign(Error('Workspace evidence exceeds request budget'),{code:'AI_WORKSPACE_CONTEXT_BUDGET'});
   return body;
 }
 module.exports={createWorkspaceContext,projectAccount,buildWorkspaceBody,safeQuestion,hash};
