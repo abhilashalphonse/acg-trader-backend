@@ -27,15 +27,15 @@ async function runPhase4WorkspaceIntegration({auth,gateway,gs,token,foreignToken
   }});
   const conversations=createIsolatedConversations({store,registry,workspaceAnalysis:analysis});
   const app=express(),quotaNow=Date.now()+10800000;
-  app.use('/chat',createIsolatedChatRouter({authService:auth,gateway,governance:createAiGovernance({store:gs}),
-    quota:createAiQuota({store:createAiQuotaStore(),now:()=>quotaNow,limit:30}),registry,conversations,
+  app.use('/v1/ai/chat',createIsolatedChatRouter({authService:auth,gateway,governance:createAiGovernance({store:gs}),
+    quota:createAiQuota({store:createAiQuotaStore(),now:()=>quotaNow,limit:100}),registry,conversations,workspaceAnalysisEnabled:true,
     authorizePurpose:async r=>{
       assert.equal(r.externalExport,false);assert.equal(r.offlineOnly,true);
       if(!r.workspace)return true;
       return allow&&r.workspace.symbol==='XAUUSD'&&r.workspace.timeframe==='1m'&&r.workspace.includeChartContext===true;
     }}));
   const server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
-  const root='http://127.0.0.1:'+server.address().port+'/chat/conversations/';
+  const root='http://127.0.0.1:'+server.address().port+'/v1/ai/chat/conversations/';
   const a={accountId:readRequest.accountId,connectionId:readRequest.connectionId};
   const workspace={symbol:'XAUUSD',timeframe:'1m',includeChartContext:true};
   const conversationId=randomUUID(),messageId=randomUUID(),create={conversationId,selection,profile:'STRUCTURE',workspace};
@@ -91,6 +91,29 @@ async function runPhase4WorkspaceIntegration({auth,gateway,gs,token,foreignToken
     assert.ok(audits.some(e=>e.stage==='ALLOWED'));assert.ok(audits.some(e=>e.stage==='DENIED'));
     assert.ok(audits.every(e=>!Object.hasOwn(e,'workspace')&&!Object.hasOwn(e,'text')&&!Object.hasOwn(e,'result')));
     await ok('delete',{conversationId});
+    if(process.env.ACG_AI_PHASE4F_BROWSER_DIR){
+      const {spawn}=require('node:child_process');
+      const dir=require('node:path').resolve(process.env.ACG_AI_PHASE4F_BROWSER_DIR);
+      const readsBefore=reads;
+      await new Promise((resolve,reject)=>{
+        const child=spawn(process.execPath,['tests/ui/ai-phase4f-integrated.mjs'],{cwd:dir,stdio:['pipe','pipe','pipe']});
+        let out='',err='';const timer=setTimeout(()=>child.kill('SIGKILL'),120000);
+        child.stdout.on('data',v=>{out=(out+v).slice(-16000);});child.stderr.on('data',v=>{err=(err+v).slice(-16000);});
+        child.stdin.on('error',()=>{});
+        child.once('error',()=>{clearTimeout(timer);reject(Error('Phase 4F workspace browser runner unavailable'));});
+        child.once('close',code=>{
+          clearTimeout(timer);
+          if(code!==0||!out.includes('PASS Phase 4F workspace browser')){
+            const reason=err.includes('TimeoutError')?'timeout':err.includes('AssertionError')?'assertion':'runner';
+            reject(Error('Phase 4F workspace browser acceptance failed: '+reason));return;
+          }
+          console.log('PASS Phase 4F chart conversation browser consent, market evidence, mobile history, expiry and cancellation');resolve();
+        });
+        child.stdin.end(JSON.stringify({root:'http://127.0.0.1:'+server.address().port,authority:a,token,foreignToken,workspaceMode:true,asOf}));
+      });
+      assert.equal(reads,readsBefore+2,'Only explicit report requests may read candles');
+      assert.equal(await Candle.countDocuments({}),before);
+    }
     console.log('PASS Phase 4D real Mongo chart context opt-in, pinned symbol/timeframe, deterministic reference verification, source/expiry, no quotes, cancellation and purpose denial, no market or credit writes');
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
