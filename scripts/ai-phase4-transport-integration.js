@@ -14,6 +14,7 @@ const {createModelRegistry}=require('../src/modules/ai/providers/model-registry'
 const {createOfflineRequest}=require('../src/modules/ai/providers/provider-contract');
 const {createResponseEngine}=require('../src/modules/ai/intelligence/response-engine');
 const {createIsolatedHttpsTransport}=require('../src/modules/ai/providers/isolated-https-transport');
+const {createLoopbackOpenAiWire}=require('../src/modules/ai/providers/live-openai-transport');
 const {createIsolatedCredentialAdapter}=require('../src/modules/ai/providers/isolated-credential-adapter');
 const {createIsolatedTransportAdmission,AiTransportAdmission}=require('../src/modules/ai/providers/isolated-transport-admission');
 const {buildWireRequest}=require('../src/modules/ai/providers/provider-wire');
@@ -95,7 +96,7 @@ async function runPhase4TransportIntegration({auth,gateway,gs,token,foreignToken
         }
         const payload=p==='anthropic'?{role:'assistant',model:modelId,content:[{type:'text',text:candidate}],stop_reason:'end_turn',usage:{input_tokens:100,output_tokens:20}}:
           p==='gemini'?{modelVersion:modelId,candidates:[{content:{parts:[{text:candidate}]},finishReason:'STOP'}],usageMetadata:{promptTokenCount:100,candidatesTokenCount:20,totalTokenCount:120}}:
-          {model:modelId,choices:[{index:0,message:{role:'assistant',content:candidate},finish_reason:'stop'}],usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120}};
+          {id:'fixture-response',service_tier:'default',model:modelId,choices:[{index:0,message:{role:'assistant',content:candidate},finish_reason:'stop'}],usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120}};
         res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(payload));
       }catch(e){lastError=e;res.destroy();}
     });
@@ -121,6 +122,25 @@ async function runPhase4TransportIntegration({auth,gateway,gs,token,foreignToken
       question:'Explain BOS.',context:null,inputTokenUpperBound:8192,maxOutputTokens:1024,stream:true,timeoutMs:10000});
     assert.equal(result.receipt.status,'COMPLETED');assert.equal(result.response.education[0].id,'MARKET_STRUCTURE');
     assert.equal(result.receipt.budget.status,'ACCOUNTED_OFFLINE');
+    // Same bounded HTTPS mechanics as the public OpenAI adapter, but with a
+    // loopback-only endpoint and synthetic key. No public DNS or inference.
+    const liveShape={providerId:'openai',modelId,responseMode:'JSON_SCHEMA',store:false,streaming:false,maxInputTokens:8192,maxOutputTokens:1024};
+    const wireTest=createLoopbackOpenAiWire({port:server.address().port,ca});
+    const wireCall=async(beforeWrite=async()=>{})=>{
+      const {ticket,prompt}=await engine.prepare({scope,profile:'EDUCATION',question:'Explain BOS.'});
+      const key=Buffer.from(secret);
+      try{const parsed=await wireTest.run({descriptor:liveShape,prompt,key,beforeWrite});
+        return {parsed,ticket};}finally{key.fill(0);}
+    };
+    const wireStart=requests;
+    const {parsed,ticket:wireTicket}=await wireCall();
+    assert.equal(parsed.usage.inputTokens,100);assert.equal(parsed.usage.outputTokens,20);
+    assert.equal((await engine.verify({ticket:wireTicket,scope,candidate:parsed.candidate})).verified,true);
+    await assert.rejects(wireCall(async()=>{throw Error('fixture gate denied');}));
+    assert.equal(requests,wireStart+1);
+    mode='redirect';await assert.rejects(wireCall());mode='normal';
+    assert.equal(requests,wireStart+2);
+    console.log('PASS live OpenAI wire loopback: strict schema, bounded TLS, pre-write gate, usage and no redirect');
     const seen=requests;
     // New adapter, new request UUID, same logical operation: durable denial.
     assert.equal((await adapter('openai',operationId).generate((await prepare('openai')).q)).status,'UNKNOWN');
