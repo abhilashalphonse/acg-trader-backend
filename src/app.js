@@ -159,6 +159,7 @@ function createApp({ marketRuntime, tradingRuntime, authRuntime, restrictedPilot
     const { createAiQuotaStore } = require('./modules/ai/ai-quota-store');
     const runtime = createRestrictedPilotRuntime({
       ...restrictedPilotBootstrap, env: process.env, authService, marketRuntime,
+      readAiCalendarSnapshot: tradingRuntime.readAiCalendarSnapshot,
     });
     app.use('/v1/ai/pilot', (req, res, next) =>
       rejectUntrustedAuthOrigin(req, res, next, env.corsOrigins, env.isProduction));
