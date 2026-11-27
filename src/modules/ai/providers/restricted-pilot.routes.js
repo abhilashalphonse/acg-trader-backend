@@ -11,13 +11,16 @@ const schemas={
   status:base,
   grant:base.extend({expectedRevision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER-1),explicitConsent:z.literal(true)}).strict(),
   revoke:base.extend({expectedRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER-1)}).strict(),
-  generate:base.extend({operationId:z.uuid(),intent:z.enum(['HISTORICAL_OVERVIEW','HISTORICAL_STRUCTURE','EDUCATION_STRUCTURE','EDUCATION_LIQUIDITY','EDUCATION_FVG'])}).strict()
+  generate:z.union([base.extend({operationId:z.uuid(),intent:z.enum(['HISTORICAL_OVERVIEW','HISTORICAL_STRUCTURE','EDUCATION_STRUCTURE','EDUCATION_LIQUIDITY','EDUCATION_FVG'])}).strict(),
+    base.extend({operationId:z.uuid(),intent:z.literal('WORKSPACE_CHAT'),question:z.string().min(1).max(4096),
+      history:z.array(z.object({role:z.enum(['user','assistant']),text:z.string().min(1).max(4096)}).strict()).max(6),
+      includeAccount:z.boolean(),includeMarket:z.boolean()}).strict()])
 };
 const deny=(code='AI_PILOT_DENIED',statusCode=403)=>new AppError('Restricted AI pilot unavailable',{code,statusCode});
 function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
   if(!isRestrictedPilotRuntime(runtime)||typeof enabled!=='function'||typeof quota?.consume!=='function')throw deny();
   const router=express.Router(),admit=createConcurrencyGate(4);
-  router.use(aiJsonBoundary());
+  router.use(aiJsonBoundary({maxStringLength:runtime.mode==='WORKSPACE_CHAT'?4096:512}));
   router.use((_req,_res,next)=>enabled()===true?next():next(deny('AI_PILOT_DISABLED',404)));
   router.use(requireTraderSession(authService));
   for(const action of Object.keys(schemas))router.post('/'+action,async(req,res)=>{
