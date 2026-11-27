@@ -62,14 +62,15 @@ function createIsolatedConversations({store,registry,now=Date.now}={}){
       return {value:freeze(value),fence:async()=>{
         if(expiry!==null&&time()>=expiry)throw deny('AI_CHAT_EXPIRED',409);
         const fresh=await store.read(scope);
-        if((fresh?.revision??null)!==(bucket?.revision??null)||
+        if((fresh?.generation??null)!==(bucket?.generation??null)||(fresh?.revision??null)!==(bucket?.revision??null)||
           (fresh?.expiresAt?.getTime()??null)!==(bucket?.expiresAt?.getTime()??null))throw deny('AI_CHAT_CHANGED',409);
       }};
     }
+    let authorizedConversation=null;
     if(op==='create'){model(x.selection);await permit(x.selection,x.profile);}
     else if(op!=='delete'&&op!=='cancel'){
       const current=find(live(await store.read(scope),at),x.conversationId);
-      model(current.selection);await permit(current.selection,current.profile);
+      model(current.selection);await permit(current.selection,current.profile);authorizedConversation=current;
     }
     // Cancel/delete are local safety actions (no text disclosure). They still
     // require the router's current authenticated grant and operation purpose.
@@ -94,6 +95,7 @@ function createIsolatedConversations({store,registry,now=Date.now}={}){
         c.status='DELETED';c.selection=null;c.profile=null;c.messages=[];c.updatedAtMs=nowMs;
         return {next:cs,value:{conversationId:c.conversationId,deleted:true}};
       }
+      if(authorizedConversation&&(c.createdAtMs!==authorizedConversation.createdAtMs||c.expiresAtMs!==authorizedConversation.expiresAtMs||!isDeepStrictEqual(c.selection,authorizedConversation.selection)))throw deny('AI_CHAT_CHANGED');
       const m=c.messages.find(m=>m.messageId===x.messageId);
       if(op==='cancel'){
         if(!m)throw deny('AI_CHAT_NOT_FOUND',404);
