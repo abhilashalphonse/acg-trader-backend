@@ -166,7 +166,6 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
     };
     // The original 48/16 floors are preferences, not guaranteed to fit
     // six frames with high-precision live prices and a populated account.
-    trimCandles(24,8);
     const trimObservations=(primary,secondary)=>{
       while(oversized()){
         const f=frames.filter(x=>x.observations?.length>(selected(x)?primary:secondary))
@@ -175,7 +174,16 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
         f.observations.splice(leastImportant(f.observations),1);f.omittedObservations=(f.omittedObservations??0)+1;refresh();
       }
     };
+    // Preserve the established 16-bar per-frame acceptance floor whenever
+    // possible: shed duplicated secondary references before raw history.
     trimObservations(8,2);
+    trimCandles(24,16);
+    trimObservations(6,0);
+    trimCandles(16,16);
+    // The original knowledge catalog duplicates much of the system policy.
+    // Keep core quality/risk entries; omit optional entries only under pressure.
+    while(oversized()&&data.knowledge.length>2){data.knowledge.pop();refresh();}
+    trimCandles(16,8);
     trimCandles(12,4);
     // Secondary derived summaries and quality/freshness remain authoritative
     // even if their raw sequence cannot be included. Never fabricate bars.
