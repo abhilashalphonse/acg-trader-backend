@@ -90,6 +90,28 @@ async function runPhase4MarketProviderIntegration({auth,gateway,gs,token,foreign
     assert.equal(admissionDoc.attempts.filter(a=>a.operationId===verified.providerRun.operationId).length,1);
     assert.equal(await Candle.countDocuments({}),candleCount);
     await ok('delete',{conversationId});
+    if(process.env.ACG_AI_PHASE4F_BROWSER_DIR){
+      const {spawn}=require('node:child_process');
+      const dir=require('node:path').resolve(process.env.ACG_AI_PHASE4F_BROWSER_DIR);
+      await new Promise((resolve,reject)=>{
+        const child=spawn(process.execPath,['tests/ui/ai-phase4f-integrated.mjs'],{cwd:dir,stdio:['pipe','pipe','pipe']});
+        let out='',err='';const timer=setTimeout(()=>child.kill('SIGKILL'),120000);
+        child.stdout.on('data',v=>{out=(out+v).slice(-16000);});child.stderr.on('data',v=>{err=(err+v).slice(-16000);});
+        child.stdin.on('error',()=>{});
+        child.once('error',()=>{clearTimeout(timer);reject(Error('Market provider browser runner unavailable'));});
+        child.once('close',code=>{
+          clearTimeout(timer);
+          if(code!==0||!out.includes('PASS Phase 4F market provider browser')){
+            const reason=err.includes('TimeoutError')?'timeout':err.includes('AssertionError')?'assertion':'runner';
+            reject(Error('Market provider browser acceptance failed: '+reason));return;
+          }
+          console.log('PASS Phase 4F market provider desktop/mobile browser selection and history isolation');resolve();
+        });
+        child.stdin.end(JSON.stringify({root:'http://127.0.0.1:'+server.address().port,authority,token,foreignToken,marketProviderMode:true}));
+      });
+      assert.equal(requests(),start+4);assert.equal(reads,4);
+      assert.equal(await Candle.countDocuments({}),candleCount);
+    }
     console.log('PASS Phase 4F authenticated chart-aware TLS provider, verified historical reference, consent, scope, replay, forged reference and cancellation; no candle writes');
   }finally{setMode('normal');setHook(null);server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
