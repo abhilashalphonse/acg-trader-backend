@@ -88,11 +88,18 @@ async function publicTarget(signal){
 // provide the server-created prompt + verification ticket, a durable message
 // operation, approved export and conservative tokenizer/price policy. No
 // customer transport can be activated merely by setting an environment flag.
-function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperBound,recordUsage,verifyCandidate,educationOnly=false,workspaceChat=false}={}){
+function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperBound,recordUsage,verifyCandidate,educationOnly=false,workspaceChat=false,isolatedLoopback=null}={}){
   assertLiveRuntime(config);
   requireTrue([authorizeExport,countUpperBound,recordUsage,verifyCandidate].every(f=>typeof f==='function')&&
     ['assertConsent','claim','beginDispatch','assertDispatch','assertDisclosure'].every(k=>typeof admission?.[k]==='function'));
   const d=config.descriptor;
+  let target=publicTarget;
+  if(isolatedLoopback!==null){
+    assertIsolated();requireTrue(workspaceChat&&Number.isInteger(isolatedLoopback.port)&&isolatedLoopback.port>0&&isolatedLoopback.port<=65535&&
+      Buffer.isBuffer(isolatedLoopback.ca)&&isolatedLoopback.ca.length>0&&isolatedLoopback.ca.length<=65536);
+    const {port}=isolatedLoopback,ca=Buffer.from(isolatedLoopback.ca);
+    target=async()=>{assertIsolated();return {hostname:'127.0.0.1',port,ca};};
+  }
   return Object.freeze({
     async run({scope,workspace,prompt,ticket,operationId,authorizeMessage,signal,workspaceBody=null}){
       assertLiveRuntime(config);
@@ -132,7 +139,7 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
         const raw=await withLiveSecret(config,async key=>{
           requireTrue(!invoked);invoked=true;
           const copy=Buffer.isBuffer(key)?Buffer.from(key):null;
-          try{return await exchange({target:publicTarget,body,key:copy,deadlineMs,signal,maxDurationMs:workspaceChat?30000:10000,beforeWrite:async()=>{
+          try{return await exchange({target,body,key:copy,deadlineMs,signal,maxDurationMs:workspaceChat?30000:10000,beforeWrite:async()=>{
             await check();await admission.assertDispatch(scope,operationId);await check();
           }});}finally{copy?.fill(0);}
         });
