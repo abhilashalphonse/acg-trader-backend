@@ -5,6 +5,7 @@ const fail=code=>Object.assign(Error('Live provider configuration unavailable'),
 const ensure=(v,code='LIVE_AI_CONFIG_INVALID')=>{if(!v)throw fail(code);};
 const hex=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const positive=v=>Number.isSafeInteger(v)&&v>0;
+const approved=new WeakMap();
 // Request-bound server composition. The bearer token comes from authenticated
 // HTTP middleware, never from a request-body scope. A separate entitlement
 // adapter must authorize export of the exact market data and policy version.
@@ -50,10 +51,21 @@ function createLiveRuntimeConfig({env=process.env,descriptor=null,secretPort=nul
   const digest=createHash('sha256').update(JSON.stringify(fields)).digest('hex');
   ensure(digest===descriptor.descriptorId,'LIVE_AI_DESCRIPTOR_CHANGED');
   const pinned=Object.freeze({...fields,descriptorId:digest});
-  return Object.freeze({enabled:true,descriptor:pinned,hostname:'api.openai.com',path:'/v1/chat/completions',
+  const config=Object.freeze({enabled:true,descriptor:pinned,hostname:'api.openai.com',path:'/v1/chat/completions',
     async resolvePrice(id){return id===digest?{descriptorId:digest,approved:true,inputRatePicoUsd:pinned.inputRatePicoUsd,outputRatePicoUsd:pinned.outputRatePicoUsd,maxInputTokens:pinned.maxInputTokens,maxOutputTokens:pinned.maxOutputTokens,policyVersion:pinned.policyVersion}:null;},
-    // No key retrieval method is exposed to callers. A reviewed transport must
-    // integrate the injected secret port directly; this module does not dispatch.
   });
+  approved.set(config,{verifyRelease,secretPort,env});return config;
 }
-module.exports={createLiveRuntimeConfig,createLiveSessionAuthority};
+// Internal transport access, never expose to HTTP handlers. Recheck the
+// release switch on each operation and immediately before credential use.
+function assertLiveRuntime(config){
+  const state=approved.get(config);
+  ensure(state&&state.env.ACG_AI_LIVE_PROVIDER_ENABLED==='true'&&state.verifyRelease()===true,'LIVE_AI_RELEASE_NOT_APPROVED');
+  return true;
+}
+async function withLiveSecret(config,fn){
+  assertLiveRuntime(config);
+  ensure(typeof fn==='function');
+  return approved.get(config).secretPort.withSecret(fn);
+}
+module.exports={createLiveRuntimeConfig,createLiveSessionAuthority,assertLiveRuntime,withLiveSecret};
