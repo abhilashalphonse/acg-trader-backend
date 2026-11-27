@@ -1,5 +1,6 @@
 'use strict';
 const assert=require('node:assert/strict');
+const {createHash}=require('node:crypto');
 const {createLiveAdmission}=require('../src/modules/ai/providers/live-admission');
 const {createLiveSessionAuthority}=require('../src/modules/ai/providers/live-runtime-config');
 const {createGuardedFixtureMarket}=require('../src/modules/ai/providers/guarded-fixture-market');
@@ -26,6 +27,8 @@ async function runGuardedNative({auth,gateway,gs,token,scope,readRequest,selecti
     authorizeReconciliation:async a=>a.tenantId===tenantId&&a.actorId===actorId,
     resolvePrice:async id=>id===price.descriptorId?price:null});
   const service=ledger();
+  const initial=await LivePlatform.findById('platform').lean();
+  assert.equal(initial.outstandingRequests,0);assert.equal(initial.outstandingPicoUsd,0);
   const control=await LiveControl.findById(tenantId).lean();
   const platform=await LivePlatform.findById('platform').lean();
   await service.setPlatformControl(actor,{expectedRevision:platform.revision,enabled:true,dailyPicoUsd:20000000,dailyRequests:100,maxOutstandingPicoUsd:10000000,maxOutstandingRequests:10});
@@ -61,7 +64,8 @@ async function runGuardedNative({auth,gateway,gs,token,scope,readRequest,selecti
   await grant();entitled=false;assert.equal((await generate(third)).status,403);entitled=true;
   setMode('redirect');const held=await generate(third);setMode('normal');
   assert.equal(held.status,200);assert.ok(!held.body.verifiedMarket);
-  assert.equal((await rowFor(held.body)).state,'HELD_UNKNOWN');
+  const heldRow=await rowFor(held.body);
+  assert.equal(heldRow.state,'HELD_UNKNOWN');
   const fourth=await append();
   setHook(async()=>{revision=(await service.setControl(actor,{...limits,enabled:false,expectedRevision:revision})).revision;});
   const paused=await generate(fourth);setHook(null);
@@ -78,6 +82,17 @@ async function runGuardedNative({auth,gateway,gs,token,scope,readRequest,selecti
   assert.equal(await rowFor(denied.body),null);
   assert.equal(requests(),start+4);
   await service.setControl(actor,{...low,enabled:false,expectedRevision:revision});
+  // The redirect fixture completed locally without performing inference.
+  // Its known synthetic zero usage is independently established by the test
+  // harness; this is not a rule for reconciling real ambiguous provider calls.
+  assertIsolated();
+  const evidenceId=createHash('sha256').update(JSON.stringify(['ci-loopback-redirect-zero-usage',heldRow._id])).digest('hex');
+  assert.deepEqual(await service.reconcile(actor,{attemptId:heldRow._id,kind:'SETTLE',evidenceId,inputTokens:0,outputTokens:0}),
+    {state:'SETTLED',actualPicoUsd:0});
+  assert.equal((await rowFor(held.body)).state,'SETTLED');
+  const final=await LivePlatform.findById('platform').lean();
+  assert.equal(final.outstandingRequests,0);assert.equal(final.outstandingPicoUsd,0);
+  console.log('PASS isolated redirect fixture reconciled with explicit zero-usage evidence; no outstanding reservations');
   console.log('PASS guarded native runtime: consent, settled usage, replay, revocation, unknown hold, pause/resume and budget denial against real TLS fixture');
 }
 module.exports={runGuardedNative};
