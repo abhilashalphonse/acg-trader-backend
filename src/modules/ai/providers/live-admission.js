@@ -113,7 +113,11 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
       await authorize();
       return tx(async session=>{await authorize();const p=await get(P,'platform',session);check((p?.revision??0)===expectedRevision,'LIVE_AI_CHANGED');
         const next={enabled,revision:sum(expectedRevision,1),dailyPicoUsd,dailyRequests,maxOutstandingPicoUsd,maxOutstandingRequests};
-        if(p)await platformFence(p,session,next);else await P.create([{_id:'platform',...next,fence:1,outstandingPicoUsd:0,outstandingRequests:0}],{session});
+        if(p)await platformFence(p,session,next);else {
+          // Never reset uncertain historical exposure if the singleton is missing.
+          check(!await A.findOne({}).session(session).select('_id').lean()&&!await D.findOne({}).session(session).select('_id').lean()&&!await B.findOne({}).session(session).select('_id').lean(),'LIVE_AI_LEDGER_INTEGRITY_REQUIRED');
+          await P.create([{_id:'platform',...next,fence:1,outstandingPicoUsd:0,outstandingRequests:0}],{session});
+        }
         await event(session,actor,'PLATFORM_CONTROL','platform',next.revision,clock());return {enabled,revision:next.revision};});
     },
     async setControl(actor,{expectedRevision,enabled,tenantDailyPicoUsd,actorDailyPicoUsd,tenantDailyRequests,actorDailyRequests}){
