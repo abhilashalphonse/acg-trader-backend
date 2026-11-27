@@ -12,7 +12,7 @@ function createMarketContextSource(runtime){
     async instrument(symbol){
       if(runtime?.enabled!==true||!runtime.symbols?.includes(symbol))return null;
       const live=runtime.instrumentRegistry.get(symbol);
-      const doc=await read(Instrument.findOne({symbol}).select('symbol status chartEnabled quoteCurrency timezone tradingSessions tradingHolidays sessionOverrides scheduleVersion providerMappings maxQuoteAgeMs assetClass digits pipSize tickSize contractSize defaultLeverage'));
+      const doc=await read(Instrument.findOne({symbol}).select('symbol status chartEnabled quoteCurrency timezone tradingSessions tradingHolidays sessionOverrides scheduleVersion providerMappings maxQuoteAgeMs assetClass digits pipSize tickSize contractSize defaultLeverage pnlCurrency marginCurrency minVolume maxVolume volumeStep marginRate commissionPerLot commissionPerLotPerSide commissionRate'));
       if(!doc||!live?.configured||doc.status!=='ACTIVE'||doc.chartEnabled!==true||live.status!=='ACTIVE'||live.chartEnabled!==true)return null;
       const acc=mapValue(doc.providerMappings,'accelpix');
       const provider=acc?'accelpix':'twelve-data';
