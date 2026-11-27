@@ -1,5 +1,6 @@
 'use strict';
 const {z}=require('zod');
+const {randomUUID}=require('node:crypto');
 const {isDeepStrictEqual}=require('node:util');
 const {assertIsolated}=require('./providers/credit-ledger-store');
 const {AppError}=require('../../shared/errors/app-error');
@@ -19,6 +20,7 @@ const schemas={
   append:z.object({conversationId:uuid,messageId:uuid,text:z.string().min(1).max(4096)}).strict(),
   cancel:z.object({conversationId:uuid,messageId:uuid}).strict(),
   analyze:z.object({conversationId:uuid,messageId:uuid}).strict(),
+  generate:z.object({conversationId:uuid,messageId:uuid}).strict(),
   delete:z.object({conversationId:uuid}).strict(),
 };
 function parse(op,input){const p=schemas[op]?.safeParse(input);if(!p?.success)throw deny('AI_INVALID_REQUEST',400);return p.data;}
@@ -29,9 +31,13 @@ function safeText(q){
 }
 const summary=c=>({conversationId:c.conversationId,status:c.status,selection:c.selection,profile:c.profile,workspace:c.workspace??null,
   createdAtMs:c.createdAtMs,updatedAtMs:c.updatedAtMs,expiresAtMs:c.expiresAtMs,messageCount:c.messages.length});
+const runView=r=>r?{operationId:r.operationId,state:r.state,startedAtMs:r.startedAtMs,finishedAtMs:r.finishedAtMs??null,
+  responseStatus:r.responseStatus??null,responseId:r.responseId??null,referenceIds:r.referenceIds??[],verifiedAtMs:r.verifiedAtMs??null,
+  responseExpiresAtMs:r.responseExpiresAtMs??null,inputTokens:r.inputTokens??null,outputTokens:r.outputTokens??null}:null;
 const receipt=(c,m)=>({conversationId:c.conversationId,messageId:m.messageId,sequence:m.sequence,status:m.status,
-  createdAtMs:m.createdAtMs,updatedAtMs:m.updatedAtMs,dispatchAllowed:false,creditDeducted:false});
-function createIsolatedConversations({store,registry,workspaceAnalysis=null,now=Date.now}={}){
+  createdAtMs:m.createdAtMs,updatedAtMs:m.updatedAtMs,dispatchAllowed:false,creditDeducted:false,
+  ...(m.providerRun?{fixtureProviderOnly:true,providerRun:runView(m.providerRun)}:{})});
+function createIsolatedConversations({store,registry,workspaceAnalysis=null,conversationProvider=null,now=Date.now}={}){
   assertIsolated();
   if(typeof store?.read!=='function'||typeof store?.mutate!=='function'||typeof registry?.resolveForOfflineTest!=='function')
     throw deny('AI_CHAT_CONFIG',503);
@@ -44,6 +50,72 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,now=
   async function execute(scope,op,input,permit){
     assertIsolated();const x=parse(op,input),at=time();
     if(typeof permit!=='function')throw deny('AI_CHAT_CONFIG',503);
+    if(op==='generate'){
+      if(typeof conversationProvider?.run!=='function')throw deny('AI_CHAT_PROVIDER_DISABLED',403);
+      const bucket=await store.read(scope),original=find(live(bucket,at),x.conversationId);
+      const initial=original.messages.find(m=>m.messageId===x.messageId);
+      if(!initial||initial.status!=='STORED_OFFLINE')throw deny('AI_CHAT_NOT_FOUND',404);
+      if(original.profile!=='EDUCATION'||original.workspace!==null||original.selection?.fundingMode!=='BYO_API')throw deny('AI_CHAT_PROVIDER_DISABLED',403);
+      model(original.selection);
+      // Fence against delete/recreate, expiry, message mutation, cancellation
+      // and selection changes. Unrelated message appends do not invalidate a run.
+      function locate(b,when){
+        if(!b||b.generation!==bucket.generation)throw deny('AI_CHAT_CHANGED');
+        const cs=live(b,when),c=find(cs,x.conversationId);
+        const m=c.messages.find(v=>v.messageId===x.messageId);
+        if(c.createdAtMs!==original.createdAtMs||c.expiresAtMs!==original.expiresAtMs||
+          c.profile!==original.profile||!isDeepStrictEqual(c.selection,original.selection)||
+          !isDeepStrictEqual(c.workspace,original.workspace)||!m||m.status!=='STORED_OFFLINE'||
+          m.createdAtMs!==initial.createdAtMs||m.sequence!==initial.sequence||m.text!==initial.text)
+          throw deny('AI_CHAT_CHANGED');
+        return {c,m};
+      }
+      await permit(original.selection,original.profile,null);
+      const operationId=randomUUID();
+      // Claim before any provider action. CAS retries are pure; a concurrent
+      // request receives the existing receipt, never another provider call.
+      const claimed=await store.mutate(scope,b=>{
+        const t=time(),cs=structuredClone(live(b,t)),{m}=locate({...b,conversations:cs},t);
+        if(m.providerRun)return {next:null,value:{owned:false,run:runView(m.providerRun)}};
+        m.providerRun={operationId,state:'CLAIMED',startedAtMs:t,referenceIds:[]};
+        return {next:cs,value:{owned:true,run:runView(m.providerRun)}};
+      });
+      const disclose=async(run,requireFresh=false)=>{
+        const t=time(),{c,m}=locate(await store.read(scope),t);
+        if(!isDeepStrictEqual(runView(m.providerRun),run))throw deny('AI_CHAT_CHANGED');
+        if(requireFresh&&run.state==='VERIFIED'&&t>=run.responseExpiresAtMs)throw deny('AI_RESPONSE_EXPIRED');
+        return receipt(c,m);
+      };
+      if(!claimed.owned){
+        const value=await disclose(claimed.run);
+        return {value:freeze({...value,replayed:true}),fence:async()=>{await disclose(claimed.run);}};
+      }
+      const authorize=async()=>{
+        await permit(original.selection,original.profile,null);
+        const {m}=locate(await store.read(scope),time());
+        if(m.providerRun?.operationId!==operationId||m.providerRun.state!=='CLAIMED')throw deny('AI_CHAT_CHANGED');
+        return true;
+      };
+      // A failure before durable completion leaves CLAIMED or HELD_UNKNOWN.
+      // Neither state can be retried, even by a new process or session.
+      await authorize();
+      const outcome=await conversationProvider.run({scope,selection:original.selection,profile:original.profile,
+        question:initial.text,operationId,authorize});
+      await authorize();
+      if(!['VERIFIED','FAILED','HELD_UNKNOWN'].includes(outcome?.state))throw deny('AI_CHAT_PROVIDER_UNVERIFIED');
+      const value=await store.mutate(scope,b=>{
+        const t=time(),cs=structuredClone(live(b,t)),{c,m}=locate({...b,conversations:cs},t);
+        if(m.providerRun?.operationId!==operationId||m.providerRun.state!=='CLAIMED')throw deny('AI_CHAT_CHANGED');
+        if(outcome.state==='VERIFIED'&&(!Number.isSafeInteger(outcome.verifiedAtMs)||!Number.isSafeInteger(outcome.responseExpiresAtMs)||
+          outcome.verifiedAtMs>t||t>=outcome.responseExpiresAtMs))throw deny('AI_RESPONSE_EXPIRED');
+        m.providerRun={operationId,state:outcome.state,startedAtMs:claimed.run.startedAtMs,finishedAtMs:t,referenceIds:[],
+          ...(outcome.state==='VERIFIED'?{responseStatus:outcome.responseStatus,responseId:outcome.responseId,referenceIds:outcome.referenceIds,
+            verifiedAtMs:outcome.verifiedAtMs,responseExpiresAtMs:outcome.responseExpiresAtMs,inputTokens:outcome.inputTokens,outputTokens:outcome.outputTokens}:{})};
+        m.updatedAtMs=t;c.updatedAtMs=t;
+        return {next:cs,value:receipt(c,m)};
+      });
+      return {value:freeze({...value,replayed:false}),fence:async()=>{await disclose(value.providerRun,true);}};
+    }
     if(op==='analyze'){
       if((typeof workspaceAnalysis?.analyze!=='function'||typeof workspaceAnalysis?.assertFresh!=='function'))throw deny('AI_WORKSPACE_DISABLED',403);
       const bucket=await store.read(scope),c=find(live(bucket,at),x.conversationId);
@@ -125,6 +197,8 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,now=
         if(!m)throw deny('AI_CHAT_NOT_FOUND',404);
         if(m.status==='CANCELLED')return {next:null,value:receipt(c,m)};
         m.status='CANCELLED';m.updatedAtMs=nowMs;c.updatedAtMs=nowMs;
+        if(m.providerRun)m.providerRun={operationId:m.providerRun.operationId,state:'SUPPRESSED',
+          startedAtMs:m.providerRun.startedAtMs,finishedAtMs:nowMs,referenceIds:[]};
         return {next:cs,value:receipt(c,m)};
       }
       // Same ID + exact content is idempotent, even after cancellation.
