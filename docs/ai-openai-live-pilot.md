@@ -1,0 +1,20 @@
+# Phase 4E — First actual provider acceptance
+
+Isolated TLS acceptance passed at 2ececa8516621b617a8ebf16c68ab678d50e96c9 (Backend CI 45926467789; paired 45926467786).
+
+## Proposed first live smoke
+OpenAI GPT-6 Luna, fixed model ID gpt-6-luna (no dated snapshot is listed; the response must match this exact ID or acceptance fails), POST https://api.openai.com/v1/chat/completions, structured candidate JSON, reasoning_effort none, service_tier default, store false, nonstreaming, no tools. Luna is cheaper than GPT-5.4 mini/nano at current standard rates; GPT-5.4 nano is deprecated. No automatic upgrade or fallback. Sources reviewed 2026-11-27:
+- https://developers.openai.com/api/docs/models/gpt-6-luna
+- https://developers.openai.com/api/docs/deprecations
+- https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=chat
+- https://developers.openai.com/api/docs/guides/your-data
+
+Public TLS transport pins a checked IPv4 DNS result for the fixed hostname, checks the normal TLS certificate for api.openai.com, rejects nonpublic addresses, compression, redirection and malformed or oversized output. No SDK retries or fallback. This is an operator-only, single real request smoke, not an available chat model or general customer API. The exported prompt is a synthetic exercise and one opaque knowledge reference, not internal catalog contents, market data, actual account IDs or customer questions. Server verifies the returned candidate through the existing one-use response engine and checks that exactly the requested education reference was selected. This tests transport and reference selection, not the semantic correctness of market analysis.
+
+## Approval and invocation
+Only after explicit operator approval of one billable request, provision a restricted, disposable OpenAI project/key using a secure secret mechanism, not chat, source control, shell history or CI logs. Run in a dedicated nonproduction Linux environment with Node dependencies installed and a private durable receipt directory. Set NODE_ENV=acg-ai-live-smoke, ACG_AI_OPENAI_SMOKE_APPROVAL=ONE_SYNTHETIC_OPENAI_REQUEST, ACG_AI_OPENAI_SMOKE_RECEIPT to an absolute, unused .jsonl file in that directory, and ACG_AI_OPENAI_SMOKE_KEY via the secret mechanism. Execute node scripts/ai-openai-live-smoke.js. No workflow or application imports or invokes the script automatically. CI must not set the approval or key. Refuses existing receipt path, fsyncs claim before dispatch, writes terminal receipt with bounded token counts and no raw response or key. A crash or unknown outcome requires manual review of the receipt and provider billing; do not retry with a fresh receipt without new authorization. The operator-controlled path is a local replay guard, not distributed spend control.
+
+Planning input bound 8192 tokens, provider output cap 512 tokens, 8 KiB body limit. At listed standard rates $0.10/M input and $0.50/M output, estimated planning envelope $0.0010752 before cache-write premiums, taxes or other charges (approximately 87% below the former $0.008448 envelope), not a guaranteed hard spend limit. Actual reported usage must be within planning bounds for pass. Use a dedicated provider project with the narrowest supported permissions and spending controls; do not assume a provider budget alert is a hard cap. store:false does not imply zero retention; check provider data controls. No ACG credit deduction. Revoke/delete disposable key after testing.
+
+## Status and blockers
+Implementation and pure offline acceptance only until actual credentials and approval supplied. No live test has been performed. Full BYO runtime still requires production-grade credential custody, durable message identity and dispatch/reconciliation, exact data entitlement/consent, authenticated frontend API, persistent verified assistant history, distributed caps, external-provider contract/latency/billing acceptance and release approval. Existing provider registry remains runtime disabled. No production changes.

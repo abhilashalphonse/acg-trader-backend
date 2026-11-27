@@ -100,11 +100,18 @@ async function runPhase2Integration({auth,gateway,gs,token,readRequest,foreignTo
   console.log('PASS Phase 2 foreign scope, synthetic entitlement revocation, expiration, catalog mismatch and read-only boundary');
   const {runPhase3SecurityIntegration}=require('./ai-phase3-security-integration');
   const security=await runPhase3SecurityIntegration({auth,gateway,gs,token,foreignToken,readRequest,source,scope,asOf});
+  const {runPhase4ChatIntegration}=require('./ai-phase4-chat-integration');
+  await runPhase4ChatIntegration({auth,gateway,gs,token,foreignToken,readRequest,scope});
+  const {runPhase4ConversationIntegration}=require('./ai-phase4-conversation-integration');
+  await runPhase4ConversationIntegration({auth,gateway,gs,token,foreignToken,readRequest,scope});
+  const {runPhase4WorkspaceIntegration}=require('./ai-phase4-workspace-integration');
+  await runPhase4WorkspaceIntegration({auth,gateway,gs,token,foreignToken,readRequest,scope,source,asOf});
   // Later Phase 1 test changes actual control revision and revokes actual grant.
-  return async phase=>{
+  const verifyDenied=async phase=>{
     await assert.rejects(assembler.assemble(req),{code:'CONTEXT_FORBIDDEN'});
     if(phase==='PAUSED')await security.assertPaused();
     if(phase==='REVOKED')await security.assertRevoked();
   };
+  return Object.assign(verifyDenied,{source,asOf});
 }
 module.exports={runPhase2Integration};

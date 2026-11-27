@@ -4,6 +4,9 @@ const {createApp}=require('../src/app');
 const {AuthService}=require('../src/modules/auth/auth.service');
 async function main(){
   if(process.env.NODE_ENV!=='test'||process.env.ACG_AI_ISOLATED_CI!=='true')throw Error('Isolated CI only');
+  // Even a mistakenly enabled live flag must not mount a pilot without trusted bootstrap.
+  process.env.ACG_AI_LIVE_PROVIDER_ENABLED='true';
+  process.env.ACG_AI_RESTRICTED_PILOT_ENABLED='true';
   for(const enabled of [false,true]){
     process.env.ACG_AI_READ_GATEWAY_ENABLED=enabled?'true':'false';
     const app=createApp({marketRuntime:{enabled:false,health:()=>({enabled:false})},
@@ -14,11 +17,14 @@ async function main(){
       assert.equal((await fetch(root+'/health/live')).status,200);
       assert.equal((await fetch(root+'/v1/ai/read/tools')).status,enabled?401:404);
       assert.equal((await fetch(root+'/v1/internal/ai/control')).status,enabled?401:404);
-      for(const route of ['/v1/ai/intelligence','/v1/ai/context','/v1/ai/response','/v1/ai/chat','/v1/ai/providers','/v1/ai/connections','/v1/ai/credentials','/v1/ai/credits','/v1/ai/credits/purchases','/v1/ai/payments/webhook','/v1/internal/ai/payments/reconcile']){
+      for(const path of ['/v1/ai/chat/capabilities','/v1/ai/chat/preflight','/v1/ai/chat/messages',...['create','list','history','append','cancel','delete','analyze','generate'].map(op=>'/v1/ai/chat/conversations/'+op)]){
+        for(const method of ['GET','POST'])assert.equal((await fetch(root+path,{method,...(method==='POST'?{headers:{'content-type':'application/json'},body:'{}'}:{})})).status,404);
+      }
+      for(const route of ['/v1/ai/pilot/grant','/v1/ai/pilot/revoke','/v1/ai/pilot/generate','/v1/ai/intelligence','/v1/ai/context','/v1/ai/response','/v1/ai/chat','/v1/ai/providers','/v1/ai/connections','/v1/ai/credentials','/v1/ai/credits','/v1/ai/credits/purchases','/v1/ai/payments/webhook','/v1/internal/ai/payments/reconcile']){
         assert.equal((await fetch(root+route,{method:'POST',headers:{'content-type':'application/json'},body:'{}'})).status,404);
       }
     }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   }
-  console.log('PASS Phase 2 actual Express app: default-off Phase 1 routes and no public intelligence routes even with Phase 1 flag on');
+  console.log('PASS Phase 2 actual Express app: default-off Phase 1 routes and no public intelligence routes even with Phase 1 and live pilot flags on but no trusted bootstrap');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

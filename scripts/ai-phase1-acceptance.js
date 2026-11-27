@@ -135,6 +135,17 @@ async function main() {
     const assertPhase2Denied=await runPhase2Integration({auth,gateway,gs,token:ta,readRequest:req,foreignToken:tb});
     const {runPhase3VaultIntegration}=require('./ai-phase3-vault-integration');
     await runPhase3VaultIntegration({auth,token:ta,foreignToken:tb});
+    const {runPhase4TransportIntegration}=require('./ai-phase4-transport-integration');
+    const gb=await send('/read/grants',tb,{accountId:b.id,toolIds:['account.valuation.read']});
+    assert.equal(gb.status,201);
+    const {runLiveReadiness}=require('./ai-live-readiness-integration');
+    await runLiveReadiness({auth,gateway,token:ta,foreignToken:tb,readRequest:req,
+      foreignReadRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,toolId:'account.valuation.read',args:{}}});
+    await runPhase4TransportIntegration({auth,gateway,gs,token:ta,foreignToken:tb,readRequest:req,
+      marketTest:{token:tb,foreignToken:ta,readRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,
+        toolId:'account.valuation.read',args:{}},source:assertPhase2Denied.source,asOf:assertPhase2Denied.asOf}});
+    const {runPilotMountAcceptance}=require('./ai-pilot-mount-acceptance');
+    await runPilotMountAcceptance({auth,token:ta,foreignToken:tb,readRequest:req});
     const {runPhase3CreditIntegration}=require('./ai-phase3-credit-integration');
     await runPhase3CreditIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
     const {runPhase3PurchaseIntegration}=require('./ai-phase3-purchase-integration');
@@ -155,8 +166,6 @@ async function main() {
     console.log('PASS Phase 2 actual governance suspension/revision and grant revocation boundary');
     console.log('PASS control CAS, rollback, suspension, revocation and resume cannot restore revoked grant');
     // A current account grant is independently required, even if a session exists.
-    const gb=await send('/read/grants',tb,{accountId:b.id,toolIds:['account.valuation.read']});
-    assert.equal(gb.status,201);
     await AccountAccessGrant.updateOne({accountId:b.account._id,userId:b.user._id},{$set:{status:'REVOKED',revokedAt:new Date()}});
     assert.equal((await send('/read/invoke',tb,{...req,accountId:b.id,connectionId:gb.body.grant.connectionId})).status,403);
     // Revocation of the normal authenticated session must also deny AI access.
@@ -164,7 +173,7 @@ async function main() {
     assert.equal((await send('/read/invoke',tb,{...req,accountId:b.id,connectionId:gb.body.grant.connectionId})).status,401);
     const audit=await send('/admin/audit?limit=100',admin.apiKey,undefined,'GET',admin.clientId);
     assert.equal(audit.status,200);
-    assert.ok(audit.body.events.some(e=>e.stage==='DENIED'&&e.reason==='AI_FINANCIAL_BOUNDARY_DENIED'));
+    assert.ok(await AiAuditEvent.findOne({tenantId:tid,stage:'DENIED',reason:'AI_FINANCIAL_BOUNDARY_DENIED'}).lean());
     assert.ok(audit.body.events.every(e=>e.tenantId===tid));
     assert.doesNotMatch(JSON.stringify(audit.body),/acg_ts_|acg_sk_/);
     for (const e of audit.body.events) for (const field of ['balance','equity','args','result','token','prompt']) assert.equal(Object.hasOwn(e,field),false);
