@@ -23,12 +23,20 @@ const read=q=>q.read('primary').readConcern('majority').maxTimeMS(2000).lean();
 async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.now}={}){
   if(env.ACG_AI_FUNDED_LIVE_ENABLED!=='true'||env.ACG_AI_LIVE_PROVIDER_ENABLED!=='true'||
     env.ACG_AI_RESTRICTED_PILOT_ENABLED!=='true')return null;
-  const raw=env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON;
+  const educationOnly=env.ACG_AI_FUNDED_EDUCATION_ONLY==='true';
+  const raw=educationOnly?env.ACG_AI_FUNDED_EDUCATION_EXPIRES_AT_MS:env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON;
   requireTrue(typeof raw==='string'&&Buffer.byteLength(raw)<=8192);
-  let parsed;try{parsed=approvalSchema.safeParse(JSON.parse(raw));}catch{throw fail();}
-  requireTrue(parsed.success);
-  const a=parsed.data,staff=env.ACG_AI_STAFF_PREVIEW_EMAIL?.trim().toLowerCase();
-  requireTrue(a.tenantId===env.ACG_AI_STAFF_PREVIEW_TENANT_ID&&env.ACG_AI_STAFF_PREVIEW_ENABLED==='true'&&
+  let a;
+  if(educationOnly){
+    requireTrue(/^\d{13}$/.test(raw)&&!env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON);
+    a={approvalId:'staff-education-only-v1',tenantId:env.ACG_AI_STAFF_PREVIEW_TENANT_ID,
+      expiresAtMs:Number(raw),instruments:[{symbol:'EDUCATION',timeframe:'1m'}]};
+  }else{
+    let parsed;try{parsed=approvalSchema.safeParse(JSON.parse(raw));}catch{throw fail();}
+    requireTrue(parsed.success);a=parsed.data;
+  }
+  const staff=env.ACG_AI_STAFF_PREVIEW_EMAIL?.trim().toLowerCase();
+  requireTrue(objectId.safeParse(a.tenantId).success&&a.tenantId===env.ACG_AI_STAFF_PREVIEW_TENANT_ID&&env.ACG_AI_STAFF_PREVIEW_ENABLED==='true'&&
     typeof staff==='string'&&staff.length<=254&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(staff)&&
     a.expiresAtMs>now()&&a.expiresAtMs-now()<=86400000&&typeof env.ACG_AI_FUNDED_OPENAI_API_KEY==='string'&&
     /^sk-[\x21-\x7e]{20,4090}$/.test(env.ACG_AI_FUNDED_OPENAI_API_KEY));
@@ -44,23 +52,25 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
   const policy=Object.freeze({...policyFields,policyVersion,descriptorId:descriptor.descriptorId});
   const active=()=>env.ACG_AI_FUNDED_LIVE_ENABLED==='true'&&env.ACG_AI_STAFF_PREVIEW_ENABLED==='true'&&
     env.ACG_AI_LIVE_PROVIDER_ENABLED==='true'&&env.ACG_AI_RESTRICTED_PILOT_ENABLED==='true'&&
-    env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON===raw&&env.ACG_AI_STAFF_PREVIEW_TENANT_ID===a.tenantId&&
+    (educationOnly?env.ACG_AI_FUNDED_EDUCATION_ONLY==='true'&&env.ACG_AI_FUNDED_EDUCATION_EXPIRES_AT_MS===raw&&!env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON:
+      env.ACG_AI_FUNDED_EDUCATION_ONLY!=='true'&&env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON===raw)&&env.ACG_AI_STAFF_PREVIEW_TENANT_ID===a.tenantId&&
     env.ACG_AI_STAFF_PREVIEW_EMAIL?.trim().toLowerCase()===staff&&now()<a.expiresAtMs&&
     typeof env.ACG_AI_FUNDED_OPENAI_API_KEY==='string'&&/^sk-[\x21-\x7e]{20,4090}$/.test(env.ACG_AI_FUNDED_OPENAI_API_KEY);
   const p=await read(LivePlatform.findById('platform')),t=await read(LiveControl.findById(a.tenantId));
   requireTrue(p?.enabled===true&&p.dailyPicoUsd===1000000000000&&p.dailyRequests===20&&p.maxOutstandingRequests===1&&
     p.maxOutstandingPicoUsd<=1000000000000&&t?.enabled===true&&t.tenantDailyPicoUsd===1000000000000&&
     t.actorDailyPicoUsd===1000000000000&&t.tenantDailyRequests===20&&t.actorDailyRequests===20);
-  const source=createMarketContextSource(marketRuntime);
+  const source=educationOnly?null:createMarketContextSource(marketRuntime);
   const belongs=s=>s?.tenantId===a.tenantId&&s?.actorId===actorId;
   return Object.freeze({
-    fundedStaff:true,descriptor,policy,verifyRelease:active,
+    fundedStaff:true,educationOnly,descriptor,policy,verifyRelease:active,
     verifyApproval:async v=>active()&&v.policyVersion===policyVersion&&v.descriptorId===descriptor.descriptorId,
     resolveMembership:async(s,v)=>active()&&belongs(s)&&v===policyVersion,
     resolveDataRights:async({scope,symbol,timeframe,policyVersion:v,providerId,sourceProvider})=>{
       if(!active()||!belongs(scope)||v!==policyVersion||providerId!=='openai'||
         !a.instruments.some(i=>i.symbol===symbol&&i.timeframe===timeframe)||
         (sourceProvider!==undefined&&sourceProvider!==a.provider))return false;
+      if(educationOnly)return symbol==='EDUCATION'&&timeframe==='1m'&&sourceProvider===undefined;
       const i=await source.instrument(symbol);return i?.provider===a.provider;
     },
     // The runtime additionally requires exact canonical server-minted body
@@ -71,6 +81,12 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
       try{
         const data=JSON.parse(payload.messages[1].content);
         const keys=Object.keys(data).sort().join(',');
+        if(educationOnly){
+          return keys==='evidence,knowledge,profile,question'&&data.profile==='EDUCATION'&&data.evidence===null&&
+            ['Explain market structure and break of structure.','Explain potential liquidity references.','Explain fair value gaps.'].includes(data.question)&&
+            workspace.symbol==='EDUCATION'&&workspace.timeframe==='1m'&&workspace.includeChartContext===false&&
+            ![scope.tenantId,scope.actorId,scope.sessionId,scope.accountId,staff].some(v=>JSON.stringify(payload).includes(v));
+        }
         const expected={MARKET_OVERVIEW:'Summarize the available historical closed-candle evidence.',
           STRUCTURE:'Describe the historical closed-candle structure using the supplied references.'};
         return keys==='evidence,knowledge,profile,question'&&Object.hasOwn(expected,data.profile)&&

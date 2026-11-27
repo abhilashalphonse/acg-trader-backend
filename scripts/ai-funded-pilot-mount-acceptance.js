@@ -79,6 +79,55 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
     assert.equal((await call('status')).status,404);
     assert.equal(await LiveAttempt.countDocuments({}),count);assert.equal(secretReads,0);
     console.log('PASS actual Funded federation staff authority across accounts, isolated budget actor, mounted status/consent, rights and account revocation; zero provider dispatch');
+    // Exercise the education-only route through the same real federation and
+    // billing authority. Capture the exact proposed body and deny it before
+    // any reservation or secret access. No public network is used by this test.
+    server.closeAllConnections();await new Promise(resolve=>server.close(resolve));server=null;
+    process.env.ACG_AI_FUNDED_LIVE_ENABLED='true';
+    const {loadFundedPilotBootstrap}=require('../src/modules/ai/providers/funded-pilot-bootstrap');
+    const eduEnv={...flags,ACG_AI_FUNDED_EDUCATION_ONLY:'true',ACG_AI_FUNDED_EDUCATION_EXPIRES_AT_MS:String(Date.now()+120000),
+      ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-do-not-send-'.padEnd(40,'x')};
+    const realBootstrap=await loadFundedPilotBootstrap({env:eduEnv,marketRuntime:null});
+    assert.equal(realBootstrap.educationOnly,true);assert.equal(realBootstrap.descriptor.modelId,'gpt-6-luna');
+    assert.equal(await realBootstrap.resolveDataRights({scope:actor,symbol:'XAUUSD',timeframe:'1m',providerId:'openai',policyVersion:realBootstrap.policy.policyVersion}),false);
+    eduEnv.ACG_AI_FUNDED_EDUCATION_ONLY='false';assert.equal(realBootstrap.verifyRelease(),false);
+    const eduFields={...fields,instruments:[{symbol:'EDUCATION',timeframe:'1m'}],approvalDigest:'b'.repeat(64)};
+    const eduPolicyVersion=digest(eduFields);
+    const eduDescriptorFields={...d,policyVersion:eduPolicyVersion};
+    const eduDescriptor={...eduDescriptorFields,descriptorId:digest(eduDescriptorFields)};
+    let examined=0;
+    const eduBootstrap={...bootstrap,educationOnly:true,descriptor:eduDescriptor,
+      policy:{...eduFields,policyVersion:eduPolicyVersion,descriptorId:eduDescriptor.descriptorId},
+      verifyApproval:async v=>v.policyVersion===eduPolicyVersion&&v.descriptorId===eduDescriptor.descriptorId,
+      resolveDataRights:async w=>w.symbol==='EDUCATION'&&w.timeframe==='1m'&&w.sourceProvider===undefined,
+      validatePayload:async ({payload})=>{
+        const data=JSON.parse(payload.messages[1].content);
+        assert.equal(data.evidence,null);assert.equal(data.profile,'EDUCATION');
+        assert.equal(data.question,'Explain fair value gaps.');
+        assert.ok(data.knowledge.entries.every(x=>x.origin==='ACG_INTERNAL_ORIGINAL'));
+        for(const v of [tenantId,actor.actorId,staff,...ids])assert.ok(!JSON.stringify(payload).includes(v));
+        assert.equal(payload.store,false);assert.equal(payload.stream,false);examined++;
+        return false;
+      }};
+    const eduApp=createApp({marketRuntime:{enabled:false,health:()=>({enabled:false})},
+      tradingRuntime:{enabled:true,health:()=>({enabled:true})},authRuntime:{authService:auth},restrictedPilotBootstrap:eduBootstrap});
+    server=await new Promise(resolve=>{const s=eduApp.listen(0,'127.0.0.1',()=>resolve(s));});
+    const eduRoot='http://127.0.0.1:'+server.address().port;
+    const eduBase={...base,connectionId:randomUUID(),symbol:'EDUCATION'};
+    const eduCall=async(op,extra={})=>{
+      const response=await fetch(eduRoot+'/v1/ai/pilot/'+op,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+session.accessToken},
+        body:JSON.stringify({...eduBase,...extra})});return {status:response.status,body:await response.json()};
+    };
+    const eduCap=await fetch(eduRoot+'/v1/ai/staff-preview/capability?accountId='+ids[0],{headers:{authorization:'Bearer '+session.accessToken}});
+    assert.equal((await eduCap.json()).runtimeMode,'EDUCATION_ONLY');
+    const eduGrant=await eduCall('grant',{explicitConsent:true,expectedRevision:0});
+    assert.equal(eduGrant.status,200,JSON.stringify(eduGrant.body.error??{}));assert.equal(eduGrant.body.mode,'EDUCATION_ONLY');
+    assert.ok((await eduCall('generate',{intent:'HISTORICAL_STRUCTURE',operationId:randomUUID()})).status>=400);
+    assert.ok((await eduCall('generate',{intent:'EDUCATION_FVG',operationId:randomUUID(),symbol:'XAUUSD'})).status>=400);
+    assert.ok((await eduCall('generate',{intent:'EDUCATION_FVG',operationId:randomUUID()})).status>=400);
+    assert.equal(examined,1);assert.equal(secretReads,0);assert.equal(await LiveAttempt.countDocuments({}),count);
+    console.log('PASS Funded education-only actual mounted API rejects chart intents and exports only canonical original catalog, no provider calls');
+
   }finally{
     if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
     for(const k of Object.keys(flags)){if(original[k]===undefined)delete process.env[k];else process.env[k]=original[k];}
