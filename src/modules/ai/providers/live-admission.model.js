@@ -25,6 +25,7 @@ const attempt=new Schema({_id:hash,tenantId:id,actorId:id,sessionId:id,accountId
   outputTokens:{type:Number,default:null,min:0,validate:v=>v===null||Number.isSafeInteger(v)},
   actualPicoUsd:{type:Number,default:null,min:0,validate:v=>v===null||Number.isSafeInteger(v)},
   evidenceId:{type:String,default:null,match:/^[a-f0-9]{64}$/},
+  providerResponseHash:{type:String,match:/^[a-f0-9]{64}$/},
   createdAtMs:int,updatedAtMs:int},options);
 const platform=new Schema({_id:{type:String,enum:['platform'],required:true},enabled:{type:Boolean,required:true},revision:int,fence:int,
   dailyPicoUsd:int,dailyRequests:int,maxOutstandingPicoUsd:int,maxOutstandingRequests:int,
@@ -36,6 +37,7 @@ consent.index({tenantId:1,actorId:1,accountId:1,sessionId:1});
 budget.index({tenantId:1,day:1,actorId:1},{unique:true});
 attempt.index({tenantId:1,actorId:1,accountId:1,operationId:1},{unique:true});
 attempt.index({tenantId:1,state:1,updatedAtMs:1});
+attempt.index({providerResponseHash:1},{unique:true,sparse:true});
 event.index({tenantId:1,atMs:-1});
 const model=(n,s)=>mongoose.models[n]||mongoose.model(n,s);
 const LiveControl=model('AiLiveControl',control),LiveConsent=model('AiLiveConsent',consent),
