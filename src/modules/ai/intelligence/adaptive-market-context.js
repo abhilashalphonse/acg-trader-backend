@@ -7,6 +7,7 @@ const {TIMEFRAME_MS,candleBucketOpenTimeMs}=require('../../market-data/market.co
 const {validSchedule}=require('./calendar-coverage');
 const {isInstrumentSessionOpen,zonedParts,zonedDateTimeToUtcMs,activeSessionOpenTimeMs,nextSessionOpenTimeMs}=require('../../instruments/session-calendar');
 const {isDeepStrictEqual}=require('node:util');
+const {decimalToNumber}=require('../../market-data/market.utils');
 const FRAME_ORDER=['1m','5m','15m','30m','1h','4h','1d','1w'];
 const FRAME_PLAN={
   '1m':['5m','15m','1h'],'5m':['1m','30m','4h'],'15m':['5m','1h','4h'],
@@ -109,13 +110,15 @@ async function readAdaptiveMarket({source,runtime,scope,workspace,authorize,now=
   const quote=terminalQuote(raw,finalInstrument,asOfMs);
   const clocks=sessionClocks(asOfMs);
   const intraday=results.find(r=>['30m','15m','1h'].includes(r.timeframe)&&r.bars.length);
-  const ranges=intraday?clocks.map(c=>({name:c.name,...windowRange(intraday.bars,c.openMs,c.closeMs,intraday.timeframe,asOfMs)})):null;
+  const ranges=intraday?clocks.map(c=>({name:c.name,range:windowRange(intraday.bars,c.openMs,c.closeMs,intraday.timeframe,asOfMs)})):null;
   const utcDay=Math.floor(asOfMs/86400000)*86400000;
   const daily=results.find(r=>r.timeframe==='1d'&&r.bars.length);
   const previousDay=daily?.bars.at(-1)??null;
   return {schemaVersion:'adaptive-market-v1',symbol:workspace.symbol,provider:instrument.provider,asOfMs,quoteStatus:quote.status,quote,
     selectedTimeframe:workspace.timeframe,requestedTimeframes:frames,
-    instrument:{quoteCurrency:instrument.quoteCurrency??null,marketOpen:validSchedule(finalInstrument)?isInstrumentSessionOpen(finalInstrument,asOfMs):null,
+    instrument:{assetClass:instrument.assetClass??null,quoteCurrency:instrument.quoteCurrency??null,digits:instrument.digits??null,
+      pipSize:decimalToNumber(instrument.pipSize,null),tickSize:decimalToNumber(instrument.tickSize,null),contractSize:decimalToNumber(instrument.contractSize,null),
+      defaultLeverage:instrument.defaultLeverage??null,marketOpen:validSchedule(finalInstrument)?isInstrumentSessionOpen(finalInstrument,asOfMs):null,
       timezone:finalInstrument.timezone,sessionOpenMs:validSchedule(finalInstrument)?activeSessionOpenTimeMs(finalInstrument,asOfMs):null,
       nextOpenMs:validSchedule(finalInstrument)?nextSessionOpenTimeMs(finalInstrument,asOfMs):null},
     sessionClocks:clocks,sessionRanges:ranges,sessionRangeTimeframe:intraday?.timeframe??null,
