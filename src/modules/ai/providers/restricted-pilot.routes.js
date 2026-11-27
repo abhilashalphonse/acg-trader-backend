@@ -43,6 +43,10 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       req.log?.warn({aiOutcome:result.state,aiFailureReason:result.failureReason??'UNCLASSIFIED',
         aiInputTokens:result.usage?.inputTokens??null,aiOutputTokens:result.usage?.outputTokens??null},'AI workspace response incomplete');
     }
+    if(action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&result.context?.market){
+      req.log?.info({aiQuoteStatus:result.context.quoteStatus,aiQuoteReason:result.context.quoteReason,
+        aiQuoteSessionVerification:result.context.quoteSessionVerification,aiQuoteObservationAvailable:result.context.quoteObservationAvailable},'AI workspace quote evidence');
+    }
     res.json(result);
   });
   router.use(aiSafeError);return router;
