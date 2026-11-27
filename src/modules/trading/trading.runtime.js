@@ -285,6 +285,7 @@ function createTradingRuntime({ marketRuntime }) {
     pendingOrderService,
     pendingOrderAmendService,
     tradingPermissionPolicyService,
+    readAiCalendarSnapshot: nowMs => calendarSnapshots.read(nowMs),
     policyControlService,
     policyMetricsService,
     weekendHoldingEngine,

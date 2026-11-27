@@ -9,6 +9,7 @@ const {createRestrictedPilotPolicy,createPersonalDemoPilotAccountResolver}=requi
 const {createProviderUsageRecorder}=require('./provider-billing-reconciliation');
 const {createLiveOpenAiTransport,buildBody}=require('./live-openai-transport');
 const {createMarketContextSource}=require('../intelligence/context-source');
+const {attachEconomicCalendar}=require('../intelligence/economic-calendar-context');
 const {createTrustedContextAssembler}=require('../intelligence/trusted-context');
 const {createResponseEngine}=require('../intelligence/response-engine');
 const {scopeFor}=require('../ai-read-gateway');
@@ -33,7 +34,7 @@ const runtimes=new WeakSet();
 // public config, no externally supplied model, prompt, token cap or tools.
 function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretPort,verifyRelease,verifyApproval,
   resolveMembership,resolveDataRights,validatePayload,countUpperBound,resolveBillingActor,authorizeBilling,
-  authService,gateway,governanceStore,marketRuntime,fundedStaff=false,educationOnly=false,workspaceChat=false,isolatedWorkspaceLoopback=null}={}){
+  authService,gateway,governanceStore,marketRuntime,readAiCalendarSnapshot=null,fundedStaff=false,educationOnly=false,workspaceChat=false,isolatedWorkspaceLoopback=null}={}){
   if(env.ACG_AI_LIVE_PROVIDER_ENABLED!=='true'||env.ACG_AI_RESTRICTED_PILOT_ENABLED!=='true')return null;
   guard([verifyRelease,verifyApproval,resolveMembership,resolveDataRights,validatePayload,countUpperBound,
     resolveBillingActor,authorizeBilling].every(f=>typeof f==='function'));
@@ -147,7 +148,8 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
         };
         const scope=Object.fromEntries(['tenantId','actorId','sessionId','accountId'].map(k=>[k,x.owner[k]]));
         const snapshot=await workspaceSource.read({scope,workspace:x.workspace,includeAccount:input.includeAccount,includeMarket:input.includeMarket,authorize:allowed});
-        const body=buildWorkspaceBody(d,{question:input.question,history:input.history,...snapshot});
+        const market=attachEconomicCalendar(snapshot.market,readAiCalendarSnapshot);
+        const body=buildWorkspaceBody(d,{question:input.question,history:input.history,...snapshot,market});
         const prompt={packageId:hash(body),expiresAtMs:Date.now()+28000};
         const transport=createLiveOpenAiTransport({config,admission:x.admission,workspaceChat:true,isolatedLoopback:isolatedWorkspaceLoopback,
           authorizeExport:async request=>isDeepStrictEqual(request.payload,body)&&await pilot.authorizeExport(request),

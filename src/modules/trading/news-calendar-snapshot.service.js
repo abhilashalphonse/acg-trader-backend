@@ -33,7 +33,7 @@ class NewsCalendarSnapshotService {
     if (this.config.calendarProvider === 'showmytrades' && !this.config.freeCalendarValidated &&
       ['FRESH', 'VALID_GRACE'].includes(dataStatus)) dataStatus = 'PENDING_VALIDATION';
     return { events: snapshot.events, dataStatus, snapshotVersion: snapshot._id,
-      fetchedAt: new Date(snapshot.fetchedAt).toISOString(), lastRefreshError: this.lastError,
+      fetchedAt: new Date(snapshot.fetchedAt).toISOString(), coverageFrom: new Date(snapshot.coverageFrom).toISOString(), coverageTo: new Date(snapshot.coverageTo).toISOString(), lastRefreshError: this.lastError,
       provider: snapshot.provider, verification: snapshot.verification || null };
   }
 
