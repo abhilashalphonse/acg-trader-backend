@@ -23,8 +23,8 @@ async function runPhase4ConversationProviderIntegration({auth,gateway,gs,token,f
   const app=express(),quotaNow=Date.now()+14400000;
   app.use('/v1/ai/chat',createIsolatedChatRouter({authService:auth,gateway,governance:createAiGovernance({store:gs}),
     quota:createAiQuota({store:createAiQuotaStore(),now:()=>quotaNow,limit:100}),registry,
-    conversations:{execute:(...args)=>current.execute(...args)},authorizePurpose:async r=>{
-      assert.equal(r.externalExport,false);assert.equal(r.offlineOnly,true);return r.scope.actorId===scope.actorId;
+    conversations:{execute:(...args)=>current.execute(...args)},fixtureProviderEnabled:true,authorizePurpose:async r=>{
+      assert.equal(r.externalExport,false);assert.equal(r.offlineOnly,true);return r.scope.actorId===scope.actorId&&(!r.selection||r.selection.providerId==='anthropic');
     }}));
   const server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
   const root='http://127.0.0.1:'+server.address().port+'/v1/ai/chat/conversations/';
@@ -50,14 +50,17 @@ async function runPhase4ConversationProviderIntegration({auth,gateway,gs,token,f
     assert.ok(verified,'one request must finish verified');
     assert.ok(race.every(v=>[200,409].includes(v.status)));
     const run=verified.body.providerRun;
-    assert.deepEqual(run.referenceIds,[expected]);assert.equal(run.inputTokens,100);assert.equal(run.outputTokens,20);
+    assert.deepEqual(run.referenceIds,[expected]);
+    assert.equal(verified.body.verifiedEducation.entries[0].knowledgeId,expected);
+    assert.equal(verified.body.verifiedEducation.entries[0].reviewStatus,'ENGINEERING_DRAFT');
+    assert.equal(verified.body.verifiedEducation.fixtureOnly,true);assert.equal(run.inputTokens,100);assert.equal(run.outputTokens,20);
     assert.equal(verified.body.fixtureProviderOnly,true);assert.equal(verified.body.dispatchAllowed,false);assert.equal(verified.body.creditDeducted,false);
     assert.equal(requests(),start+1);
     // New service, new local orchestrator, same durable conversation claim.
     current=service();
     const replay=await ok('generate',first);assert.equal(replay.replayed,true);assert.deepEqual(replay.providerRun,run);
     assert.equal(requests(),start+1);
-    const history=await ok('history',{conversationId});assert.deepEqual(history.messages[0].providerRun,run);
+    const history=await ok('history',{conversationId});assert.deepEqual(history.messages[0].providerRun,run);assert.deepEqual(history.messages[0].verifiedEducation,verified.body.verifiedEducation);
     assert.ok(!JSON.stringify(run).includes('candidate-response-v2'));assert.ok(!Object.hasOwn(run,'candidate'));
     const invalid=await append();
     setMode('forged');
@@ -76,7 +79,7 @@ async function runPhase4ConversationProviderIntegration({auth,gateway,gs,token,f
     assert.equal(requests(),start+4);
     const final=await ok('history',{conversationId});
     assert.deepEqual(final.messages.map(m=>m.providerRun.state),['VERIFIED','FAILED','SUPPRESSED','HELD_UNKNOWN']);
-    assert.ok(final.messages.slice(1).every(m=>m.providerRun.referenceIds.length===0));
+    assert.ok(final.messages.slice(1).every(m=>m.providerRun.referenceIds.length===0&&m.verifiedEducation===null));
     const doc=await AiTransportAdmission.findOne({tenantId:scope.tenantId,actorId:scope.actorId}).lean();
     for(const m of [run,rejected.providerRun,held.providerRun]){
       const a=doc.attempts.find(x=>x.operationId===m.operationId);
@@ -87,10 +90,32 @@ async function runPhase4ConversationProviderIntegration({auth,gateway,gs,token,f
     const audits=await AiAuditEvent.find({tenantId:scope.tenantId,operation:'CHAT_GENERATE_OFFLINE'}).lean();
     assert.ok(audits.some(a=>a.stage==='ALLOWED'));assert.ok(audits.some(a=>a.stage==='DENIED'));
     assert.ok(audits.every(a=>!Object.hasOwn(a,'question')&&!Object.hasOwn(a,'result')&&!Object.hasOwn(a,'candidate')));
+    if(process.env.ACG_AI_PHASE4F_BROWSER_DIR){
+      const {spawn}=require('node:child_process');
+      const dir=require('node:path').resolve(process.env.ACG_AI_PHASE4F_BROWSER_DIR);
+      await new Promise((resolve,reject)=>{
+        const child=spawn(process.execPath,['tests/ui/ai-phase4f-integrated.mjs'],{cwd:dir,stdio:['pipe','pipe','pipe']});
+        let out='',err='';const timer=setTimeout(()=>child.kill('SIGKILL'),120000);
+        child.stdout.on('data',v=>{out=(out+v).slice(-16000);});child.stderr.on('data',v=>{err=(err+v).slice(-16000);});
+        child.stdin.on('error',()=>{});
+        child.once('error',()=>{clearTimeout(timer);reject(Error('Phase 4F response browser runner unavailable'));});
+        child.once('close',code=>{
+          clearTimeout(timer);
+          if(code!==0||!out.includes('PASS Phase 4F verified education browser')){
+            const reason=err.includes('TimeoutError')?'timeout':err.includes('AssertionError')?'assertion':'runner';
+            reject(Error('Phase 4F response browser acceptance failed: '+reason));return;
+          }
+          console.log('PASS Phase 4F verified education browser rendering, historical reload and safe failure states');resolve();
+        });
+        child.stdin.end(JSON.stringify({root:'http://127.0.0.1:'+server.address().port,authority,token,foreignToken,
+          providerMode:true,existingConversationId:conversationId}));
+      });
+      assert.equal(requests(),start+5); // one additional local fixture request, no paid inference
+    }
     await ok('delete',{conversationId});
     const row=(await store.read(scope)).conversations.find(c=>c.conversationId===conversationId);
     assert.equal(row.status,'DELETED');assert.equal(row.messages.length,0);
-    assert.equal((await call('generate',first)).status,404);assert.equal(requests(),start+4);
+    assert.equal((await call('generate',first)).status,404);assert.equal(requests(),start+(process.env.ACG_AI_PHASE4F_BROWSER_DIR?5:4));
     console.log('PASS Phase 4F durable message/provider claim, real authenticated TLS fixture, reference verification, replay after service restart, invalid reference rejection, in-flight cancellation, unknown hold and deletion');
   }finally{setMode('normal');setHook(null);server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
