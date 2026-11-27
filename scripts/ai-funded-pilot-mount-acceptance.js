@@ -185,6 +185,12 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.deepEqual(data.market.frames.map(f=>f.timeframe),['1m','5m','15m','1h']);
           assert.ok(data.market.frames.every(f=>f.closedCandles.length>=16&&f.closedCandles.every(b=>b.length===5)));
           assert.ok(data.market.frames.every(f=>f.activeCandle?.complete===false));
+          assert.ok(data.market.frames.every(f=>f.advanced.methodVersion==='advanced-market-intelligence-v1'));
+          assert.ok(data.market.frames.every(f=>f.advanced.regime.state==='TRENDING_UP'));
+          assert.ok(data.market.frames.every(f=>f.advanced.dealingRange.high===124&&f.advanced.dealingRange.low===99));
+          assert.ok(data.market.frames.every(f=>f.advanced.liquidity.levels.filter(l=>l.kind==='EXTERNAL_RANGE_BOUNDARY').length===2));
+          assert.ok(data.market.frames.every(f=>f.quoteRangeLocation.reference==='TERMINAL_BID_ASK_MID'));
+          assert.ok(data.market.frames.every(f=>f.advanced.displacements.length===0));
           assert.equal(data.market.quote.bid,123.99);assert.equal(data.market.quote.ask,124.01);
           assert.equal(data.market.quote.status,'RECENT_PROVIDER_EVENT');
           assert.equal(data.market.frames[1].freshness.state,'LATEST_EXPECTED_UTC_BUCKET');
