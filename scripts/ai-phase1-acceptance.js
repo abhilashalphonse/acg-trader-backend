@@ -141,6 +141,9 @@ async function main() {
     await runPhase4TransportIntegration({auth,gateway,gs,token:ta,foreignToken:tb,readRequest:req,
       marketTest:{token:tb,foreignToken:ta,readRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,
         toolId:'account.valuation.read',args:{}},source:assertPhase2Denied.source,asOf:assertPhase2Denied.asOf}});
+    const {runLiveReadiness}=require('./ai-live-readiness-integration');
+    await runLiveReadiness({auth,gateway,token:ta,foreignToken:tb,readRequest:req,
+      foreignReadRequest:{accountId:b.id,connectionId:gb.body.grant.connectionId,toolId:'account.valuation.read',args:{}}});
     const {runPhase3CreditIntegration}=require('./ai-phase3-credit-integration');
     await runPhase3CreditIntegration({auth,token:ta,foreignToken:tb,accountId:a.id,foreignAccountId:b.id});
     const {runPhase3PurchaseIntegration}=require('./ai-phase3-purchase-integration');
