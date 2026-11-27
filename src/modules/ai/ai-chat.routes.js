@@ -36,11 +36,11 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
       const principal=req.traderPrincipal;
       await quota.consume(principal);
       let scope,readRequest,disclosures=[],fences=[];
-      async function check(selection=null,profile=null){
+      async function check(selection=null,profile=null,workspace=null){
         const fresh=await authService.authenticateSessionToken(bearerToken(req));
         if(!scopeEqual(scope,scopeFor(fresh,readRequest.accountId,now())))throw deny('AI_SCOPE_CHANGED');
         await gateway.assertDisclosure(fresh,readRequest);
-        const permitted=await authorizePurpose(freeze({scope:{...scope},operation,selection,profile,offlineOnly:true,externalExport:false}));
+        const permitted=await authorizePurpose(freeze({scope:{...scope},operation,selection,profile,workspace,offlineOnly:true,externalExport:false}));
         if(permitted!==true)throw deny('AI_CHAT_PURPOSE_DENIED');
         const again=await authService.authenticateSessionToken(bearerToken(req));
         if(!scopeEqual(scope,scopeFor(again,readRequest.accountId,now())))throw deny('AI_SCOPE_CHANGED');
@@ -52,13 +52,13 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
         scope=scopeFor(principal,input.accountId,now());
         readRequest=freeze({accountId:input.accountId,connectionId:input.connectionId,toolId:'account.valuation.read',args:{}});
         await check();
-        const value=await work(input,async(s,p)=>{await check(s,p);disclosures.push([s,p]);},scope,f=>fences.push(f));
+        const value=await work(input,async(s,p,w=null)=>{await check(s,p,w);if(!disclosures.some(v=>JSON.stringify(v)===JSON.stringify([s,p,w])))disclosures.push([s,p,w]);},scope,f=>fences.push(f));
         return freeze(value);
       },async()=>{
         await check();
-        for(const [s,p] of disclosures)await check(s,p);
+        for(const [s,p,w] of disclosures)await check(s,p,w);
         for(const fence of fences)await fence();
-      });
+      }).then(async value=>{for(const fence of fences)await fence();return value;});
     });
     res.status(200).json(result);
   };
