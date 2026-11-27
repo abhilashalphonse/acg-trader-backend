@@ -3,6 +3,7 @@ const {createHash}=require('node:crypto');
 const {isDeepStrictEqual}=require('node:util');
 const {createAiReadStore}=require('../ai-read-store');
 const {createLiveAdmission}=require('./live-admission');
+const {LivePlatform,LiveControl}=require('./live-admission.model');
 const {createLiveRuntimeConfig,assertLiveRuntime,createLiveSessionAuthority}=require('./live-runtime-config');
 const {createRestrictedPilotPolicy,createPersonalDemoPilotAccountResolver}=require('./restricted-pilot-policy');
 const {createProviderUsageRecorder}=require('./provider-billing-reconciliation');
@@ -34,6 +35,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
   const config=createLiveRuntimeConfig({env,descriptor,secretPort,verifyRelease:active});
   const d=config.descriptor;
   guard(policy?.descriptorId===d.descriptorId&&policy?.policyVersion===d.policyVersion&&policy?.enabled===true);
+  const expiresAtMs=policy.expiresAtMs;
   const pilot=createRestrictedPilotPolicy({policy,verifyApproval,resolveMembership,resolveDataRights,validatePayload,
     resolveAccount:createPersonalDemoPilotAccountResolver({store:createAiReadStore()})});
   const source=createMarketContextSource(marketRuntime);
@@ -56,8 +58,18 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
           !['inputTokens','outputTokens','providerResponseHash'].every(k=>usage[k]===witness.data[k]))return false;
         return await authorizeBilling(actor,owner,witness.data)===true;
       }});
+    // Proposed pilot ceilings are maxima, never automatic enablement. Read
+    // majority-committed control values; revision fencing in the ledger
+    // invalidates consent if either control changes before dispatch.
+    async function checkPilotLimits(){
+      const p=await LivePlatform.findById('platform').read('primary').readConcern('majority').maxTimeMS(2000).lean();
+      const t=await LiveControl.findById(owner.tenantId).read('primary').readConcern('majority').maxTimeMS(2000).lean();
+      guard(p?.enabled===true&&t?.enabled===true&&p.dailyPicoUsd<=1000000000000&&
+        p.maxOutstandingPicoUsd<=1000000000000&&p.maxOutstandingRequests===1&&p.dailyRequests<=100&&
+        t.tenantDailyPicoUsd<=1000000000000&&t.actorDailyPicoUsd<=1000000000000&&t.actorDailyRequests<=20);
+    }
     async function allowed(purpose='CLAIM'){
-      assertLiveRuntime(config);
+      assertLiveRuntime(config);await checkPilotLimits();
       const fresh=await authz.authorizeSession(owner,purpose);
       guard(isDeepStrictEqual(fresh,owner)&&await authz.authorizeMarket(owner,binding,purpose)===true);
       return true;
@@ -78,7 +90,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
     async grant(token,input){
       const x=await context(token,input);await x.allowed('GRANT');
       return x.admission.grant(x.owner,{...x.binding,expectedRevision:input.expectedRevision,explicitConsent:input.explicitConsent,
-        expiresAtMs:Math.min(Date.now()+15*60000,policy.expiresAtMs)});
+        expiresAtMs:Math.min(Date.now()+15*60000,expiresAtMs)});
     },
     async revoke(token,input){
       const x=await context(token,{...input,action:'revoke'});
