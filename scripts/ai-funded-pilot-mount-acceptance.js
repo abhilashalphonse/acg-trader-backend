@@ -146,7 +146,21 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       complete:true,synthetic:false,source:'BACKFILL',provider:'twelve-data'})));
     const instrumentRegistry=new InstrumentRegistry({symbols:[symbol],defaultMaxQuoteAgeMs:30000,logger:{warn(){}}});
     await instrumentRegistry.load();
-    const marketRuntime={enabled:true,symbols:[symbol],timeframes:['1m'],instrumentRegistry,quoteStore:new QuoteStore(),health:()=>({enabled:true})};
+    const {TIMEFRAME_MS,candleBucketOpenTimeMs}=require('../src/modules/market-data/market.constants');
+    for(const timeframe of ['5m','15m','1h']){
+      const step=TIMEFRAME_MS[timeframe],end=candleBucketOpenTimeMs(Date.now(),timeframe);
+      await Candle.insertMany(Array.from({length:24},(_,i)=>({symbol,timeframe,openTime:new Date(end-(24-i)*step),
+        closeTime:new Date(end-(23-i)*step),open:String(100+i),high:String(101+i),low:String(99+i),close:String(100+i),
+        complete:true,synthetic:false,source:'BACKFILL',provider:'twelve-data'})));
+    }
+    const quoteStore=new QuoteStore();
+    const marketRuntime={enabled:true,symbols:[symbol],timeframes:['1m','5m','15m','1h'],instrumentRegistry,quoteStore,
+      candleEngine:{getCurrent:(s,t)=>({symbol:s,timeframe:t,provider:'twelve-data',complete:false,synthetic:false,
+        openTimeMs:candleBucketOpenTimeMs(Date.now(),t),closeTimeMs:candleBucketOpenTimeMs(Date.now(),t)+TIMEFRAME_MS[t],
+        open:124,high:125,low:123,close:124})},health:()=>({enabled:true})};
+    const tickTime=Date.now()-5;
+    quoteStore.set({symbol,providerSymbol:'TEST/USD',source:'twelve-data',bid:123.99,ask:124.01,
+      providerTimestampMs:tickTime,receivedAtMs:tickTime,isStale:false,sessionOpen:true,isSyntheticSpread:true});
     const wsEnv={...flags,ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED:'true',
       ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:String(Date.now()+120000),ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-workspace-'.padEnd(40,'x')};
     const ws=await loadFundedPilotBootstrap({env:wsEnv,marketRuntime});
@@ -167,7 +181,14 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.equal(data.question,'Review my account and chart.');
           assert.equal(data.account.state.balance,'10000');assert.equal(data.account.source,'PERSISTED_ACCOUNT_SNAPSHOT');
           assert.equal(data.market.symbol,symbol);assert.equal(data.market.provider,'twelve-data');
-          assert.ok(data.market.frames.length===1);assert.ok(data.knowledge.length>0);
+          assert.equal(data.market.schemaVersion,'adaptive-market-v1');
+          assert.deepEqual(data.market.frames.map(f=>f.timeframe),['1m','5m','15m','1h']);
+          assert.ok(data.market.frames.every(f=>f.closedCandles.length>=16&&f.closedCandles.every(b=>b.length===5)));
+          assert.ok(data.market.frames.every(f=>f.activeCandle?.complete===false));
+          assert.equal(data.market.quote.bid,123.99);assert.equal(data.market.quote.ask,124.01);
+          assert.equal(data.market.quote.status,'RECENT_PROVIDER_EVENT');
+          assert.equal(data.market.frames[1].freshness.state,'LATEST_EXPECTED_UTC_BUCKET');
+          assert.equal(data.market.sessionClocks.length,3);assert.ok(data.knowledge.length>0);
           for(const value of [tenantId,actor.actorId,staff,...ids,'staff-owner',wsEnv.ACG_AI_FUNDED_OPENAI_API_KEY])
             assert.ok(!raw.includes(value));
           res.writeHead(200,{'content-type':'application/json'});
