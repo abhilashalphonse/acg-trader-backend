@@ -3,17 +3,17 @@ const express = require('express');
 const { AppError } = require('../../shared/errors/app-error');
 const reject = (code,statusCode=400) => new AppError('Invalid AI request',{code,statusCode});
 const forbidden = new Set(['__proto__','prototype','constructor']);
-function validateInput(value,depth=0,budget={nodes:0}) {
+function validateInput(value,depth=0,budget={nodes:0},maxStringLength=512) {
   if (++budget.nodes>128 || depth>5) throw reject('AI_INPUT_TOO_COMPLEX');
   if (value===null || typeof value==='boolean') return;
   if (typeof value==='string') {
-    if (value.length>512) throw reject('AI_INPUT_TOO_COMPLEX');
+    if (value.length>maxStringLength) throw reject('AI_INPUT_TOO_COMPLEX');
     return;
   }
   if (typeof value==='number' && Number.isFinite(value)) return;
   if (Array.isArray(value)) {
     if (value.length>16) throw reject('AI_INPUT_TOO_COMPLEX');
-    for (const v of value) validateInput(v,depth+1,budget);
+    for (const v of value) validateInput(v,depth+1,budget,maxStringLength);
     return;
   }
   if (typeof value!=='object' || Object.getPrototypeOf(value)!==Object.prototype) throw reject('AI_INVALID_INPUT');
@@ -21,18 +21,19 @@ function validateInput(value,depth=0,budget={nodes:0}) {
   if (keys.length>16) throw reject('AI_INPUT_TOO_COMPLEX');
   for(const key of keys) {
     if (key.length>64 || forbidden.has(key) || key.startsWith('$') || key.includes('.')) throw reject('AI_INVALID_INPUT');
-    validateInput(value[key],depth+1,budget);
+    validateInput(value[key],depth+1,budget,maxStringLength);
   }
 }
-function aiInputGuard(req,_res,next) {
+function aiInputGuard(req,_res,next,maxStringLength=512) {
   try {
-    if (req.body!==undefined) validateInput(req.body);
+    if (req.body!==undefined) validateInput(req.body,0,{nodes:0},maxStringLength);
     // Only the administrative audit list accepts query parameters; route schema validates those.
     validateInput({...req.query});
     next();
   } catch(error){next(error);}
 }
-function aiJsonBoundary() {
+function aiJsonBoundary({maxStringLength=512}={}) {
+  if(![512,4096].includes(maxStringLength))throw Error('Invalid AI string bound');
   const router=express.Router();
   router.use((req,res,next)=>{
     res.setHeader('Cache-Control','no-store');
@@ -40,7 +41,7 @@ function aiJsonBoundary() {
     next();
   });
   router.use(express.json({limit:'8kb',inflate:false,strict:true}));
-  router.use(aiInputGuard);
+  router.use((req,res,next)=>aiInputGuard(req,res,next,maxStringLength));
   router.use(aiSafeError);
   return router;
 }
