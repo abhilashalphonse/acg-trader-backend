@@ -1,0 +1,83 @@
+name: Read-only NSE live candle smoke
+on:
+  pull_request:
+    paths:
+      - .github/workflows/nse-live-history-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  nse-candle-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check production NSE histories without any credentials or writes
+        shell: bash
+        run: |
+          node <<'NODE'
+          'use strict';
+          const symbols = ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'SBIN'];
+          const base = 'https://acg-trader-backend-production.up.railway.app';
+          const start = Date.parse('2026-10-15T03:45:00.000Z');
+          const finish = start + 375 * 60_000;
+          const now = Date.now();
+          const elapsed = Math.max(0, Math.min(375, Math.floor((now - start) / 60_000)));
+          async function probe(symbol, timeframe) {
+            const url = new URL('/v1/market/candles', base);
+            url.searchParams.set('symbol', symbol);
+            url.searchParams.set('timeframe', timeframe);
+            url.searchParams.set('limit', '500');
+            const response = await fetch(url, { signal: AbortSignal.timeout(25000) });
+            if (!response.ok) throw Error(symbol + ' ' + timeframe + ' HTTP ' + response.status);
+            const data = await response.json();
+            const candles = (data.candles || []).filter(bar =>
+              Number(bar.openTimeMs) >= start && Number(bar.openTimeMs) < finish)
+              .sort((left, right) => Number(left.openTimeMs) - Number(right.openTimeMs));
+            const stepMs = timeframe === '15m' ? 900000 : timeframe === '5m' ? 300000 : 60000;
+            const gaps = candles.slice(1)
+              .map((bar, index) => (Number(bar.openTimeMs) - Number(candles[index].openTimeMs)) / stepMs)
+              .filter(gap => gap > 1);
+            const expected = Math.floor(elapsed / (stepMs / 60000));
+            const threshold = timeframe === '15m' ? Math.max(0, expected - 2) : Math.floor(expected * 0.7);
+            console.log(JSON.stringify({
+              symbol, timeframe, expectedCompleted: expected,
+              returnedToday: candles.length, minimumRequired: threshold,
+              first: candles[0]?.openTimeMs || null,
+              last: candles.at(-1)?.openTimeMs || null,
+              largestGap: Math.max(0, ...gaps), http: response.status,
+            }));
+            if (candles.length < threshold) throw Error(symbol + ' ' + timeframe + ': current NSE session bars missing');
+            if (candles.length && Number(candles[0].openTimeMs) !== start) {
+              throw Error(symbol + ' ' + timeframe + ': 09:15 IST session-open candle absent');
+            }
+            if (timeframe === '15m' && gaps.some(gap => gap > 2)) {
+              throw Error(symbol + ': intraday 15m candle gap exceeds one missing bar');
+            }
+            for (const bar of candles) {
+              const ohlc = ['open','high','low','close'].map(field => Number(bar[field]));
+              if (!ohlc.every(v => Number.isFinite(v) && v > 0)
+                || ohlc[1] < Math.max(ohlc[0], ohlc[3])
+                || ohlc[2] > Math.min(ohlc[0], ohlc[3])) {
+                throw Error(symbol + ' ' + timeframe + ': invalid OHLC');
+              }
+            }
+          }
+          (async () => {
+            const errors = [];
+            for (const symbol of symbols) {
+              try { await probe(symbol, '15m'); }
+              catch (error) { errors.push(error.message); console.error(error.message); }
+            }
+            for (const timeframe of ['5m', '1m']) {
+              for (const symbol of ['TCS', 'RELIANCE']) {
+                try { await probe(symbol, timeframe); }
+                catch (error) { errors.push(error.message); console.error(error.message); }
+              }
+            }
+            if (errors.length) throw Error(errors.length + ' live candle parity checks failed');
+          })().catch(error => {
+            console.error(error.message);
+            process.exitCode = 1;
+          });
+          NODE
