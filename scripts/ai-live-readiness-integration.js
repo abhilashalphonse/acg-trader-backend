@@ -13,7 +13,7 @@ async function runLiveReadiness({auth,gateway,token,foreignToken,readRequest,for
   const s=makeScope(principal,readRequest),b=makeScope(other,foreignReadRequest);
   const admin={tenantId:s.tenantId,actorId:s.actorId},descriptorId='a'.repeat(64),policyVersion='b'.repeat(64),evidenceId='c'.repeat(64);
   let clock=Date.now(),deny=false,denyAdmin=false,denyBilling=false;
-  const price={descriptorId,approved:true,inputRatePicoUsd:100,outputRatePicoUsd:200};
+  const price={descriptorId,policyVersion,approved:true,inputRatePicoUsd:100,outputRatePicoUsd:200,maxInputTokens:2,maxOutputTokens:1};
   function service(){return createLiveAdmission({
     now:()=>clock,
     authorizeSession:async(input,purpose)=>{
