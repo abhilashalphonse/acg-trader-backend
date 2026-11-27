@@ -7,9 +7,18 @@ const time={type:Number,required:true,min:1,validate:Number.isSafeInteger};
 const selection=new Schema({providerId:{type:String,required:true,enum:['openai','anthropic','gemini','deepseek','openrouter']},
   modelId:{type:String,required:true,maxlength:160},descriptorId:{type:String,required:true,match:/^[a-f0-9]{64}$/},
   fundingMode:{type:String,required:true,enum:['BYO_API']}},{_id:false,strict:'throw'});
+const hash={type:String,match:/^[a-f0-9]{64}$/};
+const providerRun=new Schema({operationId:uuid,state:{type:String,required:true,enum:['CLAIMED','VERIFIED','FAILED','HELD_UNKNOWN','SUPPRESSED']},
+  startedAtMs:time,finishedAtMs:{type:Number,default:null,min:1,validate:v=>v===null||Number.isSafeInteger(v)},
+  responseStatus:{type:String,enum:['ANSWER','INSUFFICIENT_EVIDENCE','UNSUPPORTED',null],default:null},
+  responseId:{...hash,default:null},referenceIds:{type:[String],default:[],validate:v=>v.length<=8&&v.every(x=>/^[a-f0-9]{64}$/.test(x))},
+  verifiedAtMs:{type:Number,default:null,min:1,validate:v=>v===null||Number.isSafeInteger(v)},
+  responseExpiresAtMs:{type:Number,default:null,min:1,validate:v=>v===null||Number.isSafeInteger(v)},
+  inputTokens:{type:Number,default:null,min:0,max:8192,validate:v=>v===null||Number.isSafeInteger(v)},
+  outputTokens:{type:Number,default:null,min:0,max:1024,validate:v=>v===null||Number.isSafeInteger(v)}},{_id:false,strict:'throw'});
 const message=new Schema({messageId:uuid,sequence:{type:Number,required:true,min:1,max:16,validate:Number.isSafeInteger},
   text:{type:String,required:true,validate:v=>Buffer.byteLength(v,'utf8')<=4096},
-  status:{type:String,required:true,enum:['STORED_OFFLINE','CANCELLED']},createdAtMs:time,updatedAtMs:time},{_id:false,strict:'throw'});
+  status:{type:String,required:true,enum:['STORED_OFFLINE','CANCELLED']},createdAtMs:time,updatedAtMs:time,providerRun:{type:providerRun,default:null}},{_id:false,strict:'throw'});
 const workspace=new Schema({symbol:{type:String,required:true,match:/^[A-Z0-9._-]{1,32}$/},
   timeframe:{type:String,required:true,enum:['1m','5m','15m','30m','1h','4h','1d','1w']},
   includeChartContext:{type:Boolean,required:true,validate:v=>v===true}},{_id:false,strict:'throw'});
