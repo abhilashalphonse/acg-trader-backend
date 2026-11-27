@@ -1,7 +1,7 @@
 'use strict';
 const {symbolAffectedByEvent}=require('../../trading/trading-permission-policy.service');
 const HOUR=3600000,DAY=24*HOUR;
-const dateMs=v=>typeof v==='string'||v instanceof Date?Date.parse(v):NaN;
+const dateMs=v=>v instanceof Date?v.getTime():typeof v==='string'?Date.parse(v):NaN;
 const iso=ms=>Number.isFinite(ms)?new Date(ms).toISOString():null;
 const statusSet=new Set(['FRESH','VALID_GRACE','PENDING_VALIDATION','EXPIRED','UNAVAILABLE']);
 const currency=v=>typeof v==='string'&&/^[A-Z]{3}$/.test(v)?v:null;
@@ -38,7 +38,7 @@ function projectEconomicCalendar({snapshot,market,nowMs=Date.now()}={}){
     if(allDay||!Number.isFinite(time)){
       if(!Number.isFinite(day)||day>=windowEnd||day+DAY<=windowStart)continue;
       candidates.push({title,currency:c,date:iso(day).slice(0,10),timestamp:null,allDay,
-        timing:'NO_VERIFIED_INTRADAY_TIME',sort:Math.max(day,windowStart)});
+        timing:'NO_VERIFIED_INTRADAY_TIME',sort:Math.min(day+DAY-1,Math.max(day,nowMs))});
       continue;
     }
     if(time<windowStart||time>=windowEnd)continue;
