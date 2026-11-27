@@ -29,8 +29,10 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
     authorizeAdmin:async x=>x.actorId===actor.actorId,authorizePlatformAdmin:async x=>x.actorId===actor.actorId,
     authorizeReconciliation:async()=>false,resolvePrice:async()=>null});
   const prior=await LivePlatform.findById('platform').lean();
+  assert.equal(prior,null,'Funded acceptance requires a fresh dedicated live ledger');
+  assert.equal(await LiveAttempt.countDocuments({}),0);
   const caps={dailyPicoUsd:1000000000000,dailyRequests:20,maxOutstandingPicoUsd:1000000000000,maxOutstandingRequests:1};
-  const platform=(await admin.setPlatformControl(actor,{...caps,enabled:true,expectedRevision:prior.revision}));
+  const platform=(await admin.setPlatformControl(actor,{...caps,enabled:true,expectedRevision:0}));
   await admin.setControl(actor,{enabled:true,expectedRevision:0,tenantDailyPicoUsd:1000000000000,actorDailyPicoUsd:1000000000000,tenantDailyRequests:20,actorDailyRequests:20});
   const fields={enabled:true,expiresAtMs:Date.now()+120000,members:[actor],instruments:[{symbol:'XAUUSD',timeframe:'1m'}],approvalDigest:'a'.repeat(64)};
   const policyVersion=digest(fields);
@@ -210,8 +212,8 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
   }finally{
     if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
     for(const k of Object.keys(flags)){if(original[k]===undefined)delete process.env[k];else process.env[k]=original[k];}
-    await admin.setPlatformControl(actor,{enabled:prior.enabled,expectedRevision:platform.revision,dailyPicoUsd:prior.dailyPicoUsd,
-      dailyRequests:prior.dailyRequests,maxOutstandingPicoUsd:prior.maxOutstandingPicoUsd,maxOutstandingRequests:prior.maxOutstandingRequests});
+    // Dedicated random test database is dropped by the standalone runner.
+    // Never restore, reset or overwrite another suite's ledger.
   }
 }
 module.exports={runFundedPilotMountAcceptance};
