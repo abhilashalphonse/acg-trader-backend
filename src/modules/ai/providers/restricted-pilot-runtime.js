@@ -33,7 +33,7 @@ const runtimes=new WeakSet();
 // public config, no externally supplied model, prompt, token cap or tools.
 function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretPort,verifyRelease,verifyApproval,
   resolveMembership,resolveDataRights,validatePayload,countUpperBound,resolveBillingActor,authorizeBilling,
-  authService,gateway,governanceStore,marketRuntime,fundedStaff=false,educationOnly=false}={}){
+  authService,gateway,governanceStore,marketRuntime,fundedStaff=false,educationOnly=false,workspaceChat=false}={}){
   if(env.ACG_AI_LIVE_PROVIDER_ENABLED!=='true'||env.ACG_AI_RESTRICTED_PILOT_ENABLED!=='true')return null;
   guard([verifyRelease,verifyApproval,resolveMembership,resolveDataRights,validatePayload,countUpperBound,
     resolveBillingActor,authorizeBilling].every(f=>typeof f==='function'));
@@ -45,7 +45,9 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
   const funded=fundedStaff===true?createFundedStaffAuthority({authService,env}):null;
   const pilot=createRestrictedPilotPolicy({policy,verifyApproval,resolveMembership,resolveDataRights,validatePayload,
     resolveAccount:funded?null:createPersonalDemoPilotAccountResolver({store:createAiReadStore()}),fundedStaff:!!funded});
-  guard(!educationOnly||fundedStaff===true);
+  guard((!educationOnly&&!workspaceChat)||fundedStaff===true);
+  guard(!workspaceChat||(!educationOnly&&policy.workspaceChat===true));
+  const workspaceSource=workspaceChat?require('./funded-workspace-context').createWorkspaceContext({marketRuntime}):null;
   const source=educationOnly?null:createMarketContextSource(marketRuntime);
   async function context(token,input){
     assertLiveRuntime(config);
@@ -111,7 +113,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
     return {owner,workspace,binding,admission,allowed,recordUsage};
   }
   const runtime=Object.freeze({
-    mode:educationOnly?'EDUCATION_ONLY':'HISTORICAL_REFERENCE_ONLY',
+    mode:workspaceChat?'WORKSPACE_CHAT':educationOnly?'EDUCATION_ONLY':'HISTORICAL_REFERENCE_ONLY',
     async quotaPrincipal(token,input,principal){
       if(!funded)return principal;
       const s=await funded.resolve(token,input.accountId,input.connectionId);
@@ -133,7 +135,31 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       return x.admission.revoke(x.owner,input.expectedRevision);
     },
     async generate(token,input,{signal}={}){
-      const x=await context(token,input),q=(educationOnly?educationQuestions:questions)[input.intent];guard(q);
+      const x=await context(token,input);
+      if(workspaceChat){
+        const {safeQuestion,buildWorkspaceBody}=require('./funded-workspace-context');
+        guard(input.intent==='WORKSPACE_CHAT'&&safeQuestion(input.question)&&Array.isArray(input.history)&&
+          typeof input.includeAccount==='boolean'&&typeof input.includeMarket==='boolean');
+        const pinned=await x.admission.assertConsent(x.owner,x.binding);
+        const allowed=async()=>{
+          await x.allowed();guard(!signal?.aborted);
+          await x.admission.assertConsent(x.owner,{...x.binding,consentRevision:pinned.consentRevision});return true;
+        };
+        const scope=Object.fromEntries(['tenantId','actorId','sessionId','accountId'].map(k=>[k,x.owner[k]]));
+        const snapshot=await workspaceSource.read({scope,workspace:x.workspace,includeAccount:input.includeAccount,includeMarket:input.includeMarket,authorize:allowed});
+        const body=buildWorkspaceBody(d,{question:input.question,history:input.history,...snapshot});
+        const prompt={packageId:hash(body),expiresAtMs:Date.now()+28000};
+        const transport=createLiveOpenAiTransport({config,admission:x.admission,workspaceChat:true,
+          authorizeExport:async request=>isDeepStrictEqual(request.payload,body)&&await pilot.authorizeExport(request),
+          countUpperBound,recordUsage:x.recordUsage,verifyCandidate:async()=>({verified:false})});
+        const result=await transport.run({scope:x.owner,workspace:x.workspace,prompt,workspaceBody:body,
+          operationId:input.operationId,authorizeMessage:allowed,signal});
+        if(result.state==='ANSWERED'){await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);}
+        return {...result,operationId:input.operationId,workspace:{symbol:input.symbol,timeframe:input.timeframe},
+          context:{market:!!snapshot.market,account:!!snapshot.account,marketAsOfMs:snapshot.market?.asOfMs??null,accountAsOfMs:snapshot.account?.asOfMs??null}};
+      }
+      const q=(educationOnly?educationQuestions:questions)[input.intent];guard(q);
+      guard(!Object.hasOwn(input,'question')&&!Object.hasOwn(input,'history')&&!Object.hasOwn(input,'includeAccount')&&!Object.hasOwn(input,'includeMarket'));
       const pinned=await x.admission.assertConsent(x.owner,x.binding);
       const allowed=async()=>{
         await x.allowed();guard(!signal?.aborted);
