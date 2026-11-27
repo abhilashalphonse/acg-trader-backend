@@ -164,7 +164,7 @@ async function main() {
     assert.equal((await send('/read/invoke',tb,{...req,accountId:b.id,connectionId:gb.body.grant.connectionId})).status,401);
     const audit=await send('/admin/audit?limit=100',admin.apiKey,undefined,'GET',admin.clientId);
     assert.equal(audit.status,200);
-    assert.ok(audit.body.events.some(e=>e.stage==='DENIED'&&e.reason==='AI_FINANCIAL_BOUNDARY_DENIED'));
+    assert.ok(await AiAuditEvent.findOne({tenantId:tid,stage:'DENIED',reason:'AI_FINANCIAL_BOUNDARY_DENIED'}).lean());
     assert.ok(audit.body.events.every(e=>e.tenantId===tid));
     assert.doesNotMatch(JSON.stringify(audit.body),/acg_ts_|acg_sk_/);
     for (const e of audit.body.events) for (const field of ['balance','equity','args','result','token','prompt']) assert.equal(Object.hasOwn(e,field),false);
