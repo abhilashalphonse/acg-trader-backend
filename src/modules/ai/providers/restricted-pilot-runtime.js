@@ -15,6 +15,7 @@ const {createResponseEngine}=require('../intelligence/response-engine');
 const {scopeFor}=require('../ai-read-gateway');
 const {createFundedStaffAuthority}=require('./funded-staff-authority');
 const {AppError}=require('../../../shared/errors/app-error');
+const {workspaceStage}=require('../ai-http-security');
 const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const fail=()=>new AppError('Restricted AI pilot unavailable',{statusCode:403,code:'AI_PILOT_DENIED'});
@@ -136,7 +137,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       return x.admission.revoke(x.owner,input.expectedRevision);
     },
     async generate(token,input,{signal}={}){
-      const x=await context(token,input);
+      const x=workspaceChat?await workspaceStage('ACCESS',()=>context(token,input)):await context(token,input);
       if(workspaceChat){
         const {safeQuestion,buildWorkspaceBody}=require('./funded-workspace-context');
         guard(input.intent==='WORKSPACE_CHAT'&&safeQuestion(input.question)&&Array.isArray(input.history)&&
@@ -147,16 +148,16 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
           await x.admission.assertConsent(x.owner,{...x.binding,consentRevision:pinned.consentRevision});return true;
         };
         const scope=Object.fromEntries(['tenantId','actorId','sessionId','accountId'].map(k=>[k,x.owner[k]]));
-        const snapshot=await workspaceSource.read({scope,workspace:x.workspace,includeAccount:input.includeAccount,includeMarket:input.includeMarket,authorize:allowed});
-        const market=attachEconomicCalendar(snapshot.market,readAiCalendarSnapshot);
-        const body=buildWorkspaceBody(d,{question:input.question,history:input.history,...snapshot,market});
+        const snapshot=await workspaceStage('ACCESS',()=>workspaceSource.read({scope,workspace:x.workspace,includeAccount:input.includeAccount,includeMarket:input.includeMarket,authorize:allowed}));
+        const market=await workspaceStage('CALENDAR_CONTEXT',()=>attachEconomicCalendar(snapshot.market,readAiCalendarSnapshot));
+        const body=await workspaceStage('PROMPT_BUILD',()=>buildWorkspaceBody(d,{question:input.question,history:input.history,...snapshot,market}));
         const prompt={packageId:hash(body),expiresAtMs:Date.now()+28000};
         const transport=createLiveOpenAiTransport({config,admission:x.admission,workspaceChat:true,isolatedLoopback:isolatedWorkspaceLoopback,
           authorizeExport:async request=>isDeepStrictEqual(request.payload,body)&&await pilot.authorizeExport(request),
           countUpperBound,recordUsage:x.recordUsage,verifyCandidate:async()=>({verified:false})});
-        const result=await transport.run({scope:x.owner,workspace:x.workspace,prompt,workspaceBody:body,
-          operationId:input.operationId,authorizeMessage:allowed,signal});
-        if(result.state==='ANSWERED'){await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);}
+        const result=await workspaceStage('PROVIDER_ADMISSION_OR_RESPONSE',()=>transport.run({scope:x.owner,workspace:x.workspace,prompt,workspaceBody:body,
+          operationId:input.operationId,authorizeMessage:allowed,signal}));
+        if(result.state==='ANSWERED')await workspaceStage('DISCLOSURE',async()=>{await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);});
         return {...result,operationId:input.operationId,workspace:{symbol:input.symbol,timeframe:input.timeframe},
           context:{market:!!snapshot.market,account:!!snapshot.account,marketAsOfMs:snapshot.market?.asOfMs??null,accountAsOfMs:snapshot.account?.asOfMs??null,
             quoteStatus:snapshot.market?.quote?.status??null,quoteReason:snapshot.market?.quote?.reason??null,
