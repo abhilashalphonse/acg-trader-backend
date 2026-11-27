@@ -8,6 +8,7 @@ const {validSchedule}=require('./calendar-coverage');
 const {isInstrumentSessionOpen,zonedParts,zonedDateTimeToUtcMs,activeSessionOpenTimeMs,nextSessionOpenTimeMs}=require('../../instruments/session-calendar');
 const {isDeepStrictEqual}=require('node:util');
 const {decimalToNumber}=require('../../market-data/market.utils');
+const {analyzeAdvancedMarket,quoteRangeLocation}=require('./advanced-market-intelligence');
 const FRAME_ORDER=['1m','5m','15m','30m','1h','4h','1d','1w'];
 const FRAME_PLAN={
   '1m':['5m','15m','1h'],'5m':['1m','30m','4h'],'15m':['5m','1h','4h'],
@@ -95,7 +96,7 @@ async function readAdaptiveMarket({source,runtime,scope,workspace,authorize,now=
         candleColumns:['openTimeMs','open','high','low','close'],closedCandles:tuples,
         historyLimit:limit,availableClosedBars:bars.length,
         observations:projected.references.filter(r=>r.type!=='QUOTE_OBSERVATION'&&r.type!=='CROSS_TIMEFRAME').map(compactReference),
-        limitations,activeCandle:null,bars};
+        limitations,advanced:series.analysis?analyzeAdvancedMarket({evidence:series.analysis.evidence,structure:series.structure,tickSize:decimalToNumber(instrument.tickSize,null)}):null,activeCandle:null,bars};
     }catch(e){
       if(index===0)throw e;
       return {timeframe,status:'UNAVAILABLE',reason:'SECONDARY_FRAME_NOT_VALIDATED',bars:[],closedCandles:[],observations:[]};
@@ -124,7 +125,7 @@ async function readAdaptiveMarket({source,runtime,scope,workspace,authorize,now=
     sessionClocks:clocks,sessionRanges:ranges,sessionRangeTimeframe:intraday?.timeframe??null,
     previousClosedDailyBar:previousDay?{openTimeMs:previousDay.openTimeMs,high:previousDay.high,low:previousDay.low,close:previousDay.close}:null,
     observedUtcDayRange:intraday?windowRange(intraday.bars,utcDay,utcDay+86400000,intraday.timeframe,asOfMs):null,
-    frames:results.map(({bars,...r})=>({...r,activeCandle:activeBar(runtime.candleEngine?.getCurrent(workspace.symbol,r.timeframe),
+    frames:results.map(({bars,...r})=>({...r,quoteRangeLocation:quoteRangeLocation(r.advanced,quote),activeCandle:activeBar(runtime.candleEngine?.getCurrent(workspace.symbol,r.timeframe),
       {symbol:workspace.symbol,timeframe:r.timeframe,provider:instrument.provider,asOfMs})})),
     limitations:['READ_ONLY','NON_ATOMIC_MARKET_SNAPSHOT','CLOSED_BARS_NOT_EXECUTABLE','SESSION_CLOCKS_ARE_CONVENTIONS','NO_NEWS_CONTEXT']};
 }
