@@ -5,6 +5,7 @@ const {isDeepStrictEqual}=require('node:util');
 const {assertIsolated}=require('./providers/credit-ledger-store');
 const {AppError}=require('../../shared/errors/app-error');
 const {freeze}=require('./intelligence/candle-evidence');
+const {selectKnowledge,KNOWLEDGE_VERSION}=require('./intelligence/knowledge-catalog');
 const TTL_MS=86400000,MAX_CONVERSATIONS=8,MAX_MESSAGES=16;
 const deny=(code,statusCode=409)=>new AppError('AI conversation request rejected',{code,statusCode});
 const uuid=z.uuid();
@@ -34,9 +35,24 @@ const summary=c=>({conversationId:c.conversationId,status:c.status,selection:c.s
 const runView=r=>r?{operationId:r.operationId,state:r.state,startedAtMs:r.startedAtMs,finishedAtMs:r.finishedAtMs??null,
   responseStatus:r.responseStatus??null,responseId:r.responseId??null,referenceIds:r.referenceIds??[],verifiedAtMs:r.verifiedAtMs??null,
   responseExpiresAtMs:r.responseExpiresAtMs??null,inputTokens:r.inputTokens??null,outputTokens:r.outputTokens??null}:null;
+// Historical, server-owned presentation only; never persist or render raw model output.
+function educationView(c,m){
+  const run=m.providerRun;
+  if(c.profile!=='EDUCATION'||m.status!=='STORED_OFFLINE'||run?.state!=='VERIFIED')return null;
+  const byId=new Map(selectKnowledge('EDUCATION').entries.map(k=>[k.knowledgeId,k]));
+  const ids=run.referenceIds??[];
+  if(!Array.isArray(ids)||ids.length>8||new Set(ids).size!==ids.length||ids.some(id=>!byId.has(id)))return null;
+  if(!['ANSWER','INSUFFICIENT_EVIDENCE','UNSUPPORTED'].includes(run.responseStatus)||
+    (run.responseStatus==='ANSWER'&&!ids.length)||(run.responseStatus==='UNSUPPORTED'&&ids.length))return null;
+  return {schemaVersion:'verified-education-view-v1',verification:'RECOMPUTED_REFERENCE_SELECTION_ONLY',
+    catalogVersion:KNOWLEDGE_VERSION,responseId:run.responseId,verifiedAtMs:run.verifiedAtMs,
+    responseExpiresAtMs:run.responseExpiresAtMs,status:run.responseStatus,fixtureOnly:true,
+    entries:ids.map(id=>{const k=byId.get(id);return {knowledgeId:id,id:k.id,title:k.title,text:k.text,
+      methodVersion:k.methodVersion,reviewStatus:k.reviewStatus,distribution:k.distribution};})};
+}
 const receipt=(c,m)=>({conversationId:c.conversationId,messageId:m.messageId,sequence:m.sequence,status:m.status,
   createdAtMs:m.createdAtMs,updatedAtMs:m.updatedAtMs,dispatchAllowed:false,creditDeducted:false,
-  ...(m.providerRun?{fixtureProviderOnly:true,providerRun:runView(m.providerRun)}:{})});
+  ...(m.providerRun?{fixtureProviderOnly:true,providerRun:runView(m.providerRun),verifiedEducation:educationView(c,m)}:{})});
 function createIsolatedConversations({store,registry,workspaceAnalysis=null,conversationProvider=null,now=Date.now}={}){
   assertIsolated();
   if(typeof store?.read!=='function'||typeof store?.mutate!=='function'||typeof registry?.resolveForOfflineTest!=='function')
