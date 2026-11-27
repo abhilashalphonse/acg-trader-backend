@@ -85,7 +85,8 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
       const i=await source.instrument(symbol);return i?.provider===a.provider;
     },
     // The runtime additionally requires exact canonical server-minted body
-    // equality. No free text, raw account data or client-originated context.
+    // equality. Workspace mode accepts user text and scoped account projections;
+    // historical and education modes retain their previous narrower contracts.
     validatePayload:async({scope,workspace,payload})=>{
       if(!active()||!belongs(scope)||payload.model!==descriptor.modelId||payload.store!==false||
         payload.stream!==false||payload.max_completion_tokens!==descriptor.maxOutputTokens)return false;
@@ -94,7 +95,7 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
         const keys=Object.keys(data).sort().join(',');
         if(workspaceChat){
           const {safeQuestion}=require('./funded-workspace-context');
-          return keys==='account,history,market,question'&&safeQuestion(data.question)&&Array.isArray(data.history)&&data.history.length<=6&&
+          return keys==='account,history,knowledge,market,question'&&safeQuestion(data.question)&&Array.isArray(data.history)&&data.history.length<=6&&
             data.history.every(m=>['user','assistant'].includes(m.role)&&safeQuestion(m.text))&&
             (data.market===null||data.market?.symbol===workspace.symbol&&data.market?.frames?.length===1&&data.market.frames[0].timeframe===workspace.timeframe&&['twelve-data','accelpix'].includes(data.market.provider))&&
             (data.account===null||data.account?.source==='PERSISTED_ACCOUNT_SNAPSHOT')&&
