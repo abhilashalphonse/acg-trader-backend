@@ -88,6 +88,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
         return {c,m};
       }
       await permit(original.selection,original.profile,original.workspace??null);
+      const guardTicket=market&&typeof conversationProvider.prepare==='function'?await conversationProvider.prepare({scope,selection:original.selection,workspace:original.workspace}):null;
       const operationId=randomUUID();
       // Claim before any provider action. CAS retries are pure; a concurrent
       // request receives the existing receipt, never another provider call.
@@ -117,7 +118,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
       // Neither state can be retried, even by a new process or session.
       await authorize();
       const outcome=await conversationProvider.run({scope,selection:original.selection,profile:original.profile,
-        workspace:original.workspace??null,question:initial.text,operationId,authorize});
+        workspace:original.workspace??null,question:initial.text,operationId,authorize,guardTicket});
       await authorize();
       if(!['VERIFIED','FAILED','HELD_UNKNOWN'].includes(outcome?.state))throw deny('AI_CHAT_PROVIDER_UNVERIFIED');
       const value=await store.mutate(scope,b=>{
@@ -137,7 +138,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,conv
         workspace:original.workspace,mode:'FIXTURE_PROVIDER_MARKET_REPORT',semanticAnswer:false,offlineOnly:true,
         fixtureProviderOnly:true,dispatchAllowed:false,creditDeducted:false,...outcome.marketResponse}:null;
       return {value:freeze({...value,replayed:false,...(report?{verifiedMarket:report}:{})}),
-        fence:async()=>{await disclose(value.providerRun,true);}};
+        fence:async()=>{await disclose(value.providerRun,true);if(report&&typeof conversationProvider.assertDisclosure==='function')await conversationProvider.assertDisclosure(scope,operationId);}};
     }
     if(op==='analyze'){
       if((typeof workspaceAnalysis?.analyze!=='function'||typeof workspaceAnalysis?.assertFresh!=='function'))throw deny('AI_WORKSPACE_DISABLED',403);
