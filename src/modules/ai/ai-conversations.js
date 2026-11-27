@@ -45,7 +45,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,now=
     assertIsolated();const x=parse(op,input),at=time();
     if(typeof permit!=='function')throw deny('AI_CHAT_CONFIG',503);
     if(op==='analyze'){
-      if(typeof workspaceAnalysis?.analyze!=='function')throw deny('AI_WORKSPACE_DISABLED',403);
+      if((typeof workspaceAnalysis?.analyze!=='function'||typeof workspaceAnalysis?.assertFresh!=='function'))throw deny('AI_WORKSPACE_DISABLED',403);
       const bucket=await store.read(scope),c=find(live(bucket,at),x.conversationId);
       if(!c.workspace||c.profile==='EDUCATION')throw deny('AI_WORKSPACE_INVALID',400);
       const m=c.messages.find(v=>v.messageId===x.messageId);
@@ -60,7 +60,7 @@ function createIsolatedConversations({store,registry,workspaceAnalysis=null,now=
       await authorize();
       const report=await workspaceAnalysis.analyze({scope,workspace:c.workspace,profile:c.profile,question:m.text,authorize});
       return {value:freeze({conversationId:c.conversationId,messageId:m.messageId,workspace:c.workspace,...report}),
-        fence:async()=>{await fence();if(time()>=report.response.expiresAtMs)throw deny('AI_RESPONSE_EXPIRED');}};
+        fence:async()=>{await fence();workspaceAnalysis.assertFresh(report);}};
     }
     if(op==='list'||op==='history'){
       const bucket=await store.read(scope),cs=live(bucket,at);
