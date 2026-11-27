@@ -1,4 +1,5 @@
 'use strict';
+const {isDeepStrictEqual}=require('node:util');
 const {normalizeOfflineOutcome,MAX_CANDIDATE_BYTES}=require('./provider-contract');
 const {buildWireRequest}=require('./provider-wire');
 const {consumeBytes,consumeSse}=require('./bounded-stream');
@@ -64,7 +65,7 @@ function errorForStatus(status){
 }
 function createCollector(q){
   const provider=q.providerId;
-  let text='',bytes=0,reason=null,terminal=false,started=false,block=null,blockCount=0,refusal=false,rawUsage=null;
+  let text='',bytes=0,reason=null,terminal=false,started=false,block=null,blockCount=0,refusal=false,rawUsage=null,modelSeen=false;
   function add(s){
     if(typeof s!=='string')invalid();
     bytes+=Buffer.byteLength(s,'utf8');if(bytes>MAX_CANDIDATE_BYTES)invalid('STREAM_LIMIT');
@@ -85,7 +86,7 @@ function createCollector(q){
     // Provider reasoning fields deliberately never copied into candidate output.
   }
   function gemini(v){
-    if(v.modelVersion!=null)sameModel(v.modelVersion);
+    if(v.modelVersion!=null){sameModel(v.modelVersion);modelSeen=true;}
     if(v.promptFeedback?.blockReason&&v.promptFeedback.blockReason!=='BLOCK_REASON_UNSPECIFIED'){
       if(reason!==null||text||v.candidates?.length)invalid();
       reason='SAFETY';refusal=true;
@@ -106,7 +107,10 @@ function createCollector(q){
         if(c.finishReason!=null)setReason(c.finishReason);
       }
     }
-    if(v.usageMetadata!=null&&reason!==null)rawUsage=v.usageMetadata;
+    if(v.usageMetadata!=null&&reason!==null){
+      if(rawUsage!==null&&!isDeepStrictEqual(rawUsage,v.usageMetadata))invalid();
+      rawUsage=v.usageMetadata;
+    }
   }
   function json(v){
     if(!v||typeof v!=='object'||Array.isArray(v)||v.error)invalid();
@@ -173,13 +177,13 @@ function createCollector(q){
     // Gemini has no [DONE] marker: require explicit finish plus clean SSE EOF.
     if((provider!=='gemini'&&!terminal)||reason===null)invalid('TRUNCATED_STREAM');
     const status=refusal?'REFUSED':finishStatus(provider,reason);
-    if(status==='COMPLETED'&&!text.trim())invalid();
+    if(status==='COMPLETED'&&(!text.trim()||provider==='gemini'&&!modelSeen))invalid();
     return {status,candidate:status==='COMPLETED'?text:null,usage:mapUsage(provider,rawUsage),
       errorCode:status==='COMPLETED'?'NONE':status==='FAILED'?'INVALID_RESPONSE':'UNKNOWN'};
   }};
 }
-// The only concrete transport is injected offline byte fixtures. No fetch,
-// HTTP dispatch, auth header construction, or credential consumer exists.
+// Offline response normalization for byte fixtures or the isolated TLS rehearsal.
+// This parser never opens a socket or handles credentials.
 async function normalizeFixtureResponse(q,{httpStatus,contentType,chunks,signal,timeoutMs=1000,now=Date.now}={}){
   buildWireRequest(q);
   const base={requestId:q.requestId,providerId:q.providerId,modelId:q.modelId,descriptorId:q.descriptorId};
