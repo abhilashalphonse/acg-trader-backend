@@ -35,8 +35,10 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
     const result=await admit(async()=>{
       const principal=req.traderPrincipal;
       await quota.consume(principal);
-      let scope,readRequest,disclosures=[],fences=[];
+      let scope,readRequest,disclosures=[],fences=[],governanceFence;
       async function check(selection=null,profile=null,workspace=null){
+        if(typeof governanceFence!=='function')throw deny('AI_CHAT_CONFIG',503);
+        await governanceFence();
         const fresh=await authService.authenticateSessionToken(bearerToken(req));
         if(!scopeEqual(scope,scopeFor(fresh,readRequest.accountId,now())))throw deny('AI_SCOPE_CHANGED');
         await gateway.assertDisclosure(fresh,readRequest);
@@ -45,8 +47,10 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
         const again=await authService.authenticateSessionToken(bearerToken(req));
         if(!scopeEqual(scope,scopeFor(again,readRequest.accountId,now())))throw deny('AI_SCOPE_CHANGED');
         await gateway.assertDisclosure(again,readRequest);
+        await governanceFence();
       }
-      return governance.run({principal,operation,requestedAccountId:req.body?.accountId},async()=>{
+      return governance.run({principal,operation,requestedAccountId:req.body?.accountId},async assertCurrent=>{
+        governanceFence=assertCurrent;
         if(Object.keys(req.query).length)throw deny('AI_INVALID_REQUEST',400);
         const input=parse(schema,req.body);
         scope=scopeFor(principal,input.accountId,now());
