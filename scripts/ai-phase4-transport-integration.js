@@ -77,7 +77,7 @@ async function runPhase4TransportIntegration({auth,gateway,gs,token,foreignToken
           ['gemini','anthropic'].includes(p)?secret:'Bearer '+secret);
         const data=JSON.parse(p==='gemini'?wire.contents[0].parts[0].text:wire.messages.at(-1).content);
         const candidate=JSON.stringify({schemaVersion:'candidate-response-v2',status:'ANSWER',observations:[],interpretations:[],
-          education:[{knowledgeId:data.knowledge.entries.find(k=>k.id==='MARKET_STRUCTURE').knowledgeId}]});
+          education:[{knowledgeId:mode==='forged'?'f'.repeat(64):data.knowledge.entries.find(k=>k.id==='MARKET_STRUCTURE').knowledgeId}]});
         if(mode==='redirect'){res.writeHead(302,{location:'https://invalid.example/never-follow'});res.end('not read');return;}
         if(mode==='timeout')return;
         if(hook)await hook();
@@ -147,6 +147,9 @@ async function runPhase4TransportIntegration({auth,gateway,gs,token,foreignToken
     assert.equal(doc.reservedTokens,7*120+4*9216);
     assert.ok(!JSON.stringify(doc).includes(secret));assert.ok(!JSON.stringify(doc).includes('Explain BOS.'));
     console.log('PASS Phase 4E five protocol HTTPS fixtures, real TLS verification, encrypted key custody, durable one-shot admission, orchestrated verified answer, uncertain holds, redirect/timeout/truncation and revocation denial');
+    const {runPhase4ConversationProviderIntegration}=require('./ai-phase4-conversation-provider-integration');
+    await runPhase4ConversationProviderIntegration({auth,gateway,gs,token,foreignToken,readRequest,scope,registry,
+      credentialStore:store,crypto,transport,admission,requests:()=>requests,setMode:v=>{mode=v;},setHook:v=>{hook=v;}});
   }finally{for(const s of sockets)s.destroy();if(server)await new Promise(resolve=>server.close(resolve));rmSync(dir,{recursive:true,force:true});}
 }
 module.exports={runPhase4TransportIntegration};
