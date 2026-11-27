@@ -64,8 +64,10 @@ function createIsolatedChatRouter({authService,gateway,governance,quota,authoriz
     const options=[];
     // Never advertise proposed/disabled/custom or synthetic descriptors as live.
     // Restrict the rehearsal to BYO and education; no implied payment entitlement.
+    let reviewed=0;
     for(const d of registry.models()){
       if(d.reviewStatus!=='SYNTHETIC_TEST_ONLY'||d.providerId==='custom'||!d.fundingModes.includes('BYO_API'))continue;
+      if(++reviewed>16)break;
       const s={providerId:d.providerId,modelId:d.modelId,descriptorId:d.descriptorId,fundingMode:'BYO_API'};
       try{registry.resolveForOfflineTest(s);}catch{continue;}
       try{await permit(s,'EDUCATION');}catch(e){if(e?.code==='AI_CHAT_PURPOSE_DENIED')continue;throw e;}
