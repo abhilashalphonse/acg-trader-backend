@@ -43,7 +43,7 @@ function dealingRange(bars,referencePrice){
     equilibrium:rounded(low+width/2),width:rounded(width),referencePrice,
     positionPct:rounded(position*100),location:position<0?'BELOW_RANGE':position>1?'ABOVE_RANGE':
       Math.abs(position-.5)<1e-9?'EQUILIBRIUM':position<.5?'DISCOUNT':'PREMIUM',
-    region:position>=.3&&position<=.7?'MIDDLE_40_PERCENT':position<.3?'LOWER_REGION':'UPPER_REGION'};
+    region:position<0||position>1?'OUTSIDE_RANGE':position>=.3&&position<=.7?'MIDDLE_40_PERCENT':position<.3?'LOWER_REGION':'UPPER_REGION'};
 }
 function displacementEvents(bars){
   const out=[];
@@ -130,6 +130,6 @@ function quoteRangeLocation(advanced,quote){
   return {reference:'TERMINAL_BID_ASK_MID',price:rounded(mid),asOfMs:quote.observedAtMs,
     syntheticSpread:quote.isSyntheticSpread,positionPct:rounded(p*100),
     location:p<0?'BELOW_RANGE':p>1?'ABOVE_RANGE':Math.abs(p-.5)<1e-9?'EQUILIBRIUM':p<.5?'DISCOUNT':'PREMIUM',
-    region:p>=.3&&p<=.7?'MIDDLE_40_PERCENT':p<.3?'LOWER_REGION':'UPPER_REGION'};
+    region:p<0||p>1?'OUTSIDE_RANGE':p>=.3&&p<=.7?'MIDDLE_40_PERCENT':p<.3?'LOWER_REGION':'UPPER_REGION'};
 }
 module.exports={analyzeAdvancedMarket,quoteRangeLocation,POLICY};
