@@ -4,6 +4,7 @@ const { normalizeSymbol } = require('./market.utils');
 const { MARKET_CONNECTION_STATES } = require('./market.constants');
 const { ExecutionPricingService } = require('./execution-pricing');
 const { TickSanityFilter } = require('./tick-sanity-filter');
+const { quoteAgeMs } = require('./quote-freshness');
 const { isInstrumentSessionOpen } = require('../instruments/session-calendar');
 
 const RECOVERY_COOLDOWN_MS = 2500;
@@ -214,7 +215,9 @@ class MarketGateway {
           configured: Boolean(instrument?.configured),
           sessionOpen: this.#sessionOpenAt(instrument, now),
           lastReceivedAt: quote?.receivedAtMs ? new Date(quote.receivedAtMs).toISOString() : null,
-          ageMs: quote?.receivedAtMs ? Math.max(0, now - quote.receivedAtMs) : null,
+          ageMs: quote && Number.isFinite(quoteAgeMs(quote, now)) ? quoteAgeMs(quote, now) : null,
+          receiptAgeMs: quote?.receivedAtMs ? Math.max(0, now - quote.receivedAtMs) : null,
+          providerEventAgeMs: Number.isFinite(quote?.providerTimestampMs) && quote.providerTimestampMs > 0 ? Math.max(0, now - quote.providerTimestampMs) : null,
           softQuoteAgeMs: instrument?.softQuoteAgeMs ?? null,
           maxQuoteAgeMs: instrument?.maxQuoteAgeMs ?? null,
           priority: this.priorityCount(symbol) > 0,
@@ -474,7 +477,7 @@ class MarketGateway {
       providerSymbol: raw.providerSymbol,
       isSyntheticSpread: normalizedPrices.isSyntheticSpread,
       dayVolume: raw.dayVolume,
-      isStale: false,
+      isStale: quoteAgeMs({receivedAtMs,providerTimestampMs}, Date.now()) > instrument.maxQuoteAgeMs,
       sessionOpen,
     };
     const tick = Object.freeze(this.dayChangeService?.decorate?.(baseTick) || baseTick);
@@ -483,7 +486,7 @@ class MarketGateway {
     this.subscriptionErrors.delete(symbol);
     const quoteOnly = raw.quoteOnly === true;
     const quote = this.quoteStore.set(tick);
-    this.#setSymbolState(symbol, 'LIVE');
+    this.#setSymbolState(symbol, tick.isStale ? 'STALE' : 'LIVE');
 
     // Quotes may continue to arrive while the configured trading session is
     // closed. Keep the last quote visible/fresh, but never turn those messages
@@ -537,7 +540,7 @@ class MarketGateway {
         continue;
       }
 
-      const ageMs = Math.max(0, now - quote.receivedAtMs);
+      const ageMs = quoteAgeMs(quote, now);
       if (ageMs > instrument.maxQuoteAgeMs) {
         this.candleEngine.setSymbolLive(symbol, false);
         const staleQuote = this.quoteStore.markStale(symbol, true);
@@ -562,8 +565,7 @@ class MarketGateway {
   }
 
   #quoteAgeMs(quote) {
-    const receivedAtMs = Number(quote?.receivedAtMs);
-    return Number.isFinite(receivedAtMs) ? Math.max(0, Date.now() - receivedAtMs) : Number.POSITIVE_INFINITY;
+    return quoteAgeMs(quote);
   }
 
   #softAgeMs(symbol) {
