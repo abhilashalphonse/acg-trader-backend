@@ -3,6 +3,7 @@
 // This is local, deterministic byte accounting; provider usage reports only
 // aggregate prompt tokens. Never persist the message strings or their values.
 const bytes=value=>Buffer.byteLength(JSON.stringify(value),'utf8');
+const {targets}=require('./workspace-profile-budget');
 const fields=Object.freeze(['System','Question','History','Knowledge','Account','Candles','Analysis','QuoteSession','Calendar','Instrument','Metadata']);
 const profiles=new Set(['STRUCTURE','MARKET_OVERVIEW','BOS','FVG','LIQUIDITY','QUOTE','SESSION','CALENDAR']);
 function measureWorkspacePrompt(body){
@@ -33,6 +34,8 @@ function measureWorkspacePrompt(body){
     aiPromptWireBytes:bytes(body),aiPromptSchemaBytes:bytes(body.response_format??null),
     aiPromptFrameCount:frames.length,aiPromptCandleCount:frames.reduce((n,f)=>n+(f.closedCandles?.length??0),0),
     aiPromptObservationCount:frames.reduce((n,f)=>n+(f.observations?.length??0),0),
-    aiPromptHistoryCount:data.history.length,aiPromptProfile:profiles.has(market?.contextSelection?.profile)?market.contextSelection.profile:'FULL'});
+    aiPromptHistoryCount:data.history.length,aiPromptProfile:profiles.has(market?.contextSelection?.profile)?market.contextSelection.profile:'FULL',
+    aiPromptTargetWireBytes:profiles.has(market?.contextSelection?.profile)&&data.account===null&&!market.sizingCalculation?targets[market.contextSelection.profile]:0,
+    aiPromptTargetExceeded:profiles.has(market?.contextSelection?.profile)&&data.account===null&&!market.sizingCalculation&&bytes({...body,stream:true,stream_options:{include_usage:true}})>targets[market.contextSelection.profile]?1:0});
 }
 module.exports={measureWorkspacePrompt,fields};
