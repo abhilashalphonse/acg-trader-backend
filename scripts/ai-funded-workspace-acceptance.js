@@ -40,9 +40,9 @@ async function main(){
     await runFundedPilotMountAcceptance({auth,foreignToken:foreign.accessToken});
     const ledger=await LivePlatform.findById('platform').lean();
     assert.equal(ledger.outstandingRequests,0);assert.equal(ledger.outstandingPicoUsd,0);
-    assert.equal(await LiveAttempt.countDocuments({state:'SETTLED'}),1);
-    assert.equal(await LiveAttempt.countDocuments({}),1);
-    console.log('PASS dedicated workspace acceptance: one settled request, zero outstanding reservations');
+    assert.equal(await LiveAttempt.countDocuments({state:'SETTLED'}),2);
+    assert.equal(await LiveAttempt.countDocuments({}),2);
+    console.log('PASS dedicated workspace acceptance: two settled requests, zero outstanding reservations');
   }finally{
     if(mongoose.connection.readyState===1&&mongoose.connection.name===dbName){assertIsolated();await mongoose.connection.dropDatabase();}
     await mongoose.disconnect();
