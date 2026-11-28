@@ -235,7 +235,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           const id='workspace-fixture-'+randomUUID();
           const emit=(choices,usage=null)=>res.write('data: '+JSON.stringify({id,object:'chat.completion.chunk',model:'gpt-6-luna',service_tier:'default',choices,usage})+'\n\n');
           emit([{index:0,finish_reason:null,delta:{role:'assistant',content:'{"answer":"Synthetic '}}]);
-          await new Promise(resolve=>setTimeout(resolve,100));
+          await new Promise(resolve=>setTimeout(resolve,requests===3?1000:100));
           emit([{index:0,finish_reason:null,delta:{content:'workspace answer."}'}}]);
           emit([{index:0,finish_reason:'stop',delta:{}}]);
           emit([],{prompt_tokens:1000,completion_tokens:40,total_tokens:1040});
@@ -290,13 +290,39 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       assert.equal((await LiveAttempt.findOne({tenantId,operationId:riskOp}).lean()).state,'SETTLED');
       assert.equal(requests,2);
       assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
+      // Disconnect after an actual first delta, before the provider usage event.
+      // The backend must stop disclosure but settle the same bounded TLS exchange.
+      const stopOp=randomUUID(),stopController=new AbortController();
+      const stopped=await fetch(wsRoot+'/v1/ai/pilot/generate',{method:'POST',
+        headers:{'content-type':'application/json',accept:'text/event-stream',authorization:'Bearer '+session.accessToken},
+        body:JSON.stringify({...wsBase,...input,operationId:stopOp,question:'Review my account risk',includeMarket:false}),
+        signal:stopController.signal});
+      const reader=stopped.body.getReader(),decoder=new TextDecoder();let partial='';
+      while(!partial.includes('event: delta')){
+        const chunk=await reader.read();assert.equal(chunk.done,false);
+        partial+=decoder.decode(chunk.value,{stream:true});
+      }
+      stopController.abort();
+      await reader.cancel().catch(()=>{});
+      let stopRow;
+      for(let i=0;i<100;i++){
+        stopRow=await LiveAttempt.findOne({tenantId,operationId:stopOp}).lean();
+        if(stopRow?.state==='SETTLED')break;
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      assert.equal(stopRow?.state,'SETTLED');
+      assert.equal(stopRow.actualPicoUsd,120000000);
+      assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
+      assert.equal(requests,3);
+      if(wireError)throw wireError;
+      console.log('PASS disconnected workspace stream settles authentic provider usage without holding the next request slot');
       // Dedicated isolated ledger only: prove both denial paths are typed,
       // terminal, unbilled and do not invoke the TLS provider.
       for(const [index,reason] of ['DAILY_REQUEST_LIMIT','DAILY_SPEND_LIMIT'].entries()){
         const revision=index+1;
         await admin.setControl(actor,{enabled:true,expectedRevision:revision,
           tenantDailyPicoUsd:1000000000000,actorDailyPicoUsd:index===0?1000000000000:1,
-          tenantDailyRequests:20,actorDailyRequests:index===0?2:20});
+          tenantDailyRequests:20,actorDailyRequests:index===0?3:20});
         const current=await wsCall('status');assert.equal(current.status,200);
         assert.equal((await wsCall('grant',{explicitConsent:true,expectedRevision:current.body.revision})).status,200);
         const deniedOp=randomUUID();
@@ -310,7 +336,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
         assert.equal(terminal.operationId,deniedOp);assert.equal(terminal.executionAllowed,false);
         assert.equal(terminal.usage,undefined);
         assert.equal(await LiveAttempt.countDocuments({tenantId,operationId:deniedOp}),0);
-        assert.equal(requests,2);
+        assert.equal(requests,3);
         assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
       }
       // Restore fixture control, then exercise the operator migration on
@@ -357,7 +383,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       assert.equal((await migrateStaffRequestCap({env:reverted})).dailyRequests,20);
       assert.deepEqual(await snapshot(),before);
       assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
-      assert.equal(requests,2);
+      assert.equal(requests,3);
       // Mounted chart-only receipt: real staff session, consent, detector and
       // database candles; never dispatch a provider request or write a trade.
       // The previous acceptance exercises the real per-user 30/minute
@@ -426,14 +452,14 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.deepEqual(await TradingAccount.findById(ids[0]).lean(),beforeAccount);
         }
         assert.equal(await LiveAttempt.countDocuments({tenantId}),priorAttempts);
-        assert.equal(requests,2);
+        assert.equal(requests,3);
       }finally{
         if(originalDrawingFlag===undefined)delete process.env.ACG_AI_CHART_DRAWING_ENABLED;
         else process.env.ACG_AI_CHART_DRAWING_ENABLED=originalDrawingFlag;
       }
       wsEnv.ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED='false';
       assert.ok((await wsCall('generate',{...input,operationId:randomUUID()})).status>=400);
-      assert.equal(requests,2);
+      assert.equal(requests,3);
       console.log('PASS actual Funded workspace chat: minimized chart-only export, full account-risk export, real TLS fixture, settled budget, replay and export revocation');
     }finally{
       if(tls){tls.closeAllConnections();await new Promise(resolve=>tls.close(resolve));}
