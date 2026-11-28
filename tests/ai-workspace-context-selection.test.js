@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {classifyWorkspaceQuestion,selectWorkspaceEvidence}=require('../src/modules/ai/intelligence/workspace-context-selection');
+const {classifyWorkspaceQuestion,classifyWorkspaceIntent,selectWorkspaceEvidence}=require('../src/modules/ai/intelligence/workspace-context-selection');
 const {buildWorkspaceBody}=require('../src/modules/ai/providers/funded-workspace-context');
 const descriptor={modelId:'fixture',maxInputTokens:32768,maxOutputTokens:2048};
 test('standalone explicit queries classify conservatively, all other intents keep full context',()=>{
@@ -54,4 +54,30 @@ test('quote focus cannot convert stale quote into a live quote',()=>{
  assert.equal(data.market.frames[1].closedCandles.length,0);
  assert.equal(data.market.frames[1].omittedClosedBars,64);
  assert.equal(data.knowledge.length,2);
+});
+
+test('phase 6A classifies bounded explicit intents without changing legacy evidence scope',()=>{
+  const cases=[
+    ['Analyse the current BTCUSD market structure.','STRUCTURE'],
+    ['What is the current price of BTCUSD?','QUOTE'],
+    ['Find the recent FVGs on BTCUSD','FVG'],
+    ['Identify the latest BOS','BOS'],
+    ["What's happening with gold?",'MARKET_OVERVIEW'],
+    ['Analyse the chart','MARKET_OVERVIEW'],
+    ['Find liquidity levels on BTCUSD','LIQUIDITY'],
+    ['Can I enter a short here?','SETUP'],
+    ['Are there any trading setups?','SETUP'],
+    ['Review my account risk','ACCOUNT_RISK'],
+    ['Calculate the position size','SIZING'],
+    ['Show the economic calendar','CALENDAR'],
+    ['Which trading session is open?','SESSION'],
+    ['Explain fair value gaps','EDUCATION'],
+    ['Analyse account','FULL'],
+    ['Analyse the market and my risk','FULL'],
+    ['BTCUSD ഇപ്പോൾ എങ്ങനെയാണ്?','FULL']
+  ];
+  for(const [q,intent] of cases)assert.equal(classifyWorkspaceIntent(q),intent,q);
+  assert.equal(classifyWorkspaceIntent('What about that level?',[{role:'user',text:'Review the chart'}]),'FOLLOW_UP');
+  assert.equal(classifyWorkspaceQuestion('Can I enter a short here?'),'FULL');
+  assert.equal(classifyWorkspaceQuestion('Calculate the position size'),'FULL');
 });
