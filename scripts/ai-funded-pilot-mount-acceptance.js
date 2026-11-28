@@ -313,6 +313,25 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
         assert.equal(requests,2);
         assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
       }
+      // Restore fixture control, then exercise the operator migration on
+      // the dedicated isolated ledger without resetting the two used slots.
+      await admin.setControl(actor,{enabled:true,expectedRevision:3,tenantDailyPicoUsd:1000000000000,
+        actorDailyPicoUsd:1000000000000,tenantDailyRequests:20,actorDailyRequests:20});
+      const {LiveBudget,LivePlatformDay,LiveControl}=require('../src/modules/ai/providers/live-admission.model');
+      const {migrateStaffRequestCap}=require('../src/modules/ai/providers/funded-staff-request-cap');
+      const snapshot=async()=>({tenant:await LiveBudget.find({tenantId}).sort({_id:1}).lean(),platform:await LivePlatformDay.find({}).sort({_id:1}).lean()});
+      const before=await snapshot();
+      const expanded={...wsEnv,ACG_AI_FUNDED_STAFF_DAILY_REQUEST_LIMIT:'100',ACG_AI_FUNDED_STAFF_REQUEST_LIMIT_EXPIRES_AT_MS:String(Date.now()+3600000)};
+      assert.equal((await migrateStaffRequestCap({env:expanded})).dailyRequests,100);
+      assert.equal((await LivePlatform.findById('platform').lean()).dailyRequests,100);
+      assert.equal((await LiveControl.findById(tenantId).lean()).actorDailyRequests,100);
+      assert.deepEqual(await snapshot(),before);
+      assert.equal((await migrateStaffRequestCap({env:expanded})).changed,false);
+      const reverted={...wsEnv,ACG_AI_FUNDED_STAFF_DAILY_REQUEST_LIMIT:'20'};
+      assert.equal((await migrateStaffRequestCap({env:reverted})).dailyRequests,20);
+      assert.deepEqual(await snapshot(),before);
+      assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
+      assert.equal(requests,2);
       wsEnv.ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED='false';
       assert.ok((await wsCall('generate',{...input,operationId:randomUUID()})).status>=400);
       assert.equal(requests,2);
