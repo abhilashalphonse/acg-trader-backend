@@ -166,8 +166,17 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
         const transport=createLiveOpenAiTransport({config,admission:x.admission,workspaceChat:true,isolatedLoopback:isolatedWorkspaceLoopback,
           authorizeExport:async request=>isDeepStrictEqual(request.payload,body)&&await pilot.authorizeExport(request),
           countUpperBound,recordUsage:x.recordUsage,verifyCandidate:async()=>({verified:false})});
-        const result=await workspaceStage('PROVIDER_ADMISSION_OR_RESPONSE',()=>transport.run({scope:x.owner,workspace:x.workspace,prompt,workspaceBody:body,
-          operationId:input.operationId,authorizeMessage:allowed,signal,onDelta:body.stream?onDelta:undefined}));
+        let result;
+        try{
+          result=await workspaceStage('PROVIDER_ADMISSION_OR_RESPONSE',()=>transport.run({scope:x.owner,workspace:x.workspace,prompt,workspaceBody:body,
+            operationId:input.operationId,authorizeMessage:allowed,signal,onDelta:body.stream?onDelta:undefined}));
+        }catch(error){
+          // Only explicit pre-dispatch daily budget rejections are returned as
+          // a typed failure. No synthetic usage, retry or disclosure of limits.
+          if(error?.code!=='LIVE_AI_BUDGET_LIMIT'||!['DAILY_REQUEST_LIMIT','DAILY_SPEND_LIMIT'].includes(error.budgetReason))throw error;
+          await allowed();
+          result={state:'FAILED',failureReason:error.budgetReason};
+        }
         if(result.state==='ANSWERED')await workspaceStage('DISCLOSURE',async()=>{await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);});
         return {...result,operationId:input.operationId,workspace:{symbol:input.symbol,timeframe:input.timeframe},
           context:{market:!!snapshot.market,account:!!snapshot.account,accountUsed:JSON.parse(body.messages[1].content).account!==null,marketAsOfMs:snapshot.market?.asOfMs??null,accountAsOfMs:snapshot.account?.asOfMs??null,
