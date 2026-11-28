@@ -55,7 +55,10 @@ test('6G integrated focused market matrix preserves task-critical facts across c
      for(const type of required)assert.deepEqual(f.observations.filter(o=>o.type===type),source.observations.filter(o=>o.type===type));
      for(const key of ['advanced','quality','coverage','freshness','activeCandle'])assert.deepEqual(f[key],source[key]);
      assert.deepEqual(f.closedCandles,source.closedCandles.slice(-f.closedCandles.length));
-     assert.equal(f.closedCandles.length,i===0?32:i===1?16:8);
+     const narrow=['BOS','FVG','LIQUIDITY'].includes(profile);
+     assert.equal(f.closedCandles.length,narrow?(i===0?24:i===1?8:4):(i===0?32:i===1?16:8));
+     if(narrow)assert.equal(f.narrowRawHistoryProjection.derivedEvidenceUsesOriginalWindow,true);
+     else assert.equal(f.narrowRawHistoryProjection,undefined);
    }
  }
 });
