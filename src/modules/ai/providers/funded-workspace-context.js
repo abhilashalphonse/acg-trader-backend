@@ -120,13 +120,17 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
   const body={model:descriptor.modelId,store:false,stream:false,n:1,service_tier:'default',reasoning_effort:'low',max_completion_tokens:descriptor.maxOutputTokens,
     messages:[{role:'system',content:JSON.stringify(POLICY)},{role:'user',content:JSON.stringify(data)}],
     response_format:{type:'json_schema',json_schema:{name:'acg_workspace_answer',strict:true,schema:SCHEMA}}};
+  // Reserve the exact wire size of streaming options before trimming. The
+  // runtime enables streaming after this builder; its admission count uses
+  // that final wire body, not the pre-streaming body.
+  const wireBytes=()=>Buffer.byteLength(JSON.stringify({...body,stream:true,stream_options:{include_usage:true}}),'utf8');
+  const oversized=()=>wireBytes()+4096>descriptor.maxInputTokens;
   // Older exchanges are expendable before the most recent user/assistant pair.
-  while(data.history.length>protectedTailSize(data.history)&&Buffer.byteLength(JSON.stringify(body),'utf8')+4096>descriptor.maxInputTokens){
+  while(data.history.length>protectedTailSize(data.history)&&oversized()){
     dropOldestExchange(data.history);body.messages[1].content=JSON.stringify(data);
   }
   // Fit the existing conservative byte bound. Explicitly mark every omitted
   // candle; keep the most recent primary evidence and every frame's status.
-  const oversized=()=>Buffer.byteLength(JSON.stringify(body),'utf8')+4096>descriptor.maxInputTokens;
   const refresh=()=>{body.messages[1].content=JSON.stringify(data);};
   const observationRank=x=>x.type==='STRUCTURE_SUMMARY'?5:
     ['STRUCTURE_EVENT','FVG_ZONE'].includes(x.type)?4:
