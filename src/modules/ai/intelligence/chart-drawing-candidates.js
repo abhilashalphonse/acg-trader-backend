@@ -12,7 +12,8 @@ const plain=x=>x!==null&&typeof x==='object'&&Object.getPrototypeOf(x)===Object.
 const keys=(x,k)=>plain(x)&&Object.keys(x).sort().join(',')===k;
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const scopeOk=s=>plain(s)&&fields.every(k=>typeof s[k]==='string'&&/^[a-f0-9]{24}$/.test(s[k]));
-const price=x=>typeof x==='number'&&Number.isFinite(x)&&x>0&&x<=1e12;
+// Existing structure-liquidity detector exports normalized decimal strings.
+const price=x=>typeof x==='string'&&/^(?:0|[1-9][0-9]{0,12})(?:\.[0-9]{1,24})?$/.test(x)&&Number.isFinite(Number(x))&&Number(x)>0&&Number(x)<=1e12;
 const ms=x=>Number.isSafeInteger(x)&&x>=946684800000&&x<=4102444800000&&x%1000===0;
 const clock=x=>Number.isSafeInteger(x)&&x>0;
 const deny=()=>Object.assign(new Error('Drawing candidate unavailable'),{code:'AI_DRAWING_CANDIDATE_DENIED'});
@@ -39,10 +40,10 @@ function createDrawingCandidateRegistry({market,scope,chartContextVersion,nowMs}
   }
   for(const o of frame.observations){
     if(o?.type==='LIQUIDITY_REFERENCE'&&typeof o.id==='string'&&/^[a-f0-9]{64}$/.test(o.id)&&price(o.level)&&ms(o.pivotOpenTimeMs)&&ms(o.confirmedAtMs)&&o.pivotOpenTimeMs<o.confirmedAtMs&&o.confirmedAtMs<=through&&o.swept===false&&o.broken===false&&['HIGH','LOW','BUY_SIDE','SELL_SIDE'].includes(o.side)){
-      add('LIQUIDITY_REFERENCE',[o.side,o.pivotOpenTimeMs,o.level],o.confirmedAtMs,{type:'hline',time:o.pivotOpenTimeMs/1000,price:o.level},{side:o.side,confirmedAtMs:o.confirmedAtMs,detectorId:o.id});
+      add('LIQUIDITY_REFERENCE',[o.side,o.pivotOpenTimeMs,o.level],o.confirmedAtMs,{type:'hline',time:o.pivotOpenTimeMs/1000,price:Number(o.level)},{side:o.side,confirmedAtMs:o.confirmedAtMs,detectorId:o.id});
     }
-    if(o?.type==='FVG_ZONE'&&typeof o.id==='string'&&/^[a-f0-9]{64}$/.test(o.id)&&['BULLISH','BEARISH'].includes(o.direction)&&price(o.lower)&&price(o.upper)&&o.lower<o.upper&&ms(o.formedAtMs)&&o.formedAtMs<through&&o.invalidatedAtMs===null){
-      add('FVG_ZONE',[o.direction,o.formedAtMs,o.lower,o.upper],o.formedAtMs,{type:'rectangle',fromTime:o.formedAtMs/1000,toTime:through/1000,lower:o.lower,upper:o.upper},{direction:o.direction,detectorId:o.id});
+    if(o?.type==='FVG_ZONE'&&typeof o.id==='string'&&/^[a-f0-9]{64}$/.test(o.id)&&['BULLISH','BEARISH'].includes(o.direction)&&price(o.lower)&&price(o.upper)&&Number(o.lower)<Number(o.upper)&&ms(o.formedAtMs)&&o.formedAtMs<through&&o.invalidatedAtMs===null&&['UNTOUCHED','NEAR_EDGE_TOUCHED','PARTIAL_DEPTH','DISTAL_TOUCHED'].includes(o.touchState)){
+      add('FVG_ZONE',[o.direction,o.formedAtMs,o.lower,o.upper],o.formedAtMs,{type:'rectangle',fromTime:o.formedAtMs/1000,toTime:through/1000,lower:Number(o.lower),upper:Number(o.upper)},{direction:o.direction,touchState:o.touchState,detectorId:o.id});
     }
   }
   // Recency is a deterministic initial ordering, not a calibrated quality score.
