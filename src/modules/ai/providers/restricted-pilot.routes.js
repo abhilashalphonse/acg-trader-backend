@@ -29,8 +29,8 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
     const event=(name,payload)=>{
       if(res.destroyed||res.writableEnded)return;
       if(!opened){
-        res.status(200).set({'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store, no-transform','X-Accel-Buffering':'no','Vary':'Accept'});
-        res.flushHeaders();opened=true;
+        res.status(200).set({'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store, no-transform','X-Accel-Buffering':'no'});
+        res.vary('Accept');res.flushHeaders();opened=true;
       }
       res.write('event: '+name+'\ndata: '+JSON.stringify(payload)+'\n\n');res.flush?.();
     };
