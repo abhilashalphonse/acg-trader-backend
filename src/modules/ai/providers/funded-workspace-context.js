@@ -11,6 +11,7 @@ const {workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames
 const {compactWorkspaceHistory,dropOldestExchange,protectedTailSize}=require('../intelligence/workspace-conversation-context');
 const {addWorkspacePresentation,compactRepeatedMetadata,compactNarrowRawHistory}=require('../intelligence/workspace-presentation-context');
 const {compactWorkspaceWireEvidence}=require('../intelligence/workspace-wire-compaction');
+const {fitFocusedContext}=require('../intelligence/workspace-profile-budget');
 const {workspaceStage}=require('../ai-http-security');
 const {createHash}=require('node:crypto');
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
@@ -229,6 +230,7 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
       }
     }
   }
+  fitFocusedContext(data,body);
   compactWorkspaceWireEvidence(data.market);refresh();
   if(oversized())throw Object.assign(Error('Workspace evidence exceeds request budget'),{code:'AI_WORKSPACE_CONTEXT_BUDGET'});
   return body;
