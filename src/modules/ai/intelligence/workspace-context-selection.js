@@ -32,26 +32,36 @@ const intentPatterns=Object.freeze({
   SESSION:/^(?:which (?:trading |market )?session is (?:open|active)|(?:when does|what time does) (?:the )?(?:london|new york|tokyo|asian) session (?:open|close)|(?:show|describe) (?:the )?(?:current )?(?:trading |market )?session)[?.!]?$/i,
   EDUCATION:/^(?:what (?:is|are)|explain|define) (?:the )?(?:bos|mss|fvg|fair value gaps?|break of structure|market structure|liquidity|support and resistance|risk reward|position sizing)[?.!]?$/i
 });
+// Classify the latest explicit question independently from the presence of
+// history. A genuine anaphoric or ambiguous turn remains FOLLOW_UP/FULL.
 function classifyWorkspaceIntent(question,history=[]){
   if(typeof question!=='string'||!Array.isArray(history))return 'FULL';
-  if(history.length)return 'FOLLOW_UP';
   const q=question.trim().replace(/\s+/g,' ');
   if(!q)return 'FULL';
   const existing=classifyWorkspaceQuestion(q,[]);
   if(existing!=='FULL')return existing;
   for(const [intent,pattern] of Object.entries(intentPatterns))if(pattern.test(q))return intent;
-  return 'FULL';
+  return history.length?'FOLLOW_UP':'FULL';
 }
-// Only explicit, standalone intents with a sufficient verified snapshot
-// opt into focused evidence. Complex setups, sizing, education, account and
-// follow-ups stay on the existing full path pending their own acceptance.
+const focusedProfiles=new Set(['STRUCTURE','MARKET_OVERVIEW','BOS','FVG','LIQUIDITY','QUOTE','SESSION','CALENDAR']);
+function marketOnlyHistory(history){
+  if(!Array.isArray(history))return false;
+  if(history.length===0)return true;
+  // Require an intact sequence of self-contained chart questions and replies.
+  // Unknown prior goals (including account analysis and strategy constraints)
+  // keep full scope. Do not infer permission from the assistant's text.
+  if(history.length%2!==0)return false;
+  for(let i=0;i<history.length;i+=2){
+    if(history[i]?.role!=='user'||history[i+1]?.role!=='assistant'||
+      !focusedProfiles.has(classifyWorkspaceIntent(history[i].text,[])))return false;
+  }
+  return true;
+}
 function workspaceEvidenceProfile(question,history,market){
-  const legacy=classifyWorkspaceQuestion(question,history);
-  if(legacy!=='FULL')return legacy;
-  if(market?.schemaVersion!=='adaptive-market-v1')return 'FULL';
+  if(!marketOnlyHistory(history))return 'FULL';
   const intent=classifyWorkspaceIntent(question,history);
-  if(['MARKET_OVERVIEW','LIQUIDITY','SESSION','CALENDAR'].includes(intent))return intent;
-  return 'FULL';
+  if(market?.schemaVersion!=='adaptive-market-v1')return 'FULL';
+  return focusedProfiles.has(intent)?intent:'FULL';
 }
 const knowledgeIds={
   STRUCTURE:['EVIDENCE_QUALITY','RISK_BOUNDARY','MARKET_STRUCTURE','MULTI_TIMEFRAME','LIQUIDITY','FVG'],
@@ -128,11 +138,29 @@ function compressSupportingFrames(market){
 // requirement to export every financial record. Only narrow standalone chart
 // requests with available market context qualify; never expand the requested
 // scope or omit account data for setups, sizing, exposure or follow-ups.
-const marketOnlyAccountProfiles=new Set(['STRUCTURE','MARKET_OVERVIEW','BOS','FVG','LIQUIDITY','QUOTE','SESSION','CALENDAR']);
-function selectWorkspaceAccount(data,profile){
+function selectWorkspaceAccount(data,profile,originalHistory=data.history){
   if(data.account&&data.market?.schemaVersion==='adaptive-market-v1'&&
     Array.isArray(data.market.frames)&&data.market.frames.length>0&&
-    !data.market.sizingCalculation&&Array.isArray(data.history)&&data.history.length===0&&
-    marketOnlyAccountProfiles.has(profile))data.account=null;
+    !data.market.sizingCalculation&&marketOnlyHistory(originalHistory)&&
+    focusedProfiles.has(profile))data.account=null;
 }
-module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames,selectWorkspaceAccount};
+// Provider-only aliases preserve every reference relationship while avoiding
+// repeated opaque 64-character SHA-256 IDs. Do not touch trusted snapshots,
+// price fields, timestamps, method versions, or arbitrary user text.
+function aliasFocusedReferenceIds(market){
+  if(!focusedProfiles.has(market?.contextSelection?.profile)||!Array.isArray(market.frames))return;
+  const aliases=new Map();
+  const fields=['id','referenceId','firstReferenceId','secondReferenceId'];
+  for(const frame of market.frames){
+    for(const o of frame.observations??[]){
+      if(!['LIQUIDITY_REFERENCE','EQUAL_LEVEL','STRUCTURE_EVENT','FVG_ZONE'].includes(o.type))continue;
+      for(const key of fields){
+        const value=o[key];
+        if(typeof value!=='string'||!/^[a-f0-9]{64}$/.test(value))continue;
+        if(!aliases.has(value))aliases.set(value,'ref'+(aliases.size+1));
+        o[key]=aliases.get(value);
+      }
+    }
+  }
+}
+module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames,selectWorkspaceAccount,aliasFocusedReferenceIds};
