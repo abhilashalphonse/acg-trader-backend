@@ -18,8 +18,10 @@ function addWorkspacePresentation(market){
     for(const o of frame.observations??[]){
       if(frame.timeframe!==market.selectedTimeframe)continue;
       if(o.type==='STRUCTURE_EVENT'){
-        const at=utc(o.atMs);if(at)o.atUtc=at;
-        if(reference!==null&&price(o.level)!==null)o.lastClosedPriceRelativeToLevel=side(reference,price(o.level));
+        const at=utc(o.atMs);
+        if(at){o.atUtc=at;
+          if(reference!==null&&price(o.level)!==null)o.lastClosedPriceRelativeToLevel=side(reference,price(o.level));
+        }
       }else if(o.type==='FVG_ZONE'){
         for(const [key,target] of [['formedAtMs','formedAtUtc'],['firstTouchAtMs','firstTouchAtUtc'],['invalidatedAtMs','invalidatedAtUtc']]){
           const at=utc(o[key]);if(at)o[target]=at;
