@@ -74,12 +74,24 @@ function createWorkspaceStreamCollector(descriptor){
     }
   });
 }
-async function readWorkspaceProviderStream(chunks,{descriptor,signal,timeoutMs,onDelta}){
+async function readWorkspaceProviderStream(chunks,{descriptor,signal,timeoutMs,onDelta,minDeltaIntervalMs=0,minDeltaChars=128}){
   const collector=createWorkspaceStreamCollector(descriptor);
+  let pending='',delivered=false,lastAt=0;
+  const flush=async()=>{
+    if(!pending||!onDelta)return;
+    check(!signal?.aborted);
+    const text=pending;pending='';
+    await onDelta(text);lastAt=Date.now();delivered=true;
+  };
   await consumeSse(chunks,{signal,timeoutMs,onEvent:async event=>{
     const delta=collector.event(event);
-    if(delta&&onDelta)await onDelta(delta);
+    if(delta&&onDelta){
+      pending+=delta;
+      if(!delivered||Date.now()-lastAt>=minDeltaIntervalMs||pending.length>=minDeltaChars)await flush();
+    }
   }});
-  return collector.result();
+  const result=collector.result();
+  if(result.choices[0].finish_reason==='stop'&&result.choices[0].message.refusal===null)await flush();
+  return result;
 }
 module.exports={answerPrefix,createWorkspaceStreamCollector,readWorkspaceProviderStream};
