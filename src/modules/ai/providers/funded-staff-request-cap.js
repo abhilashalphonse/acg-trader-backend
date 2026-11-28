@@ -36,7 +36,10 @@ async function migrateStaffRequestCap({env=process.env,now=Date.now}={}){
  return mongoose.connection.transaction(async session=>{
    const p=await P.findById('platform').session(session).maxTimeMS(2000).lean();
    const t=await C.findById(tenantId).session(session).maxTimeMS(2000).lean();
-   const other=await C.findOne({_id:{$ne:tenantId},enabled:true}).setOptions({sanitizeFilter:false}).session(session).select('_id').maxTimeMS(2000).lean();
+   // The filter uses server-owned scalar values only. Keep global Mongoose
+   // sanitization enabled; a second enabled tenant must deny the migration.
+   const enabled=await C.find({enabled:true}).session(session).select('_id').limit(2).maxTimeMS(2000).lean();
+   const other=enabled.length!==1||String(enabled[0]._id)!==tenantId;
    check(!other&&[20,100].includes(p?.dailyRequests)&&validateCaps(p,t,p.dailyRequests)&&p.outstandingRequests===0&&p.outstandingPicoUsd===0);
    const from=p.dailyRequests;
    if(from===target)return {changed:false,dailyRequests:target,dailyUsd:1,maxConcurrent:1};
