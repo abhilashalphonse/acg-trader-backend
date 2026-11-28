@@ -360,6 +360,11 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       assert.equal(requests,2);
       // Mounted chart-only receipt: real staff session, consent, detector and
       // database candles; never dispatch a provider request or write a trade.
+      // The previous acceptance exercises the real per-user 30/minute
+      // quota. Enter a fresh fixed window rather than resetting its ledger,
+      // relaxing the quota, or retrying rejected requests.
+      const quotaWait=60000-(Date.now()%60000)+100;
+      await new Promise(resolve=>setTimeout(resolve,quotaWait));
       const originalDrawingFlag=process.env.ACG_AI_CHART_DRAWING_ENABLED;
       try{
         delete process.env.ACG_AI_CHART_DRAWING_ENABLED;
