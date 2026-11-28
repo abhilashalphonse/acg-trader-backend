@@ -42,23 +42,40 @@ function classifyWorkspaceIntent(question,history=[]){
   for(const [intent,pattern] of Object.entries(intentPatterns))if(pattern.test(q))return intent;
   return 'FULL';
 }
+// Only explicit, standalone intents with a sufficient verified snapshot
+// opt into focused evidence. Complex setups, sizing, education, account and
+// follow-ups stay on the existing full path pending their own acceptance.
+function workspaceEvidenceProfile(question,history,market){
+  const legacy=classifyWorkspaceQuestion(question,history);
+  if(legacy!=='FULL')return legacy;
+  if(market?.schemaVersion!=='adaptive-market-v1')return 'FULL';
+  const intent=classifyWorkspaceIntent(question,history);
+  if(['MARKET_OVERVIEW','LIQUIDITY','SESSION','CALENDAR'].includes(intent))return intent;
+  return 'FULL';
+}
 const knowledgeIds={
   STRUCTURE:['EVIDENCE_QUALITY','RISK_BOUNDARY','MARKET_STRUCTURE','MULTI_TIMEFRAME','LIQUIDITY','FVG'],
   BOS:['EVIDENCE_QUALITY','RISK_BOUNDARY','MARKET_STRUCTURE','MULTI_TIMEFRAME','LIQUIDITY'],
   FVG:['EVIDENCE_QUALITY','RISK_BOUNDARY','MARKET_STRUCTURE','FVG','MULTI_TIMEFRAME'],
+  MARKET_OVERVIEW:['EVIDENCE_QUALITY','RISK_BOUNDARY','MARKET_STRUCTURE','MULTI_TIMEFRAME','LIQUIDITY','FVG','INDICATORS'],
+  LIQUIDITY:['EVIDENCE_QUALITY','RISK_BOUNDARY','MARKET_STRUCTURE','MULTI_TIMEFRAME','LIQUIDITY'],
+  SESSION:['EVIDENCE_QUALITY','RISK_BOUNDARY','SESSION_RANGE','MARKET_STRUCTURE'],
+  CALENDAR:['EVIDENCE_QUALITY','RISK_BOUNDARY','SESSION_RANGE'],
   QUOTE:['EVIDENCE_QUALITY','RISK_BOUNDARY']
 };
 function selectWorkspaceEvidence(data,profile){
-  if(profile==='FULL'||!data.market||data.market.schemaVersion!=='adaptive-market-v1')return;
+  if(!Object.hasOwn(knowledgeIds,profile)||!data.market||data.market.schemaVersion!=='adaptive-market-v1')return;
   const market=data.market;
   // Input has already been cloned by the request builder. Derived summaries,
   // price precision, quote, active bars, coverage and calendar are not altered.
   const primary=market.selectedTimeframe;
-  const cap=profile==='QUOTE'?[1,0]:[48,16];
+  const cap=['QUOTE','CALENDAR'].includes(profile)?[1,0]:profile==='SESSION'?[8,4]:[48,16];
   const types=profile==='FVG'?new Set(['STRUCTURE_SUMMARY','FVG_ZONE','STRUCTURE_EVENT']):
-    profile==='BOS'?new Set(['STRUCTURE_SUMMARY','STRUCTURE_EVENT','LIQUIDITY_REFERENCE','EQUAL_LEVEL']):
-    profile==='STRUCTURE'?new Set(['STRUCTURE_SUMMARY','STRUCTURE_EVENT','FVG_ZONE','LIQUIDITY_REFERENCE','EQUAL_LEVEL']):new Set();
+    ['BOS','LIQUIDITY'].includes(profile)?new Set(['STRUCTURE_SUMMARY','STRUCTURE_EVENT','LIQUIDITY_REFERENCE','EQUAL_LEVEL']):
+    ['STRUCTURE','MARKET_OVERVIEW'].includes(profile)?new Set(['STRUCTURE_SUMMARY','STRUCTURE_EVENT','FVG_ZONE','LIQUIDITY_REFERENCE','EQUAL_LEVEL']):new Set();
   const priceFacts=new Set(['LAST_CLOSED_PRICE','OBSERVED_RANGE_HIGH','OBSERVED_RANGE_LOW']);
+  if(profile==='MARKET_OVERVIEW'){priceFacts.add('SMA_20');priceFacts.add('MEAN_TRUE_RANGE_14');}
+  if(profile==='SESSION')types.add('SESSION_RANGE');
   for(const frame of market.frames){
     const selected=frame.timeframe===primary,limit=cap[selected?0:1];
     if(Array.isArray(frame.closedCandles)&&frame.closedCandles.length>limit){
@@ -71,7 +88,7 @@ function selectWorkspaceEvidence(data,profile){
       frame.observations=frame.observations.filter(o=>o.type==='FACT'&&priceFacts.has(o.kind)||types.has(o.type));
       frame.omittedObservations=(frame.omittedObservations??0)+before-frame.observations.length;
     }
-    if(profile==='QUOTE'&&frame.advanced){
+    if(['QUOTE','CALENDAR','SESSION'].includes(profile)&&frame.advanced){
       // Historical fallback retains summaries, not duplicated detailed patterns.
       const {methodVersion,throughMs,source,bars,referencePrice,regime,dealingRange}=frame.advanced;
       frame.advanced={methodVersion,throughMs,source,bars,referencePrice,regime,dealingRange,detailsOmitted:true};
@@ -80,4 +97,4 @@ function selectWorkspaceEvidence(data,profile){
   market.contextSelection={profile,scope:'QUESTION_FOCUSED_PROJECTION',omittedEvidenceIsNotAbsent:true};
   data.knowledge=data.knowledge.filter(k=>knowledgeIds[profile].includes(k.id));
 }
-module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,selectWorkspaceEvidence};
+module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence};
