@@ -11,8 +11,9 @@ const fail=()=>Object.assign(Error('Pilot policy unavailable'),{code:'LIVE_AI_PI
 // policy inputs, not browser claims. An unapproved policy cannot enable egress.
 function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resolveMembership,resolveDataRights,validatePayload,now=Date.now,fundedStaff=false}={}){
   if(![verifyApproval,resolveMembership,resolveDataRights,validatePayload,now].every(f=>typeof f==='function')||(!fundedStaff&&typeof resolveAccount!=='function'))throw fail();
-  if(!policy||!exact(policy,['enabled','expiresAtMs','descriptorId','policyVersion','members','instruments',...(fundedStaff?['approvalDigest']:[]),...(policy?.workspaceChat===true?['workspaceChat']:[])])||
+  if(!policy||!exact(policy,['enabled','expiresAtMs','descriptorId','policyVersion','members','instruments',...(fundedStaff?['approvalDigest']:[]),...(policy?.workspaceChat===true?['workspaceChat']:[]),...(policy?.workspaceChat===true&&Object.hasOwn(policy,'workspaceReasoningEffort')?['workspaceReasoningEffort']:[])])||
     (fundedStaff&&!hex(policy.approvalDigest))||(policy.workspaceChat===true&&!fundedStaff)||
+    (Object.hasOwn(policy,'workspaceReasoningEffort')&&policy.workspaceReasoningEffort!=='low')||
     typeof policy.enabled!=='boolean'||!safeTime(policy.expiresAtMs)||!hex(policy.descriptorId)||!hex(policy.policyVersion)||
     !Array.isArray(policy.members)||policy.members.length>10||!policy.members.every(m=>exact(m,fundedStaff?['tenantId','actorId']:['tenantId','actorId','accountId'])&&Object.values(m).every(id))||
     !Array.isArray(policy.instruments)||policy.instruments.length>10||!policy.instruments.every(i=>exact(i,['symbol','timeframe'])&&
@@ -44,6 +45,7 @@ function createRestrictedPilotPolicy({policy,verifyApproval,resolveAccount,resol
       try{
         const w={...workspace,policyVersion:version,descriptorId};
         if(!await allowed(scope,w,'EXPORT')||!hex(wireDigest)||hash(payload)!==wireDigest||
+          (pinned.workspaceReasoningEffort!==undefined&&payload?.reasoning_effort!==pinned.workspaceReasoningEffort)||
           payload?.store!==false||payload.stream!==false||payload.n!==1||payload.service_tier!=='default'||
           !Array.isArray(payload.messages)||payload.messages.length!==2||payload.messages[0].role!=='system'||payload.messages[1].role!=='user'||
           Object.hasOwn(payload,'tools')||Object.hasOwn(payload,'functions'))return false;
