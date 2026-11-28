@@ -1,6 +1,6 @@
 'use strict';
-// Conservative, deterministic routing for standalone, explicitly phrased
-// questions. Unknown, multilingual, compound and conversational follow-ups
+// Conservative, deterministic routing for explicitly phrased questions.
+// Unknown, multilingual, compound and dependent conversational follow-ups
 // retain full context. A client cannot select or expand a server profile.
 const patterns={
   STRUCTURE:/^(?:analyse|analyze|review|describe|summari[sz]e) (?:the )?(?:current )?(?:[a-z0-9._/-]+ )?market structure[?.!]?$/i,
@@ -19,9 +19,7 @@ function classifyWorkspaceQuestion(question,history=[]){
   for(const [profile,pattern] of Object.entries(patterns))if(pattern.test(q))return profile;
   return 'FULL';
 }
-// Phase 6A: separate semantic intent from evidence projection. New intents
-// are observed in bounded internal telemetry first; they do not silently
-// restrict account, history, market or calendar data before acceptance.
+// Semantic intent is separate from the narrower evidence projection policy.
 const intentPatterns=Object.freeze({
   MARKET_OVERVIEW:/^(?:(?:what(?: is|'s) happening (?:with|in) (?:the )?(?:market|markets|chart|gold|silver|bitcoin|ethereum|oil|forex|crypto|natural gas|wti oil|brent oil))|(?:(?:analyse|analyze|review|summari[sz]e) (?:the )?(?:current )?(?:market|chart)))[?.!]?$/i,
   LIQUIDITY:/^(?:show|find|identify|list|analyse|analyze) (?:me )?(?:the )?(?:recent |current |potential )?liquidity(?: (?:levels|sweeps|zones|references))?(?: (?:on|for) [a-z0-9._/-]+)?[?.!]?$/i,
@@ -135,9 +133,9 @@ function compressSupportingFrames(market){
   }
 }
 // Data minimization at the provider boundary. Account permission is not a
-// requirement to export every financial record. Only narrow standalone chart
-// requests with available market context qualify; never expand the requested
-// scope or omit account data for setups, sizing, exposure or follow-ups.
+// requirement to export every financial record. Only narrow explicit chart
+// requests in a market-only conversation qualify; never expand the requested
+// scope or omit account data for setups, sizing, exposure or dependent turns.
 function selectWorkspaceAccount(data,profile,originalHistory=data.history){
   if(data.account&&data.market?.schemaVersion==='adaptive-market-v1'&&
     Array.isArray(data.market.frames)&&data.market.frames.length>0&&
