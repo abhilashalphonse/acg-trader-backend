@@ -65,7 +65,10 @@ function createLiveAdmission({authorizeSession,authorizeMarket,authorizeAdmin,au
     const rows=await budgets(s,d,session);
     for(let i=0;i<rows.length;i++){const r=rows[i],max=i?c.actorDailyPicoUsd:c.tenantDailyPicoUsd,req=i?c.actorDailyRequests:c.tenantDailyRequests;
       const requests=sum(r.requests,1),reservedPicoUsd=sum(r.reservedPicoUsd,amount);
-      check(requests<=req&&sum(reservedPicoUsd,r.settledPicoUsd)<=max,'LIVE_AI_BUDGET_LIMIT');
+      // Keep the existing rejection code and transactional limits; attach only
+      // a bounded category, not ledger values or identifiers.
+      if(requests>req)throw Object.assign(fail('LIVE_AI_BUDGET_LIMIT'),{budgetReason:'DAILY_REQUEST_LIMIT'});
+      if(sum(reservedPicoUsd,r.settledPicoUsd)>max)throw Object.assign(fail('LIVE_AI_BUDGET_LIMIT'),{budgetReason:'DAILY_SPEND_LIMIT'});
       if(r.requests===0)await B.create([{...r,requests,reservedPicoUsd}],{session});
       else await patch(B,{_id:r._id,requests:r.requests,reservedPicoUsd:r.reservedPicoUsd,settledPicoUsd:r.settledPicoUsd},{requests,reservedPicoUsd},session);
     }
