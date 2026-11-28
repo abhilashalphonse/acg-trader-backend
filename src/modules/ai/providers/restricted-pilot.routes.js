@@ -46,6 +46,10 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       try{
         const value=await runtime[action](bearerToken(req),p.data,{signal:controller.signal,onProgress:wantsStream?stage=>{
           if(!controller.signal.aborted&&enabled()===true&&['CONTEXT','GENERATING'].includes(stage))event('progress',{stage});
+        }:undefined,onDelta:wantsStream?delta=>{
+          if(controller.signal.aborted||enabled()!==true||res.destroyed||res.writableEnded)throw deny('AI_PILOT_DISABLED',404);
+          if(typeof delta!=='string'||!delta||Buffer.byteLength(delta,'utf8')>12000)throw deny('AI_INVALID_RESPONSE',500);
+          event('delta',{text:delta});
         }:undefined});
         if(controller.signal.aborted||enabled()!==true)throw deny('AI_PILOT_DISABLED',404);
         return {contractVersion:'restricted-pilot-v1',mode:runtime.mode,executionAllowed:false,...value};
