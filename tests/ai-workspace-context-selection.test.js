@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence}=require('../src/modules/ai/intelligence/workspace-context-selection');
+const {classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames}=require('../src/modules/ai/intelligence/workspace-context-selection');
 const {buildWorkspaceBody}=require('../src/modules/ai/providers/funded-workspace-context');
 const descriptor={modelId:'fixture',maxInputTokens:32768,maxOutputTokens:2048};
 test('standalone explicit queries classify conservatively, all other intents keep full context',()=>{
@@ -119,4 +119,71 @@ test('6B selects only bounded intents and preserves source scope, session and ca
   for(const question of ['Can I enter a short here?','Calculate the position size','Review my account risk','Explain fair value gaps','Analyse the chart and my account','BTCUSD ഇപ്പോൾ എങ്ങനെയാണ്?'])assert.equal(workspaceEvidenceProfile(question,[],market),'FULL');
   assert.equal(workspaceEvidenceProfile('Show the economic calendar',[{role:'user',text:'Explain my trade'}],market),'FULL');
   assert.equal(workspaceEvidenceProfile('Analyse the chart',[],null),'FULL');
+});
+
+function compressionFixture(){
+  const market=fixture();
+  const steps={'5m':300000,'1m':60000,'30m':1800000,'4h':14400000};
+  for(const f of market.frames){
+    const step=steps[f.timeframe],end=1795824000000;
+    f.closedCandles=f.closedCandles.map((b,i)=>[end-(64-i)*step,b[1]+0.01234567,b[2]+0.01234567,b[3]+0.01234567,b[4]+0.01234567]);
+    f.status='HISTORICAL_ONLY';
+    f.quality={status:'RECENT_CLOSED_BAR',gaps:0,exclusions:{incomplete:0,synthetic:0},contiguousCount:64,closedCount:64};
+    f.freshness={state:'LATEST_EXPECTED_UTC_BUCKET',latestClosedAtMs:end};
+    f.coverage={outOfSessionBars:0,coverageVerified:true};
+    f.advanced={...f.advanced,regime:{state:'RANGING',bars:20},dealingRange:{high:59063,low:58999,bars:48},
+      liquidity:{levels:[{side:'BUY_SIDE',kind:'INTERNAL_SWING',level:59035}]},
+      displacements:[{direction:'BULLISH',atMs:end,close:59062}]};
+  }
+  return market;
+}
+test('6C shortens only healthy higher-frame tails and preserves exact prices and all derived evidence',()=>{
+  for(const profile of ['STRUCTURE','MARKET_OVERVIEW','BOS','FVG','LIQUIDITY']){
+    const data={market:compressionFixture(),knowledge:[{id:'EVIDENCE_QUALITY'},{id:'RISK_BOUNDARY'}]};
+    selectWorkspaceEvidence(data,profile);
+    const before=structuredClone(data.market);
+    compressSupportingFrames(data.market);
+    assert.ok(Buffer.byteLength(JSON.stringify(data.market))<Buffer.byteLength(JSON.stringify(before)),profile);
+    for(const [i,f] of data.market.frames.entries()){
+      const previous=before.frames[i];
+      if(i<2){assert.deepEqual(f,previous);continue;}
+      assert.deepEqual(f.closedCandles,previous.closedCandles.slice(-8));
+      assert.equal(f.omittedClosedBars,56);
+      assert.equal(f.rawHistoryProjection.derivedEvidenceUsesOriginalWindow,true);
+      assert.equal(f.rawHistoryProjection.omittedAdditionalBars,8);
+      for(const key of ['quality','freshness','coverage','observations','advanced','activeCandle'])assert.deepEqual(f[key],previous[key]);
+    }
+    for(const key of ['quote','instrument','economicCalendar','contextSelection'])assert.deepEqual(data.market[key],before[key]);
+    const once=structuredClone(data.market);
+    compressSupportingFrames(data.market);
+    assert.deepEqual(data.market,once);
+  }
+});
+test('6C keeps uncertain, gapped and unavailable frames and complex requests unchanged',()=>{
+  for(const mutate of [
+    f=>{f.quality.gaps=1;},
+    f=>{f.quality.exclusions.synthetic=1;},
+    f=>{f.quality.contiguousCount=19;},
+    f=>{delete f.quality.contiguousCount;},
+    f=>{f.freshness.state='CHECK_COVERAGE';},
+    f=>{f.status='UNAVAILABLE';},
+    f=>{f.coverage.outOfSessionBars=1;},
+    f=>{delete f.advanced.dealingRange;}
+  ]){
+    const data={market:compressionFixture(),knowledge:[]};
+    selectWorkspaceEvidence(data,'STRUCTURE');
+    mutate(data.market.frames[2]);
+    const previous=structuredClone(data.market.frames[2]);
+    compressSupportingFrames(data.market);
+    assert.deepEqual(data.market.frames[2],previous);
+  }
+  const market=compressionFixture(),original=JSON.stringify(market);
+  compressSupportingFrames(market);
+  assert.equal(JSON.stringify(market),original);
+  const body=buildWorkspaceBody(descriptor,{question:'Analyse the current BTCUSD market structure.',history:[],market,account:null});
+  const projected=JSON.parse(body.messages[1].content).market;
+  assert.equal(projected.frames[0].closedCandles.length,48);
+  assert.equal(projected.frames[1].closedCandles.length,16);
+  assert.equal(projected.frames[2].closedCandles.length,8);
+  assert.equal(JSON.stringify(market),original);
 });
