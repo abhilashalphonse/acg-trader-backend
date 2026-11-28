@@ -290,6 +290,29 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       assert.equal((await LiveAttempt.findOne({tenantId,operationId:riskOp}).lean()).state,'SETTLED');
       assert.equal(requests,2);
       assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
+      // Dedicated isolated ledger only: prove both denial paths are typed,
+      // terminal, unbilled and do not invoke the TLS provider.
+      for(const [index,reason] of ['DAILY_REQUEST_LIMIT','DAILY_SPEND_LIMIT'].entries()){
+        const revision=index+1;
+        await admin.setControl(actor,{enabled:true,expectedRevision:revision,
+          tenantDailyPicoUsd:1000000000000,actorDailyPicoUsd:index===0?1000000000000:1,
+          tenantDailyRequests:20,actorDailyRequests:index===0?2:20});
+        const current=await wsCall('status');assert.equal(current.status,200);
+        assert.equal((await wsCall('grant',{explicitConsent:true,expectedRevision:current.body.revision})).status,200);
+        const deniedOp=randomUUID();
+        const denied=await fetch(wsRoot+'/v1/ai/pilot/generate',{method:'POST',
+          headers:{'content-type':'application/json',accept:'text/event-stream',authorization:'Bearer '+session.accessToken},
+          body:JSON.stringify({...wsBase,...input,operationId:deniedOp,question:'Review my account risk',includeMarket:false})});
+        const deniedEvents=(await denied.text()).trim().split('\n\n').map(block=>{const [kind,data]=block.split('\n');return {kind:kind.slice(7),data:JSON.parse(data.slice(6))};});
+        assert.deepEqual(deniedEvents.map(e=>e.kind),['progress','progress','result']);
+        const terminal=deniedEvents.at(-1).data;
+        assert.equal(terminal.state,'FAILED');assert.equal(terminal.failureReason,reason);
+        assert.equal(terminal.operationId,deniedOp);assert.equal(terminal.executionAllowed,false);
+        assert.equal(terminal.usage,undefined);
+        assert.equal(await LiveAttempt.countDocuments({tenantId,operationId:deniedOp}),0);
+        assert.equal(requests,2);
+        assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
+      }
       wsEnv.ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED='false';
       assert.ok((await wsCall('generate',{...input,operationId:randomUUID()})).status>=400);
       assert.equal(requests,2);
