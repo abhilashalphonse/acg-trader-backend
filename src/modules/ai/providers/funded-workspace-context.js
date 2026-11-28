@@ -188,6 +188,8 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
     // possible: shed duplicated secondary references before raw history.
     trimObservations(8,2);
     trimCandles(24,16);
+    // Do not sacrifice more current market evidence to preserve old claims.
+    while(oversized()&&dropOldestExchange(data.history))refresh();
     trimObservations(6,0);
     trimCandles(16,16);
     // The original knowledge catalog duplicates much of the system policy.
@@ -200,6 +202,8 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
     trimCandles(12,0);
     trimObservations(6,1);
   }
+  // Current account rows take precedence over historical conversation.
+  while(oversized()&&dropOldestExchange(data.history))refresh();
   // Account aggregates, sizing calculations, quote, calendar and instrument
   // specifications are retained. If necessary omit individual rows explicitly.
   if(data.account){
@@ -226,9 +230,6 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
       }
     }
   }
-  // The hard provider bound always wins. Evict complete remaining turns only
-  // if all existing market/account compaction paths could not fit the request.
-  while(oversized()&&dropOldestExchange(data.history))refresh();
   if(oversized())throw Object.assign(Error('Workspace evidence exceeds request budget'),{code:'AI_WORKSPACE_CONTEXT_BUDGET'});
   return body;
 }
