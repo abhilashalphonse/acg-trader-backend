@@ -53,6 +53,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
     resolveAccount:funded?null:createPersonalDemoPilotAccountResolver({store:createAiReadStore()}),fundedStaff:!!funded});
   guard((!educationOnly&&!workspaceChat)||fundedStaff===true);
   guard(!workspaceChat||(!educationOnly&&policy.workspaceChat===true));
+  const drawingEnabled=()=>workspaceChat&&fundedStaff===true&&env.ACG_AI_CHART_DRAWING_ENABLED==='true';
   const workspaceSource=workspaceChat?require('./funded-workspace-context').createWorkspaceContext({marketRuntime}):null;
   const source=educationOnly?null:createMarketContextSource(marketRuntime);
   async function context(token,input){
@@ -130,7 +131,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       const x=await context(token,input);await x.allowed('GRANT');
       const key=hash(['consent',...['tenantId','actorId','sessionId','accountId','connectionId'].map(k=>x.owner[k])]);
       const g=await LiveConsent.findById(key).read('primary').readConcern('majority').maxTimeMS(2000).lean();
-      return {revision:g?.revision??0,active:g?.active===true&&g.expiresAtMs>Date.now()&&g.descriptorId===d.descriptorId&&g.policyVersion===d.policyVersion&&g.symbol===input.symbol&&g.timeframe===input.timeframe,expiresAtMs:g?.expiresAtMs??null,model:d.modelId};
+      return {revision:g?.revision??0,active:g?.active===true&&g.expiresAtMs>Date.now()&&g.descriptorId===d.descriptorId&&g.policyVersion===d.policyVersion&&g.symbol===input.symbol&&g.timeframe===input.timeframe,expiresAtMs:g?.expiresAtMs??null,model:d.modelId,chartDrawingEnabled:drawingEnabled()};
     },
     async grant(token,input){
       const x=await context(token,input);await x.allowed('GRANT');
@@ -140,6 +141,23 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
     async revoke(token,input){
       const x=await context(token,{...input,action:'revoke'});
       return x.admission.revoke(x.owner,input.expectedRevision);
+    },
+    async draw(token,input,{signal}={}){
+      guard(drawingEnabled()&&!signal?.aborted&&['LIQUIDITY','FVG','LIQUIDITY_THEN_FVG','FVG_THEN_LIQUIDITY'].includes(input.command));
+      const x=await context(token,input),pinned=await x.admission.assertConsent(x.owner,x.binding);
+      const allowed=async()=>{guard(drawingEnabled()&&!signal?.aborted);await x.allowed();await x.admission.assertConsent(x.owner,{...x.binding,consentRevision:pinned.consentRevision});guard(drawingEnabled()&&!signal?.aborted);return true;};
+      const scope=Object.fromEntries(['tenantId','actorId','sessionId','accountId'].map(k=>[k,x.owner[k]]));
+      await allowed();
+      const {market}=await workspaceSource.read({scope,workspace:x.workspace,includeAccount:false,includeMarket:true,authorize:allowed});
+      const {createDrawingCandidateRegistry,VERSION}=require('../intelligence/chart-drawing-candidates');
+      const registry=createDrawingCandidateRegistry({market,scope,chartContextVersion:input.chartContextVersion,nowMs:Date.now()});
+      guard(registry.context.latestClosedAtMs===input.latestClosedAtMs);
+      const {planChartActionSequence}=require('../intelligence/chart-action-sequence');
+      const actions=planChartActionSequence(input.command,registry);
+      await allowed();
+      const receipt=actions.length?registry.resolve({contractVersion:VERSION,actionId:input.actionId,chartContextVersion:input.chartContextVersion,actions},{scope,chartContextVersion:input.chartContextVersion,nowMs:Date.now(),signal,complete:true}):null;
+      guard(!signal?.aborted&&drawingEnabled()&&Date.now()<registry.context.expiresAtMs);
+      return {state:receipt?'DRAWING_READY':'NO_CANDIDATES',actionId:input.actionId,workspace:{symbol:input.symbol,timeframe:input.timeframe},receipt};
     },
     async generate(token,input,{signal,onProgress,onDelta,onPromptAudit}={}){
       const x=workspaceChat?await workspaceStage('ACCESS',()=>context(token,input)):await context(token,input);

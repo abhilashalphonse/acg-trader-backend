@@ -162,7 +162,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
     quoteStore.set({symbol,providerSymbol:'TEST/USD',source:'twelve-data',bid:123.99,ask:124.01,
       providerTimestampMs:tickTime,receivedAtMs:tickTime,isStale:false,sessionOpen:true,isSyntheticSpread:true});
     const wsEnv={...flags,ACG_AI_FUNDED_WORKSPACE_STREAMING_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED:'true',
-      ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:String(Date.now()+120000),ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-workspace-'.padEnd(40,'x')};
+      ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:String(Date.now()+(process.env.ACG_AI_PAIRED_BROWSER==='true'?600000:120000)),ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-workspace-'.padEnd(40,'x')};
     const ws=await loadFundedPilotBootstrap({env:wsEnv,marketRuntime});
     assert.equal(ws.workspaceChat,true);assert.equal(ws.educationOnly,false);
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'acg-ws-tls-'));
@@ -358,6 +358,79 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       assert.deepEqual(await snapshot(),before);
       assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
       assert.equal(requests,2);
+      // Mounted chart-only receipt: real staff session, consent, detector and
+      // database candles; never dispatch a provider request or write a trade.
+      // The previous acceptance exercises the real per-user 30/minute
+      // quota. Enter a fresh fixed window rather than resetting its ledger,
+      // relaxing the quota, or retrying rejected requests.
+      const quotaWait=60000-(Date.now()%60000)+100;
+      await new Promise(resolve=>setTimeout(resolve,quotaWait));
+      const originalDrawingFlag=process.env.ACG_AI_CHART_DRAWING_ENABLED;
+      try{
+        delete process.env.ACG_AI_CHART_DRAWING_ENABLED;
+        const drawBase={...wsBase,timeframe:'1h',connectionId:randomUUID()};
+        const drawCall=async(op,extra={},token=session.accessToken)=>{
+          const res=await fetch(wsRoot+'/v1/ai/pilot/'+op,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+token},body:JSON.stringify({...drawBase,...extra})});
+          return {status:res.status,body:await res.json()};
+        };
+        const end=candleBucketOpenTimeMs(Date.now(),'1h'),step=TIMEFRAME_MS['1h'];
+        const drawingInput={actionId:randomUUID(),command:'FVG',chartContextVersion:'e'.repeat(64),latestClosedAtMs:end};
+        assert.equal((await drawCall('draw',drawingInput)).status,403);
+        process.env.ACG_AI_CHART_DRAWING_ENABLED='true';
+        assert.equal((await drawCall('status')).body.chartDrawingEnabled,true);
+        assert.equal((await drawCall('grant',{expectedRevision:0,explicitConsent:true})).status,200);
+        // Replace only the isolated fixture's hourly candles after the
+        // analytical provider acceptance has finished.
+        await Candle.deleteMany({symbol,timeframe:'1h'});
+        const rows=[[102,104,100,103],[103,105,101,104],[104,105,95,101],[101,104,100,103],[103,106,102,105],[110,112,109,111],[111,113,110,112],[112,114,110,113]];
+        await Candle.insertMany(rows.map(([open,high,low,close],i)=>({symbol,timeframe:'1h',openTime:new Date(end-(rows.length-i)*step),closeTime:new Date(end-(rows.length-i-1)*step),open:String(open),high:String(high),low:String(low),close:String(close),complete:true,synthetic:false,source:'BACKFILL',provider:'twelve-data'})));
+        const priorAttempts=await LiveAttempt.countDocuments({tenantId});
+        const drawn=await drawCall('draw',drawingInput);
+        assert.equal(drawn.status,200,JSON.stringify(drawn.body.error??{}));
+        assert.equal(drawn.body.state,'DRAWING_READY');assert.equal(drawn.body.executionAllowed,false);
+        assert.equal(drawn.body.receipt.actionId,drawingInput.actionId);
+        assert.equal(drawn.body.receipt.context.latestClosedAtMs,end);
+        assert.ok(drawn.body.receipt.actions.some(a=>a.geometry.type==='rectangle'&&a.geometry.lower===104&&a.geometry.upper===109));
+        for(const [command,first,last] of [['LIQUIDITY_THEN_FVG','hline','rectangle'],['FVG_THEN_LIQUIDITY','rectangle','hline']]){
+          const ordered=await drawCall('draw',{...drawingInput,actionId:randomUUID(),command});
+          assert.equal(ordered.status,200,JSON.stringify(ordered.body.error??{}));
+          assert.equal(ordered.body.state,'DRAWING_READY');
+          const types=ordered.body.receipt.actions.map(a=>a.geometry.type);
+          assert.equal(types[0],first);assert.equal(types.at(-1),last);
+          assert.deepEqual(types,[...types.filter(t=>t===first),...types.filter(t=>t===last)]);
+          assert.ok(types.length<=6);
+        }
+        assert.equal((await drawCall('draw',{...drawingInput,command:'TRADE'})).status,400);
+        assert.ok((await drawCall('draw',{...drawingInput,latestClosedAtMs:end-step})).status>=400);
+        if(process.env.ACG_AI_PAIRED_BROWSER==='true'){
+          assertIsolated();
+          // CI only: real authenticated endpoint, private ephemeral fixture.
+          // Asynchronous child process keeps the mounted HTTP server responsive.
+          const {promisify}=require('node:util');
+          const run=promisify(require('node:child_process').execFile);
+          const frontend=path.resolve(__dirname,'../../frontend');
+          const privateFile=path.join(dir,'paired-drawing-private.json');
+          fs.writeFileSync(privateFile,JSON.stringify({root:wsRoot,token:session.accessToken,accountId:ids[0],symbol,timeframe:'1h',end,step,rows}),{mode:0o600});
+          const {Order}=require('../src/modules/trading/order.model');
+          const {Position}=require('../src/modules/trading/position.model');
+          const beforeOrders=await Order.countDocuments({}),beforePositions=await Position.countDocuments({});
+          const beforeAccount=await TradingAccount.findById(ids[0]).lean();
+          try{
+            const output=await run(process.execPath,['tests/ui/ai-paired-drawing.mjs'],{cwd:frontend,timeout:90000,
+              env:{PATH:process.env.PATH,HOME:process.env.HOME,CI:'true',ACG_AI_PAIRED_PRIVATE:privateFile}});
+            console.log(output.stdout.trim());
+          }catch(error){const stage=String(error?.stderr||'').match(/FAIL paired drawing acceptance at (desktop|mobile) (startup|real receipt|native undo)/)?.[0];throw Error(stage||'Paired native chart browser acceptance failed (private fixture not logged)');}
+          finally{fs.rmSync(privateFile,{force:true});}
+          assert.equal(await Order.countDocuments({}),beforeOrders);
+          assert.equal(await Position.countDocuments({}),beforePositions);
+          assert.deepEqual(await TradingAccount.findById(ids[0]).lean(),beforeAccount);
+        }
+        assert.equal(await LiveAttempt.countDocuments({tenantId}),priorAttempts);
+        assert.equal(requests,2);
+      }finally{
+        if(originalDrawingFlag===undefined)delete process.env.ACG_AI_CHART_DRAWING_ENABLED;
+        else process.env.ACG_AI_CHART_DRAWING_ENABLED=originalDrawingFlag;
+      }
       wsEnv.ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED='false';
       assert.ok((await wsCall('generate',{...input,operationId:randomUUID()})).status>=400);
       assert.equal(requests,2);

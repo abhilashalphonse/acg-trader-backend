@@ -1,0 +1,36 @@
+name: AI chart action isolated acceptance
+on:
+  pull_request:
+    paths:
+      - 'src/modules/ai/**'
+      - 'scripts/ai-funded-pilot-mount-acceptance.js'
+      - 'tests/ai-chart-action-sequence.test.js'
+      - '.github/workflows/ai-chart-action-acceptance.yml'
+permissions:
+  contents: read
+jobs:
+  chart-actions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      NODE_ENV: test
+      ACG_AI_ISOLATED_CI: 'true'
+      MONGODB_URI: mongodb://127.0.0.1:27017/acg_trader_test?replicaSet=rs0
+      MARKET_GATEWAY_ENABLED: 'false'
+      TRADING_API_ENABLED: 'true'
+      PLATFORM_EVENTS_ENABLED: 'false'
+      CORS_ORIGINS: http://localhost:5173
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: supercharge/mongodb-github-action@1.12.0
+        with:
+          mongodb-version: '7.0'
+          mongodb-replica-set: rs0
+      - run: npm ci
+      - run: node --test tests/ai-chart-action-sequence.test.js tests/ai-chart-drawing-candidates.test.js
+      - name: Mounted staff scope, consent, detector and ordered action receipt acceptance
+        run: node scripts/ai-phase1-acceptance.js
