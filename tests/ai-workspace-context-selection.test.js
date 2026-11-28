@@ -205,3 +205,78 @@ test('6E omits authorized account data only for standalone focused market reques
  assert.equal(build('Review my account risk',[],market,null).account,null);
  assert.deepEqual(account,original);
 });
+
+test('phase 7 routes a new explicit market question in an existing chart-only conversation',()=>{
+ const market=compressionFixture();
+ const account={source:'PERSISTED_ACCOUNT_SNAPSHOT',state:{balance:'10000',equity:'10000'},positions:[],pendingOrders:[]};
+ const history=[{role:'user',text:'Analyse the current XAUUSD market structure.'},{role:'assistant',text:'The selected chart is BTCUSD, not XAUUSD.'},
+   {role:'user',text:'Analyse the current BTCUSD market structure.'},{role:'assistant',text:'Prior 5m structure was mixed at 59012.'}];
+ for(const [question,profile] of [['Identify the latest BOS.','BOS'],['Find the recent FVGs on BTCUSD.','FVG'],['Analyse the current BTCUSD market structure.','STRUCTURE'],['Show the economic calendar','CALENDAR']]){
+   assert.equal(classifyWorkspaceIntent(question,history),profile);
+   const body=buildWorkspaceBody(descriptor,{question,history,market,account});
+   const data=JSON.parse(body.messages[1].content);
+   assert.equal(data.market.contextSelection.profile,profile);
+   assert.equal(data.account,null);
+   assert.deepEqual(data.history,history);
+   assert.deepEqual(data.market.quote,market.quote);
+ }
+ assert.equal(classifyWorkspaceIntent('What about that level?',history),'FOLLOW_UP');
+ for(const [question,h] of [
+   ['What about that level?',history],
+   ['Can I enter a short here?',history],
+   ['Analyse the chart and my account',history],
+   ['Identify the latest BOS.',[{role:'user',text:'Review my account risk'},{role:'assistant',text:'Risk analysis'}]],
+   ['Identify the latest BOS.',[{role:'assistant',text:'Earlier answer'}]],
+   ['Identify the latest BOS.',[{role:'user',text:'Use only ICT and H4 structure'},{role:'assistant',text:'Understood'}]]
+ ]){
+   // Test exact conversational retention separately from the established
+   // hard-bound eviction path. The reduced fixture fits without pressure.
+   const smallMarket={...market,frames:market.frames.slice(0,1)};
+   const d=JSON.parse(buildWorkspaceBody(descriptor,{question,history:h,market:smallMarket,account}).messages[1].content);
+   assert.equal(d.market.contextSelection,undefined,question);
+   assert.deepEqual(d.account,account);
+   assert.deepEqual(d.history,h);
+ }
+ // With the larger multi-frame fixture, existing budget handling can
+ // discard older complete exchanges; it must not change routing or the
+ // latest retained question/answer or omit the financial scope.
+ const body=buildWorkspaceBody(descriptor,{question:'What about that level?',history,market,account});
+ const pressured=JSON.parse(body.messages[1].content);
+ assert.equal(pressured.market.contextSelection,undefined);
+ assert.deepEqual(pressured.account,account);
+ assert.ok(pressured.history.length>=2);
+ assert.deepEqual(pressured.history,history.slice(-pressured.history.length));
+ assert.equal(pressured.history.length%2,0);
+ assert.ok(Buffer.byteLength(JSON.stringify(body),'utf8')+4096<=descriptor.maxInputTokens);
+});
+test('phase 7 focused reference aliases retain all relationships and exact values with smaller payload',()=>{
+ const market=compressionFixture(),id='a'.repeat(64),id2='b'.repeat(64);
+ for(const frame of market.frames){
+   frame.observations.push({type:'LIQUIDITY_REFERENCE',id,level:59003.12345678,confirmedAtMs:1795824000000},
+    {type:'LIQUIDITY_REFERENCE',id:id2,level:59004.12345678},
+    {type:'EQUAL_LEVEL',firstReferenceId:id,secondReferenceId:id2,level:59003.12345678},
+    {type:'STRUCTURE_EVENT',kind:'BOS',referenceId:id,level:59003.12345678,atMs:1795824300000});
+ }
+ const original=structuredClone(market),question='Identify the latest BOS.';
+ const h=[{role:'user',text:'Analyse the chart'},{role:'assistant',text:'The chart was mixed.'}];
+ const account={source:'PERSISTED_ACCOUNT_SNAPSHOT',state:{balance:'10000'},positions:[],pendingOrders:[]};
+ const focused=buildWorkspaceBody(descriptor,{question,history:h,market,account});
+ const d=JSON.parse(focused.messages[1].content);
+ for(const f of d.market.frames){
+   const p=f.observations.find(o=>o.type==='LIQUIDITY_REFERENCE'&&o.id);
+   const p2=f.observations.filter(o=>o.type==='LIQUIDITY_REFERENCE'&&o.id)[1];
+   const e=f.observations.find(o=>o.type==='EQUAL_LEVEL');
+   const event=f.observations.find(o=>o.referenceId);
+   assert.equal(p.id,e.firstReferenceId);
+   assert.equal(p2.id,e.secondReferenceId);
+   assert.notEqual(p.id,p2.id);
+   assert.equal(event.referenceId,p.id);
+   assert.equal(event.level,59003.12345678);
+   assert.equal(event.atMs,1795824300000);
+ }
+ assert.ok(!focused.messages[1].content.includes(id));
+ assert.deepEqual(market,original);
+ const full=buildWorkspaceBody(descriptor,{question,history:[{role:'user',text:'Review my account'},{role:'assistant',text:'The chart was mixed.'}],market,account});
+ assert.ok(full.messages[1].content.includes(id));
+ assert.ok(Buffer.byteLength(JSON.stringify(focused))<Buffer.byteLength(JSON.stringify(full)));
+});
