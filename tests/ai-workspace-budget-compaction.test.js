@@ -33,6 +33,7 @@ test('large six-frame BTCUSD evidence with populated account fits existing wire 
   const history=Array.from({length:6},(_,i)=>({role:i%2?'assistant':'user',text:'Trading context '.repeat(200)}));
   const body=buildWorkspaceBody(descriptor,{question,history,market,account});
   assert.ok(Buffer.byteLength(JSON.stringify(body),'utf8')+4096<=descriptor.maxInputTokens);
+  assert.equal(body.reasoning_effort,'low');assert.equal(body.max_completion_tokens,2048);
   const data=JSON.parse(body.messages[1].content);
   assert.equal(data.question,question);
   assert.deepEqual(data.market.quote,market.quote);

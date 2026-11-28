@@ -40,3 +40,21 @@ test('billing bucket matching never claims request attribution or mutates ledger
   assert.equal(compareBillingBucket({local,provider:{...provider,authenticated:false}}).state,'EVIDENCE_INCOMPLETE');
   assert.equal(compareBillingBucket({local,provider:{...provider,projectId:'other'}}).state,'EVIDENCE_INCOMPLETE');
 });
+
+test('funded workspace policy hashes and enforces the pinned low reasoning effort',async()=>{
+  const scope={tenantId:'1'.repeat(24),actorId:'2'.repeat(24),accountId:'3'.repeat(24)};
+  const fields={enabled:true,expiresAtMs:2000,members:[{tenantId:scope.tenantId,actorId:scope.actorId}],instruments:[],approvalDigest:'a'.repeat(64),workspaceChat:true,workspaceReasoningEffort:'low'};
+  const descriptorId='b'.repeat(64),policyVersion=hash(fields);
+  const ports={fundedStaff:true,now:()=>1000,verifyApproval:async()=>true,resolveMembership:async()=>true,resolveDataRights:async()=>true,validatePayload:async()=>true};
+  const pilot=createRestrictedPilotPolicy({...ports,policy:{...fields,descriptorId,policyVersion}});
+  const workspace={symbol:'BTCUSD',timeframe:'5m',descriptorId,policyVersion};
+  const payload={store:false,stream:false,n:1,service_tier:'default',reasoning_effort:'low',messages:[{role:'system',content:'fixture'},{role:'user',content:'fixture'}]};
+  const input={scope,workspace,descriptorId,policyVersion,payload,wireDigest:hash(payload)};
+  assert.equal(await pilot.authorizeExport(input),true);
+  for(const effort of [undefined,'medium','high']){
+    const body={...payload,reasoning_effort:effort};
+    assert.equal(await pilot.authorizeExport({...input,payload:body,wireDigest:hash(body)}),false);
+  }
+  const invalid={...fields,workspaceReasoningEffort:'high'};
+  assert.throws(()=>createRestrictedPilotPolicy({...ports,policy:{...invalid,descriptorId,policyVersion:hash(invalid)}}),{code:'LIVE_AI_PILOT_POLICY_DENIED'});
+});

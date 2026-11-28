@@ -49,7 +49,7 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
     /^sk-[\x21-\x7e]{20,4090}$/.test(env.ACG_AI_FUNDED_OPENAI_API_KEY));
   const actorId=hash(['funded-staff-ai-v1',a.tenantId,staff]).slice(0,24);
   const billingActor=Object.freeze({tenantId:a.tenantId,actorId:hash(['funded-ai-internal-billing-v1',a.tenantId]).slice(0,24)});
-  const policyFields={enabled:true,expiresAtMs:a.expiresAtMs,members:[{tenantId:a.tenantId,actorId}],instruments:a.instruments,approvalDigest:hash(a),...(workspaceChat?{workspaceChat:true}:{})};
+  const policyFields={enabled:true,expiresAtMs:a.expiresAtMs,members:[{tenantId:a.tenantId,actorId}],instruments:a.instruments,approvalDigest:hash(a),...(workspaceChat?{workspaceChat:true,workspaceReasoningEffort:'low'}:{})};
   const policyVersion=hash(policyFields);
   // Official standard rates reviewed 2026-11-27; pico-USD per token.
   // Treat cached tokens as uncached for the reservation. No tools or other tiers.
@@ -94,6 +94,7 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
         const data=JSON.parse(payload.messages[1].content);
         const keys=Object.keys(data).sort().join(',');
         if(workspaceChat){
+          if(payload.reasoning_effort!=='low')return false;
           const {safeQuestion}=require('./funded-workspace-context');
           return keys==='account,history,knowledge,market,question'&&safeQuestion(data.question)&&Array.isArray(data.history)&&data.history.length<=6&&
             data.history.every(m=>['user','assistant'].includes(m.role)&&safeQuestion(m.text))&&

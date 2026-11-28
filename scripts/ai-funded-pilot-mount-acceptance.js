@@ -177,6 +177,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           const parts=[];for await(const p of req)parts.push(p);
           const raw=Buffer.concat(parts).toString(),body=JSON.parse(raw),data=JSON.parse(body.messages[1].content);
           assert.equal(body.model,'gpt-6-luna');assert.equal(body.store,false);assert.equal(body.stream,false);
+          assert.equal(body.reasoning_effort,'low');assert.equal(body.max_completion_tokens,2048);
           assert.equal(body.response_format.json_schema.name,'acg_workspace_answer');
           assert.equal(data.question,'Review my account and chart.');
           assert.equal(data.account.state.balance,'10000');assert.equal(data.account.source,'PERSISTED_ACCOUNT_SNAPSHOT');

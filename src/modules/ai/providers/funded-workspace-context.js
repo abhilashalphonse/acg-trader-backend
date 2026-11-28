@@ -83,6 +83,7 @@ const POLICY=Object.freeze([
   'If quote.status is RECENT_PROVIDER_EVENT, report its timestamped bid/ask as a recent observed quote, not an executable price. If quote.observedQuote exists, report the recent observation with explicit unverified session caveat; do not claim the market is open or the quote executable. If neither exists, identify the actual quote failure reason. Never conflate a read-only execution restriction with absent quote data.',
   'Explain risk and conditional scenarios. Never request passwords, API keys or identifiers. No tools or orders are available.',
   'For lot sizing and margin questions, use the supplied deterministic sizingCalculation when present. Report its actual rounded values, capital basis, stop distance, and restrictions. Never invent missing specifications or calculate an exact feasible volume independently if deterministic evidence is missing. Persisted free margin and quote estimates are hypothetical, not execution approval. Ask for missing risk basis, stop or instrument if required.',
+  'Aim for 120–250 words for ordinary market questions and up to 450 for explicitly detailed requests. Prefer the strongest relevant evidence over exhaustive frame-by-frame narration. Finish the answer within the available completion budget.',
   'Return JSON with answer only. Write like a knowledgeable trading colleague having a natural conversation. Lead with a direct answer, then explain the most relevant evidence in short readable paragraphs. Match the depth to the user question: a quick follow-up deserves a quick answer; a comprehensive request deserves deeper analysis.',
   'Choose formatting freely. Use ordinary paragraphs by default, short sentence-case headings and bullets only when useful, and tables only when comparing multiple values would genuinely be clearer. Never force a report template or repeat the same sections for every answer. Bold only short key phrases or important prices, never entire paragraphs.',
   'Omitted counts indicate partial evidence, not absence of patterns, orders or events. Frame quality and derived summaries describe original validated inputs, not only the transmitted candles. Do not claim complete account risk from truncated lists.',
@@ -97,7 +98,7 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
     const sizing=sizingEvidence({question,market:data.market,account:data.account});
     if(sizing)data.market.sizingCalculation=sizing;
   }
-  const body={model:descriptor.modelId,store:false,stream:false,n:1,service_tier:'default',max_completion_tokens:descriptor.maxOutputTokens,
+  const body={model:descriptor.modelId,store:false,stream:false,n:1,service_tier:'default',reasoning_effort:'low',max_completion_tokens:descriptor.maxOutputTokens,
     messages:[{role:'system',content:JSON.stringify(POLICY)},{role:'user',content:JSON.stringify(data)}],
     response_format:{type:'json_schema',json_schema:{name:'acg_workspace_answer',strict:true,schema:SCHEMA}}};
   while(data.history.length&&Buffer.byteLength(JSON.stringify(body),'utf8')+4096>descriptor.maxInputTokens){
