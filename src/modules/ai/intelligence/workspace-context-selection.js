@@ -23,7 +23,7 @@ function classifyWorkspaceQuestion(question,history=[]){
 // are observed in bounded internal telemetry first; they do not silently
 // restrict account, history, market or calendar data before acceptance.
 const intentPatterns=Object.freeze({
-  MARKET_OVERVIEW:/^(?:(?:what(?: is|'s) happening (?:with|in) (?:the )?[a-z0-9._/-]+)|(?:(?:analyse|analyze|review|summari[sz]e) (?:the )?(?:current )?(?:market|chart|[a-z0-9._/-]+)))[?.!]?$/i,
+  MARKET_OVERVIEW:/^(?:(?:what(?: is|'s) happening (?:with|in) (?:the )?(?:market|markets|chart|gold|silver|bitcoin|ethereum|oil|forex|crypto|natural gas|wti oil|brent oil))|(?:(?:analyse|analyze|review|summari[sz]e) (?:the )?(?:current )?(?:market|chart)))[?.!]?$/i,
   LIQUIDITY:/^(?:show|find|identify|list|analyse|analyze) (?:me )?(?:the )?(?:recent |current |potential )?liquidity(?: (?:levels|sweeps|zones|references))?(?: (?:on|for) [a-z0-9._/-]+)?[?.!]?$/i,
   SETUP:/^(?:are there any (?:trading |long |short )?setups|(?:can|should) i (?:enter|buy|sell|go long|go short)(?: (?:a long|a short|here|now|here now))?(?: here| now)?|(?:show|find|identify) (?:me )?(?:the )?(?:potential |current )?(?:trading |long |short )?setups)[?.!]?$/i,
   ACCOUNT_RISK:/^(?:how much risk am i taking|(?:review|analyse|analyze|show) (?:me )?my (?:account|account risk|risk|exposure|positions|balance|equity)|what is my (?:balance|equity|free margin|exposure|account risk))[?.!]?$/i,
