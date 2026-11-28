@@ -419,7 +419,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
             const output=await run(process.execPath,['tests/ui/ai-paired-drawing.mjs'],{cwd:frontend,timeout:90000,
               env:{PATH:process.env.PATH,HOME:process.env.HOME,CI:'true',ACG_AI_PAIRED_PRIVATE:privateFile}});
             console.log(output.stdout.trim());
-          }catch{throw Error('Paired native chart browser acceptance failed (private fixture not logged)');}
+          }catch(error){const stage=String(error?.stderr||'').match(/FAIL paired drawing acceptance at (desktop|mobile) (startup|real receipt|native undo)/)?.[0];throw Error(stage||'Paired native chart browser acceptance failed (private fixture not logged)');}
           finally{fs.rmSync(privateFile,{force:true});}
           assert.equal(await Order.countDocuments({}),beforeOrders);
           assert.equal(await Position.countDocuments({}),beforePositions);
