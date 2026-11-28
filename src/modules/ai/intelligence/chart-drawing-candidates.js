@@ -49,6 +49,8 @@ function createDrawingCandidateRegistry({market,scope,chartContextVersion,nowMs}
   // Recency is a deterministic initial ordering, not a calibrated quality score.
   const ordered=[...candidates.values()].sort((a,b)=>b.atMs-a.atMs||a.sourceId.localeCompare(b.sourceId)).slice(0,MAX_CANDIDATES);
   const allowed=new Map(ordered.map(c=>[c.sourceId,c]));
+  const resolved=new Map(); // bounded by the short-lived registry; no execution authority
+  const MAX_RESOLUTIONS=32;
   const expiresAtMs=market.asOfMs+TTL_MS;
   const context=freeze({symbol,timeframe,latestClosedAtMs:through,chartContextVersion,expiresAtMs});
   const bindingOk=(s,v,now)=>scopeOk(s)&&fields.every(k=>s[k]===owner[k])&&v===chartContextVersion&&clock(now)&&now>=nowMs&&now<expiresAtMs;
@@ -69,7 +71,13 @@ function createDrawingCandidateRegistry({market,scope,chartContextVersion,nowMs}
         return {sourceId:c.sourceId,drawingKey:c.sourceId,sourceTimeframe:timeframe,geometry:c.geometry};
       });
       check(!signal?.aborted);
-      return freeze({contractVersion:VERSION,actionId:proposal.actionId,context,actions});
+      const key=proposal.actionId.toLowerCase(),fingerprint=hash(actions.map(a=>a.sourceId));
+      const prior=resolved.get(key);
+      if(prior){check(prior.fingerprint===fingerprint);return prior.result;}
+      check(resolved.size<MAX_RESOLUTIONS);
+      const result=freeze({contractVersion:VERSION,actionId:key,context,actions});
+      resolved.set(key,{fingerprint,result});
+      return result;
     }
   });
 }
