@@ -7,6 +7,7 @@ const {createMarketContextSource}=require('../intelligence/context-source');
 const {readAdaptiveMarket}=require('../intelligence/adaptive-market-context');
 const {selectKnowledge}=require('../intelligence/knowledge-catalog');
 const {sizingEvidence}=require('../intelligence/workspace-sizing');
+const {classifyWorkspaceQuestion,selectWorkspaceEvidence}=require('../intelligence/workspace-context-selection');
 const {workspaceStage}=require('../ai-http-security');
 const {createHash}=require('node:crypto');
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
@@ -98,6 +99,7 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
     const sizing=sizingEvidence({question,market:data.market,account:data.account});
     if(sizing)data.market.sizingCalculation=sizing;
   }
+  selectWorkspaceEvidence(data,classifyWorkspaceQuestion(question,history));
   const body={model:descriptor.modelId,store:false,stream:false,n:1,service_tier:'default',reasoning_effort:'low',max_completion_tokens:descriptor.maxOutputTokens,
     messages:[{role:'system',content:JSON.stringify(POLICY)},{role:'user',content:JSON.stringify(data)}],
     response_format:{type:'json_schema',json_schema:{name:'acg_workspace_answer',strict:true,schema:SCHEMA}}};
