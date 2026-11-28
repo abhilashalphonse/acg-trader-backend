@@ -16,6 +16,7 @@ const {scopeFor}=require('../ai-read-gateway');
 const {createFundedStaffAuthority}=require('./funded-staff-authority');
 const {AppError}=require('../../../shared/errors/app-error');
 const {workspaceStage}=require('../ai-http-security');
+const {classifyWorkspaceQuestion}=require('../intelligence/workspace-context-selection');
 const id=v=>typeof v==='string'&&/^[a-f0-9]{24}$/.test(v);
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const fail=()=>new AppError('Restricted AI pilot unavailable',{statusCode:403,code:'AI_PILOT_DENIED'});
@@ -148,7 +149,8 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
           await x.admission.assertConsent(x.owner,{...x.binding,consentRevision:pinned.consentRevision});return true;
         };
         const scope=Object.fromEntries(['tenantId','actorId','sessionId','accountId'].map(k=>[k,x.owner[k]]));
-        const snapshot=await workspaceStage('ACCESS',()=>workspaceSource.read({scope,workspace:x.workspace,includeAccount:input.includeAccount,includeMarket:input.includeMarket,authorize:allowed}));
+        const profile=classifyWorkspaceQuestion(input.question,input.history);
+        const snapshot=await workspaceStage('ACCESS',()=>workspaceSource.read({scope,workspace:x.workspace,includeAccount:input.includeAccount&&profile==='FULL',includeMarket:input.includeMarket,authorize:allowed}));
         const market=await workspaceStage('CALENDAR_CONTEXT',()=>attachEconomicCalendar(snapshot.market,readAiCalendarSnapshot));
         const body=await workspaceStage('PROMPT_BUILD',()=>buildWorkspaceBody(d,{question:input.question,history:input.history,...snapshot,market}));
         const prompt={packageId:hash(body),expiresAtMs:Date.now()+28000};
