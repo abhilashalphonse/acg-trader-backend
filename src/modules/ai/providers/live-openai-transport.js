@@ -49,9 +49,11 @@ async function exchange({target,body,key,deadlineMs,beforeWrite,signal,maxDurati
   requireTrue(Buffer.isBuffer(key)&&key.length>=20&&key.length<=4096&&key.every(v=>v>=33&&v<=126));
   requireTrue(integer(deadlineMs)&&deadlineMs>Date.now()&&deadlineMs-Date.now()<=maxDurationMs&&maxDurationMs<=30000);
   const controller=new AbortController(),start=performance.now(),duration=deadlineMs-Date.now();
-  const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});
+  // A disconnected UI must stop disclosure immediately. For a dispatched workspace stream, keep the already-open bounded TLS read alive only to collect authentic final usage.
+  let dispatched=false;
+  const abort=()=>{if(!body.stream||!dispatched)controller.abort();};signal?.addEventListener('abort',abort,{once:true});
   if(signal?.aborted)abort();
-  const timer=setTimeout(abort,duration);
+  const timer=setTimeout(()=>controller.abort(),duration);
   let req,res,bytes;
   try{
     const route=await target(controller.signal);
@@ -63,13 +65,14 @@ async function exchange({target,body,key,deadlineMs,beforeWrite,signal,maxDurati
       req=https.request({...route,method:'POST',path:PATH,agent:false,minVersion:'TLSv1.2',rejectUnauthorized:true,
         signal:controller.signal,maxHeaderSize:16384,headers:{authorization:'Bearer '+key.toString('ascii'),
           'content-type':'application/json','accept':body.stream?'text/event-stream':'application/json','accept-encoding':'identity','content-length':bytes.length}},resolve);
-      req.on('error',reject);req.end(bytes);
+      req.on('error',reject);dispatched=true;req.end(bytes);
     });
     requireTrue(res.statusCode===200&&(!res.headers['content-encoding']||res.headers['content-encoding']==='identity')&&
       res.headers['content-type']?.split(';')[0].trim().toLowerCase()===(body.stream?'text/event-stream':'application/json'));
     const remaining=Math.floor(duration-(performance.now()-start));requireTrue(remaining>0);
     if(body.stream)return await readWorkspaceProviderStream(res,{descriptor,signal:controller.signal,timeoutMs:remaining,minDeltaIntervalMs:120,minDeltaChars:128,onDelta:async delta=>{
       requireTrue(!controller.signal.aborted&&Date.now()<deadlineMs);
+      if(signal?.aborted)return;
       await onDelta?.(delta,controller.signal);
     }});
     let text='';await consumeBytes(res,{signal:controller.signal,timeoutMs:remaining,onText:t=>{text+=t;}});
@@ -147,9 +150,13 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
           requireTrue(!invoked);invoked=true;
           const copy=Buffer.isBuffer(key)?Buffer.from(key):null;
           try{return await exchange({target,body,key:copy,deadlineMs,signal,descriptor:d,onDelta:body.stream?async(delta,wireSignal)=>{
-            await check();await admission.assertDisclosure(scope,operationId);
-            requireTrue(!wireSignal.aborted&&!signal?.aborted&&Date.now()<deadlineMs);
-            await onDelta(delta);
+            if(signal?.aborted)return;
+            try{
+              await check();await admission.assertDisclosure(scope,operationId);
+              if(signal?.aborted)return;
+              requireTrue(!wireSignal.aborted&&Date.now()<deadlineMs);
+              await onDelta(delta);
+            }catch(error){if(!signal?.aborted)throw error;}
           }:undefined,maxDurationMs:workspaceChat?30000:10000,beforeWrite:async()=>{
             await check();await admission.assertDispatch(scope,operationId);await check();
           }});}finally{copy?.fill(0);}
@@ -162,6 +169,7 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
         const settlement=await recordUsage({attemptId:claim.attemptId,kind:'SETTLE',providerResponseId:parsed.providerResponseId,
           descriptorId:d.descriptorId,...usage});
         requireTrue(settlement?.state==='SETTLED');recorded=true;
+        if(signal?.aborted)return {state:'FAILED',...(workspaceChat?{failureReason:'DELIVERY_UNAVAILABLE'}:{})};
         await admission.assertDisclosure(scope,operationId);await check();
         if(!parsed.candidate)return {state:'FAILED',usage,...(workspaceChat?{failureReason:parsed.failureReason}: {})};
         if(workspaceChat){

@@ -15,23 +15,26 @@ const consent=new Schema({_id:hash,tenantId:id,actorId:id,sessionId:id,accountId
   descriptorId:hash,policyVersion:hash,symbol:{type:String,required:true,match:/^[A-Z0-9._-]{1,32}$/},
   timeframe:{type:String,required:true,enum:['1m','5m','15m','30m','1h','4h','1d','1w']}},options);
 const budget=new Schema({_id:hash,tenantId:id,actorId:{type:String,default:null,match:/^[a-f0-9]{24}$/},
-  day:{type:String,required:true,match:/^\d{4}-\d{2}-\d{2}$/},requests:int,reservedPicoUsd:int,settledPicoUsd:int},options);
+  day:{type:String,required:true,match:/^\d{4}-\d{2}-\d{2}$/},requests:int,reservedPicoUsd:int,settledPicoUsd:int,accountedUnknownPicoUsd:{type:Number,min:0,validate:Number.isSafeInteger}},options);
 const attempt=new Schema({_id:hash,tenantId:id,actorId:id,sessionId:id,accountId:id,connectionId:uuid,
   operationId:uuid,consentId:hash,consentRevision:int,controlRevision:int,platformRevision:int,descriptorId:hash,policyVersion:hash,
   day:{type:String,required:true,match:/^\d{4}-\d{2}-\d{2}$/},
   reservedPicoUsd:int,inputRatePicoUsd:int,outputRatePicoUsd:int,maxInputTokens:int,maxOutputTokens:int,
-  state:{type:String,required:true,enum:['CLAIMED','DISPATCHING','HELD_UNKNOWN','SETTLED','NOT_SENT']},
+  state:{type:String,required:true,enum:['CLAIMED','DISPATCHING','HELD_UNKNOWN','SETTLED','NOT_SENT','ACCOUNTED_UNKNOWN']},
   inputTokens:{type:Number,default:null,min:0,validate:v=>v===null||Number.isSafeInteger(v)},
   outputTokens:{type:Number,default:null,min:0,validate:v=>v===null||Number.isSafeInteger(v)},
   actualPicoUsd:{type:Number,default:null,min:0,validate:v=>v===null||Number.isSafeInteger(v)},
+  accountedUnknownPicoUsd:{type:Number,min:0,validate:Number.isSafeInteger},
+  unknownObservedAtMs:{type:Number,min:0,validate:Number.isSafeInteger},
+  recoveryApprovalDigest:{type:String,match:/^[a-f0-9]{64}$/},
   evidenceId:{type:String,default:null,match:/^[a-f0-9]{64}$/},
   providerResponseHash:{type:String,match:/^[a-f0-9]{64}$/},
   createdAtMs:int,updatedAtMs:int},options);
 const platform=new Schema({_id:{type:String,enum:['platform'],required:true},enabled:{type:Boolean,required:true},revision:int,fence:int,
   dailyPicoUsd:int,dailyRequests:int,maxOutstandingPicoUsd:int,maxOutstandingRequests:int,
   outstandingPicoUsd:int,outstandingRequests:int},options);
-const platformDay=new Schema({_id:{type:String,required:true,match:/^\d{4}-\d{2}-\d{2}$/},requests:int,reservedPicoUsd:int,settledPicoUsd:int},options);
-const event=new Schema({_id:uuid,tenantId:id,actorId:id,kind:{type:String,required:true,enum:['PLATFORM_CONTROL','CONTROL','CONSENT','REVOKE','CLAIM','DISPATCH','UNKNOWN','SETTLE','NOT_SENT']},
+const platformDay=new Schema({_id:{type:String,required:true,match:/^\d{4}-\d{2}-\d{2}$/},requests:int,reservedPicoUsd:int,settledPicoUsd:int,accountedUnknownPicoUsd:{type:Number,min:0,validate:Number.isSafeInteger}},options);
+const event=new Schema({_id:uuid,tenantId:id,actorId:id,kind:{type:String,required:true,enum:['PLATFORM_CONTROL','CONTROL','CONSENT','REVOKE','CLAIM','DISPATCH','UNKNOWN','SETTLE','NOT_SENT','ACCOUNT_UNKNOWN']},
   subject:{type:String,required:true,maxlength:64},revision:int,atMs:int},options);
 consent.index({tenantId:1,actorId:1,accountId:1,sessionId:1});
 budget.index({tenantId:1,day:1,actorId:1},{unique:true});
