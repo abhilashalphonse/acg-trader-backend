@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {classifyWorkspaceQuestion,classifyWorkspaceIntent,selectWorkspaceEvidence}=require('../src/modules/ai/intelligence/workspace-context-selection');
+const {classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence}=require('../src/modules/ai/intelligence/workspace-context-selection');
 const {buildWorkspaceBody}=require('../src/modules/ai/providers/funded-workspace-context');
 const descriptor={modelId:'fixture',maxInputTokens:32768,maxOutputTokens:2048};
 test('standalone explicit queries classify conservatively, all other intents keep full context',()=>{
@@ -80,4 +80,43 @@ test('phase 6A classifies bounded explicit intents without changing legacy evide
   assert.equal(classifyWorkspaceIntent('What about that level?',[{role:'user',text:'Review the chart'}]),'FOLLOW_UP');
   assert.equal(classifyWorkspaceQuestion('Can I enter a short here?'),'FULL');
   assert.equal(classifyWorkspaceQuestion('Calculate the position size'),'FULL');
+});
+
+test('6B selects only bounded intents and preserves source scope, session and calendar evidence',()=>{
+  const market=fixture();
+  market.sessionClocks=[{name:'LONDON',state:'WEEKEND'}];
+  market.sessionRanges=[{name:'LONDON',range:{status:'PARTIAL',high:59060,low:59010}}];
+  market.economicCalendar={dataStatus:'FRESH',events:[{title:'Fixture event',scheduledAtMs:1795824000000}]};
+  const original=JSON.stringify(market),account={state:{equity:'1000'},positions:[]};
+  for(const [question,profile,cap,secondary] of [
+    ['Analyse the chart','MARKET_OVERVIEW',48,16],
+    ['Find liquidity levels on BTCUSD','LIQUIDITY',48,16],
+    ['Which trading session is open?','SESSION',8,4],
+    ['Show the economic calendar','CALENDAR',1,0]
+  ]){
+    const body=buildWorkspaceBody(descriptor,{question,history:[],market,account});
+    const data=JSON.parse(body.messages[1].content);
+    assert.equal(data.market.contextSelection.profile,profile);
+    assert.equal(data.market.contextSelection.omittedEvidenceIsNotAbsent,true);
+    assert.equal(data.market.frames[0].closedCandles.length,cap);
+    assert.equal(data.market.frames[1].closedCandles.length,secondary);
+    for(const key of ['quote','economicCalendar','sessionClocks','sessionRanges','instrument'])assert.deepEqual(data.market[key],market[key]);
+    assert.deepEqual(data.account,account);
+    for(const [i,frame] of data.market.frames.entries()){
+      assert.deepEqual(frame.closedCandles,market.frames[i].closedCandles.slice(64-frame.closedCandles.length));
+      assert.equal(frame.omittedClosedBars,64-frame.closedCandles.length);
+      for(const key of ['quality','freshness','activeCandle'])assert.deepEqual(frame[key],market.frames[i][key]);
+      assert.deepEqual(frame.advanced.regime,market.frames[i].advanced.regime);
+      assert.deepEqual(frame.advanced.dealingRange,market.frames[i].advanced.dealingRange);
+    }
+    const refs=data.market.frames[0].observations;
+    if(profile==='MARKET_OVERVIEW')assert.ok(refs.some(o=>o.kind==='SMA_20'));
+    if(profile==='LIQUIDITY')assert.ok(refs.some(o=>o.type==='LIQUIDITY_REFERENCE'));
+    const full=buildWorkspaceBody(descriptor,{question,history:[{role:'user',text:'Review all evidence'}],market,account});
+    assert.ok(Buffer.byteLength(JSON.stringify(body))<Buffer.byteLength(JSON.stringify(full)));
+  }
+  assert.equal(JSON.stringify(market),original);
+  for(const question of ['Can I enter a short here?','Calculate the position size','Review my account risk','Explain fair value gaps','Analyse the chart and my account','BTCUSD ഇപ്പോൾ എങ്ങനെയാണ്?'])assert.equal(workspaceEvidenceProfile(question,[],market),'FULL');
+  assert.equal(workspaceEvidenceProfile('Show the economic calendar',[{role:'user',text:'Explain my trade'}],market),'FULL');
+  assert.equal(workspaceEvidenceProfile('Analyse the chart',[],null),'FULL');
 });
