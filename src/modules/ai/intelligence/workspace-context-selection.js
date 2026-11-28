@@ -19,6 +19,29 @@ function classifyWorkspaceQuestion(question,history=[]){
   for(const [profile,pattern] of Object.entries(patterns))if(pattern.test(q))return profile;
   return 'FULL';
 }
+// Phase 6A: separate semantic intent from evidence projection. New intents
+// are observed in bounded internal telemetry first; they do not silently
+// restrict account, history, market or calendar data before acceptance.
+const intentPatterns=Object.freeze({
+  MARKET_OVERVIEW:/^(?:(?:what(?: is|'s) happening (?:with|in) (?:the )?(?:market|markets|chart|gold|silver|bitcoin|ethereum|oil|forex|crypto|natural gas|wti oil|brent oil))|(?:(?:analyse|analyze|review|summari[sz]e) (?:the )?(?:current )?(?:market|chart)))[?.!]?$/i,
+  LIQUIDITY:/^(?:show|find|identify|list|analyse|analyze) (?:me )?(?:the )?(?:recent |current |potential )?liquidity(?: (?:levels|sweeps|zones|references))?(?: (?:on|for) [a-z0-9._/-]+)?[?.!]?$/i,
+  SETUP:/^(?:are there any (?:trading |long |short )?setups|(?:can|should) i (?:enter|buy|sell|go long|go short)(?: (?:a long|a short|here|now|here now))?(?: here| now)?|(?:show|find|identify) (?:me )?(?:the )?(?:potential |current )?(?:trading |long |short )?setups)[?.!]?$/i,
+  ACCOUNT_RISK:/^(?:how much risk am i taking|(?:review|analyse|analyze|show) (?:me )?my (?:account|account risk|risk|exposure|positions|balance|equity)|what is my (?:balance|equity|free margin|exposure|account risk))[?.!]?$/i,
+  SIZING:/^(?:(?:calculate|compute|show) (?:me )?(?:the |my )?(?:position size|lot size|required margin)|how many lots)[?.!]?$/i,
+  CALENDAR:/^(?:what (?:economic )?(?:news|events) (?:are |is )?(?:coming up|today|next)|(?:show|list|check) (?:me )?(?:the )?(?:economic calendar|upcoming economic events|upcoming news))[?.!]?$/i,
+  SESSION:/^(?:which (?:trading |market )?session is (?:open|active)|(?:when does|what time does) (?:the )?(?:london|new york|tokyo|asian) session (?:open|close)|(?:show|describe) (?:the )?(?:current )?(?:trading |market )?session)[?.!]?$/i,
+  EDUCATION:/^(?:what (?:is|are)|explain|define) (?:the )?(?:bos|mss|fvg|fair value gaps?|break of structure|market structure|liquidity|support and resistance|risk reward|position sizing)[?.!]?$/i
+});
+function classifyWorkspaceIntent(question,history=[]){
+  if(typeof question!=='string'||!Array.isArray(history))return 'FULL';
+  if(history.length)return 'FOLLOW_UP';
+  const q=question.trim().replace(/\s+/g,' ');
+  if(!q)return 'FULL';
+  const existing=classifyWorkspaceQuestion(q,[]);
+  if(existing!=='FULL')return existing;
+  for(const [intent,pattern] of Object.entries(intentPatterns))if(pattern.test(q))return intent;
+  return 'FULL';
+}
 const knowledgeIds={
   STRUCTURE:['EVIDENCE_QUALITY','RISK_BOUNDARY','MARKET_STRUCTURE','MULTI_TIMEFRAME','LIQUIDITY','FVG'],
   BOS:['EVIDENCE_QUALITY','RISK_BOUNDARY','MARKET_STRUCTURE','MULTI_TIMEFRAME','LIQUIDITY'],
@@ -57,4 +80,4 @@ function selectWorkspaceEvidence(data,profile){
   market.contextSelection={profile,scope:'QUESTION_FOCUSED_PROJECTION',omittedEvidenceIsNotAbsent:true};
   data.knowledge=data.knowledge.filter(k=>knowledgeIds[profile].includes(k.id));
 }
-module.exports={classifyWorkspaceQuestion,selectWorkspaceEvidence};
+module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,selectWorkspaceEvidence};

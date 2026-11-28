@@ -5,6 +5,7 @@ const {requireTraderSession,bearerToken}=require('../../auth/auth.middleware');
 const {aiJsonBoundary,aiSafeError,createConcurrencyGate,workspaceFailureDiagnostic}=require('../ai-http-security');
 const {isRestrictedPilotRuntime}=require('./restricted-pilot-runtime');
 const {AppError}=require('../../../shared/errors/app-error');
+const {classifyWorkspaceIntent}=require('../intelligence/workspace-context-selection');
 const base=z.object({accountId:z.string().regex(/^[a-f0-9]{24}$/),connectionId:z.uuid(),
   symbol:z.string().regex(/^[A-Z0-9._-]{1,32}$/),timeframe:z.enum(['1m','5m','15m','30m','1h','4h','1d','1w'])}).strict();
 const schemas={
@@ -25,7 +26,7 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
   router.use(requireTraderSession(authService));
   for(const action of Object.keys(schemas))router.post('/'+action,async(req,res)=>{
     const wantsStream=action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&req.accepts(['application/json','text/event-stream'])==='text/event-stream';
-    let opened=false;
+    let opened=false,aiIntent=null,deltaCount=0,firstDeltaMs=null,startedAt=null;
     const event=(name,payload)=>{
       if(res.destroyed||res.writableEnded)return;
       if(!opened){
@@ -41,6 +42,9 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       if(!p.success)throw deny('AI_INVALID_REQUEST',400);
       await quota.consume(await runtime.quotaPrincipal(bearerToken(req),p.data,req.traderPrincipal));
       if(enabled()!==true)throw deny('AI_PILOT_DISABLED',404);
+      if(action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&p.data.intent==='WORKSPACE_CHAT'){
+        aiIntent=classifyWorkspaceIntent(p.data.question,p.data.history);startedAt=Date.now();
+      }
       const controller=new AbortController(),abort=()=>controller.abort();
       res.once('close',abort);
       try{
@@ -50,10 +54,15 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
           if(controller.signal.aborted||enabled()!==true||res.destroyed||res.writableEnded)throw deny('AI_PILOT_DISABLED',404);
           if(typeof delta!=='string'||!delta||Buffer.byteLength(delta,'utf8')>12000)throw deny('AI_INVALID_RESPONSE',500);
           event('delta',{text:delta});
+          if(deltaCount===0)firstDeltaMs=Date.now()-startedAt;
+          deltaCount++;
         }:undefined});
         if(controller.signal.aborted||enabled()!==true)throw deny('AI_PILOT_DISABLED',404);
         return {contractVersion:'restricted-pilot-v1',mode:runtime.mode,executionAllowed:false,...value};
-      }finally{res.removeListener('close',abort);}
+      }finally{
+        res.removeListener('close',abort);
+        if(aiIntent!==null)req.log?.info({aiIntent,aiStreamRequested:wantsStream,aiDeltaCount:deltaCount,aiFirstDeltaMs:firstDeltaMs,aiRequestAborted:controller.signal.aborted},'AI workspace request telemetry');
+      }
     });
     if(action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&result.state==='ANSWERED'){
       req.log?.info({aiOutcome:result.state,aiInputTokens:result.usage?.inputTokens??null,aiOutputTokens:result.usage?.outputTokens??null},'AI workspace response completed');
