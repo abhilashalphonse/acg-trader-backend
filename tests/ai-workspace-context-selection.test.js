@@ -101,7 +101,7 @@ test('6B selects only bounded intents and preserves source scope, session and ca
     assert.equal(data.market.frames[0].closedCandles.length,cap);
     assert.equal(data.market.frames[1].closedCandles.length,secondary);
     for(const key of ['quote','economicCalendar','sessionClocks','sessionRanges','instrument'])assert.deepEqual(data.market[key],market[key]);
-    assert.deepEqual(data.account,account);
+    assert.equal(data.account,null);
     for(const [i,frame] of data.market.frames.entries()){
       assert.deepEqual(frame.closedCandles,market.frames[i].closedCandles.slice(64-frame.closedCandles.length));
       assert.equal(frame.omittedClosedBars,64-frame.closedCandles.length);
@@ -186,4 +186,22 @@ test('6C keeps uncertain, gapped and unavailable frames and complex requests unc
   assert.equal(projected.frames[1].closedCandles.length,16);
   assert.equal(projected.frames[2].closedCandles.length,8);
   assert.equal(JSON.stringify(market),original);
+});
+
+test('6E omits authorized account data only for standalone focused market requests',()=>{
+ const market=fixture();
+ const account={source:'PERSISTED_ACCOUNT_SNAPSHOT',asOfMs:1795824000000,currency:'USD',state:{equity:'1000',balance:'1000',freeMargin:'500'},positions:[{symbol:'BTCUSD',side:'BUY',openVolume:'0.1',entryPrice:'59000'}],pendingOrders:[],riskPolicy:{maxPositionVolume:'0.5'}};
+ const original=structuredClone(account);
+ const build=(question,history=[],m=market,a=account)=>JSON.parse(buildWorkspaceBody(descriptor,{question,history,market:m,account:a}).messages[1].content);
+ for(const q of ['Analyse the current BTCUSD market structure.','Find the recent FVGs on BTCUSD','Identify the latest BOS','Find liquidity levels on BTCUSD','What is the current price of BTCUSD?','Analyse the chart','Show the economic calendar','Which trading session is open?']){
+   const d=build(q);assert.equal(d.account,null,q);
+   assert.deepEqual(d.market.quote,market.quote);
+ }
+ for(const q of ['Review my account risk','Calculate the position size','Can I enter a short here?','Analyse the chart and my account','Explain fair value gaps','BTCUSD ഇപ്പോൾ എങ്ങനെയാണ്?']){
+   assert.deepEqual(build(q).account,account,q);
+ }
+ assert.deepEqual(build('Analyse the chart',[{role:'user',text:'Review my account'}]).account,account);
+ assert.deepEqual(build('Analyse the chart',[],null).account,account);
+ assert.equal(build('Review my account risk',[],market,null).account,null);
+ assert.deepEqual(account,original);
 });
