@@ -3,6 +3,7 @@ const {createHash}=require('node:crypto');
 const {z}=require('zod');
 const {createMarketContextSource}=require('../intelligence/context-source');
 const {LivePlatform,LiveControl}=require('./live-admission.model');
+const {requestCap,validateCaps}=require('./funded-staff-request-cap');
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const objectId=z.string().regex(/^[a-f0-9]{24}$/);
 const approvalSchema=z.object({
@@ -58,7 +59,9 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
     maxInputTokens:32768,maxOutputTokens:workspaceChat?2048:1024,responseMode:'JSON_SCHEMA',store:false,streaming:workspaceStreaming,reviewStatus:'APPROVED_LIVE'};
   const descriptor=Object.freeze({...fields,descriptorId:hash(fields)});
   const policy=Object.freeze({...policyFields,policyVersion,descriptorId:descriptor.descriptorId});
-  const active=()=> (env.ACG_AI_FUNDED_WORKSPACE_STREAMING_ENABLED==='true')===workspaceStreaming&&env.ACG_AI_FUNDED_LIVE_ENABLED==='true'&&env.ACG_AI_STAFF_PREVIEW_ENABLED==='true'&&
+  const cap=requestCap(env,workspaceChat,now());
+  const capActive=()=>{try{const current=requestCap(env,workspaceChat,now());return current.dailyRequests===cap.dailyRequests&&current.expiresAtMs===cap.expiresAtMs;}catch{return false;}};
+  const active=()=>capActive()&& (env.ACG_AI_FUNDED_WORKSPACE_STREAMING_ENABLED==='true')===workspaceStreaming&&env.ACG_AI_FUNDED_LIVE_ENABLED==='true'&&env.ACG_AI_STAFF_PREVIEW_ENABLED==='true'&&
     env.ACG_AI_LIVE_PROVIDER_ENABLED==='true'&&env.ACG_AI_RESTRICTED_PILOT_ENABLED==='true'&&
     (workspaceChat?env.ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED==='true'&&env.ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED==='true'&&env.ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS===raw:
       env.ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED!=='true'&&(educationOnly?env.ACG_AI_FUNDED_EDUCATION_ONLY==='true'&&env.ACG_AI_FUNDED_EDUCATION_EXPIRES_AT_MS===raw&&!env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON:
@@ -66,13 +69,11 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
     env.ACG_AI_STAFF_PREVIEW_EMAIL?.trim().toLowerCase()===staff&&now()<a.expiresAtMs&&
     typeof env.ACG_AI_FUNDED_OPENAI_API_KEY==='string'&&/^sk-[\x21-\x7e]{20,4090}$/.test(env.ACG_AI_FUNDED_OPENAI_API_KEY);
   const p=await read(LivePlatform.findById('platform')),t=await read(LiveControl.findById(a.tenantId));
-  requireTrue(p?.enabled===true&&p.dailyPicoUsd===1000000000000&&p.dailyRequests===20&&p.maxOutstandingRequests===1&&
-    p.maxOutstandingPicoUsd<=1000000000000&&t?.enabled===true&&t.tenantDailyPicoUsd===1000000000000&&
-    t.actorDailyPicoUsd===1000000000000&&t.tenantDailyRequests===20&&t.actorDailyRequests===20);
+  requireTrue(validateCaps(p,t,cap.dailyRequests));
   const source=educationOnly?null:createMarketContextSource(marketRuntime);
   const belongs=s=>s?.tenantId===a.tenantId&&s?.actorId===actorId;
   return Object.freeze({
-    fundedStaff:true,educationOnly,workspaceChat,descriptor,policy,verifyRelease:active,
+    fundedStaff:true,educationOnly,workspaceChat,descriptor,policy,dailyRequests:cap.dailyRequests,verifyRelease:active,
     verifyApproval:async v=>active()&&v.policyVersion===policyVersion&&v.descriptorId===descriptor.descriptorId,
     resolveMembership:async(s,v)=>active()&&belongs(s)&&v===policyVersion,
     resolveDataRights:async({scope,symbol,timeframe,policyVersion:v,providerId,sourceProvider})=>{
