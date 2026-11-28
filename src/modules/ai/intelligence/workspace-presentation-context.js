@@ -2,8 +2,9 @@
 // Provider-only projection, after scope validation and deterministic analysis.
 // Keep exact OHLC, numeric levels, event ordering and raw millisecond values.
 const utc=ms=>Number.isSafeInteger(ms)&&ms>=0&&ms<=8640000000000000?new Date(ms).toISOString():null;
-const price=v=>typeof v==='number'&&Number.isFinite(v)&&v>0?v:typeof v==='string'&&/^\d+(?:\.\d+)?$/.test(v)&&Number.isFinite(Number(v))&&Number(v)>0?Number(v):null;
-const side=(reference,level)=>reference===null||level===null?'UNKNOWN':reference>level?'ABOVE':reference<level?'BELOW':'AT';
+const {compareDecimal}=require('../../../shared/decimal/decimal');
+const price=v=>typeof v==='number'&&Number.isFinite(v)&&v>0?v:typeof v==='string'&&/^\d+(?:\.\d+)?$/.test(v)&&Number.isFinite(Number(v))&&Number(v)>0?v:null;
+const side=(reference,level)=>{try{const c=compareDecimal(reference,level);return c>0?'ABOVE':c<0?'BELOW':'AT';}catch{return 'UNKNOWN';}};
 function addWorkspacePresentation(market){
   if(market?.schemaVersion!=='adaptive-market-v1'||!Array.isArray(market.frames))return;
   for(const frame of market.frames){
@@ -11,10 +12,11 @@ function addWorkspacePresentation(market){
     const last=frame.closedCandles?.at(-1);
     const fact=frame.observations?.find(o=>o.type==='FACT'&&o.kind==='LAST_CLOSED_PRICE');
     const reference=price(last?.[4]??fact?.value??frame.advanced?.referencePrice);
-    if(reference!==null){
+    if(reference!==null&&frame.timeframe===market.selectedTimeframe){
       frame.closedPriceContext={price:reference,throughUtc:utc(frame.freshness?.latestClosedAtMs),basis:'LAST_VALIDATED_CLOSED_BAR'};
     }
     for(const o of frame.observations??[]){
+      if(frame.timeframe!==market.selectedTimeframe)continue;
       if(o.type==='STRUCTURE_EVENT'){
         const at=utc(o.atMs);if(at)o.atUtc=at;
         if(reference!==null&&price(o.level)!==null)o.lastClosedPriceRelativeToLevel=side(reference,price(o.level));
