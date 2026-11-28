@@ -7,7 +7,7 @@ const {createMarketContextSource}=require('../intelligence/context-source');
 const {readAdaptiveMarket}=require('../intelligence/adaptive-market-context');
 const {selectKnowledge}=require('../intelligence/knowledge-catalog');
 const {sizingEvidence}=require('../intelligence/workspace-sizing');
-const {workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames}=require('../intelligence/workspace-context-selection');
+const {workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames,selectWorkspaceAccount}=require('../intelligence/workspace-context-selection');
 const {compactWorkspaceHistory,dropOldestExchange,protectedTailSize}=require('../intelligence/workspace-conversation-context');
 const {workspaceStage}=require('../ai-http-security');
 const {createHash}=require('node:crypto');
@@ -87,7 +87,7 @@ const POLICY=Object.freeze([
   'For chart-based structure, BOS, FVG, liquidity, direction, entry opportunities, conditional setups and follow-up questions about levels, use the validated chart snapshot. Missing quote or session verification alone is not a chart-data failure: omit irrelevant quote warnings and use candle-based levels. Describe evidence naturally, for example: the latest completed 5m candle closed at a given level, or a break and retest would strengthen the setup. Do not call a candle close the current executable price.',
   'Do not add a quote-status footer or a routine data-quality disclaimer to chart-based answers. In these answers never repeat diagnostic language such as session-unverified, non-executable, supplied quote, quote unavailable or provider status. Do not substitute a paraphrase of the same irrelevant caveat. Conclude with the market interpretation, conditional trigger or invalidation. If a material gap genuinely prevents the requested analysis, explain the missing evidence briefly in ordinary language.' ,
   'For an explicit current price, bid/ask, spread, immediate execution, or another quote-dependent conclusion, use RECENT_PROVIDER_EVENT as a timestamped observation, not an executable quote. If only observedQuote exists, qualify its unverified session. Otherwise briefly state the relevant limitation and offer the last validated candle price with its timeframe or timestamp if available. Use plain language rather than internal quote or session labels. Never invent a quote or an open session.',
-  'Explain risk and conditional scenarios. Never request passwords, API keys or identifiers. No tools or orders are available.',
+  'Explain risk and conditional scenarios. A null account snapshot means no financial evidence was supplied for this request; never infer a balance, exposure or absence of positions. Do not mention omitted account context when irrelevant to the question. Never request passwords, API keys or identifiers. No tools or orders are available.',
   'For lot sizing and margin questions, use the supplied deterministic sizingCalculation when present. Report its actual rounded values, capital basis, stop distance, and restrictions. Never invent missing specifications or calculate an exact feasible volume independently if deterministic evidence is missing. Persisted free margin and quote estimates are hypothetical, not execution approval. Ask for missing risk basis, stop or instrument if required.',
   'Aim for 120–250 words for ordinary market questions and up to 450 for explicitly detailed requests. Prefer the strongest relevant evidence over exhaustive frame-by-frame narration. Finish the answer within the available completion budget.',
   'Return JSON with answer only. Write like a knowledgeable trading colleague having a natural conversation. Lead with a direct answer, then explain the most relevant evidence in short readable paragraphs. Match the depth to the user question: a quick follow-up deserves a quick answer; a comprehensive request deserves deeper analysis.',
@@ -104,7 +104,9 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
     const sizing=sizingEvidence({question,market:data.market,account:data.account});
     if(sizing)data.market.sizingCalculation=sizing;
   }
-  selectWorkspaceEvidence(data,workspaceEvidenceProfile(question,history,data.market));
+  const profile=workspaceEvidenceProfile(question,history,data.market);
+  selectWorkspaceEvidence(data,profile);
+  selectWorkspaceAccount(data,profile);
   compressSupportingFrames(data.market);
   const body={model:descriptor.modelId,store:false,stream:false,n:1,service_tier:'default',reasoning_effort:'low',max_completion_tokens:descriptor.maxOutputTokens,
     messages:[{role:'system',content:JSON.stringify(POLICY)},{role:'user',content:JSON.stringify(data)}],

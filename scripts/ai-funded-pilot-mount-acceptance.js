@@ -179,8 +179,12 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.equal(body.model,'gpt-6-luna');assert.equal(body.store,false);assert.equal(body.stream,true);assert.deepEqual(body.stream_options,{include_usage:true});
           assert.equal(body.reasoning_effort,'low');assert.equal(body.max_completion_tokens,2048);
           assert.equal(body.response_format.json_schema.name,'acg_workspace_answer');
+          if(data.question==='Review my account risk'){
+            assert.equal(data.account.state.balance,'10000');assert.equal(data.account.source,'PERSISTED_ACCOUNT_SNAPSHOT');
+            assert.equal(data.market,null);
+          }else{
           assert.equal(data.question,'Analyse the current market structure.');
-          assert.equal(data.account.state.balance,'10000');assert.equal(data.account.source,'PERSISTED_ACCOUNT_SNAPSHOT');
+          assert.equal(data.account,null);
           assert.equal(data.market.symbol,symbol);assert.equal(data.market.provider,'twelve-data');
           assert.equal(data.market.schemaVersion,'adaptive-market-v1');
           assert.equal(data.market.contextSelection.profile,'STRUCTURE');
@@ -224,6 +228,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.equal(data.market.economicCalendar.events.length,1);
           assert.equal(data.market.economicCalendar.events[0].title,'Synthetic USD release');
           assert.equal(data.market.economicCalendar.events[0].timing,'UPCOMING');
+          }
           for(const value of [tenantId,actor.actorId,staff,...ids,'staff-owner',wsEnv.ACG_AI_FUNDED_OPENAI_API_KEY])
             assert.ok(!raw.includes(value));
           res.writeHead(200,{'content-type':'text/event-stream'});
@@ -265,15 +270,30 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       const answer={status:stream.status,body:events.at(-1).data};
       assert.equal(answer.status,200,JSON.stringify(answer.body.error??{}));
       assert.equal(answer.body.state,'ANSWERED',JSON.stringify(answer.body));
-      assert.equal(answer.body.answer,'Synthetic workspace answer.');assert.equal(answer.body.context.account,true);assert.equal(answer.body.context.market,true);
+      assert.equal(answer.body.answer,'Synthetic workspace answer.');assert.equal(answer.body.context.account,true);assert.equal(answer.body.context.accountUsed,false);assert.equal(answer.body.context.market,true);
       const settled=await LiveAttempt.findOne({tenantId,operationId:op}).lean();
       assert.equal(settled.state,'SETTLED');assert.equal(settled.actualPicoUsd,120000000);
       assert.equal(requests,1);
       assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
       assert.ok((await wsCall('generate',input)).status>=400);assert.equal(requests,1);
+      // A distinct synthetic risk request proves the complete account export
+      // remains available under the same consent and budget fences.
+      const riskOp=randomUUID();
+      const riskStream=await fetch(wsRoot+'/v1/ai/pilot/generate',{method:'POST',headers:{'content-type':'application/json',accept:'text/event-stream',authorization:'Bearer '+session.accessToken},body:JSON.stringify({...wsBase,...input,operationId:riskOp,question:'Review my account risk',includeMarket:false})});
+      assert.ok(riskStream.headers.get('content-type').startsWith('text/event-stream'));
+      const riskEvents=(await riskStream.text()).trim().split('\n\n').map(block=>{const [kind,data]=block.split('\n');return {kind:kind.slice(7),data:JSON.parse(data.slice(6))};});
+      if(wireError)throw wireError;
+      assert.deepEqual(riskEvents.map(e=>e.kind),['progress','progress','delta','delta','result']);
+      const riskAnswer=riskEvents.at(-1).data;
+      assert.equal(riskAnswer.state,'ANSWERED');
+      assert.equal(riskAnswer.context.account,true);assert.equal(riskAnswer.context.accountUsed,true);assert.equal(riskAnswer.context.market,false);
+      assert.equal((await LiveAttempt.findOne({tenantId,operationId:riskOp}).lean()).state,'SETTLED');
+      assert.equal(requests,2);
+      assert.equal((await LivePlatform.findById('platform').lean()).outstandingRequests,0);
       wsEnv.ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED='false';
       assert.ok((await wsCall('generate',{...input,operationId:randomUUID()})).status>=400);
-      console.log('PASS actual Funded workspace chat: selected account and synthetic chart, normal response, real TLS fixture, settled budget, replay and export revocation');
+      assert.equal(requests,2);
+      console.log('PASS actual Funded workspace chat: minimized chart-only export, full account-risk export, real TLS fixture, settled budget, replay and export revocation');
     }finally{
       if(tls){tls.closeAllConnections();await new Promise(resolve=>tls.close(resolve));}
       fs.rmSync(dir,{recursive:true,force:true});
