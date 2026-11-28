@@ -63,4 +63,30 @@ function compactRepeatedMetadata(market){
   }
   if(Object.keys(shared).length)market.sharedLimitations=shared;
 }
-module.exports={addWorkspacePresentation,compactRepeatedMetadata};
+// For explicit pattern/level queries, keep a shorter exact raw tail only
+// when deterministic full-window summaries are available and the frame is
+// healthy. General analysis, setups, risk and ambiguous turns are unchanged.
+const narrowProfiles=new Set(['BOS','FVG','LIQUIDITY']);
+const frameRank=['1m','5m','15m','30m','1h','4h','1d','1w'];
+function compactNarrowRawHistory(market){
+  if(market?.schemaVersion!=='adaptive-market-v1'||!narrowProfiles.has(market.contextSelection?.profile)||!Array.isArray(market.frames))return;
+  const primary=frameRank.indexOf(market.selectedTimeframe);
+  if(primary<0)return;
+  for(const frame of market.frames){
+    const rank=frameRank.indexOf(frame.timeframe),q=frame.quality,a=frame.advanced,bars=frame.closedCandles;
+    if(rank<0||frame.status!=='HISTORICAL_ONLY'||q?.status!=='RECENT_CLOSED_BAR'||q.gaps!==0||
+      q.exclusions?.synthetic!==0||!Number.isSafeInteger(q.contiguousCount)||q.contiguousCount<24||
+      frame.freshness?.state!=='LATEST_EXPECTED_UTC_BUCKET'||frame.coverage?.outOfSessionBars!==0||
+      a?.methodVersion!=='advanced-market-intelligence-v1'||!a.regime||!a.dealingRange||
+      !Array.isArray(frame.observations)||!frame.observations.some(o=>o.type==='STRUCTURE_SUMMARY')||
+      !Array.isArray(bars)||!Number.isSafeInteger(frame.availableClosedBars)||frame.availableClosedBars<bars.length)continue;
+    const limit=rank===primary?24:rank<primary?8:4;
+    if(bars.length<=limit)continue;
+    const priorCount=bars.length;
+    frame.closedCandles=bars.slice(-limit);
+    frame.omittedClosedBars=frame.availableClosedBars-frame.closedCandles.length;
+    frame.narrowRawHistoryProjection={mode:'PATTERN_EVIDENCE_WITH_EXACT_TAIL',omittedAdditionalBars:priorCount-limit,
+      derivedEvidenceUsesOriginalWindow:true};
+  }
+}
+module.exports={addWorkspacePresentation,compactRepeatedMetadata,compactNarrowRawHistory};
