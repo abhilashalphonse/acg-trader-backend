@@ -41,8 +41,9 @@ async function main(){
     const ledger=await LivePlatform.findById('platform').lean();
     assert.equal(ledger.outstandingRequests,0);assert.equal(ledger.outstandingPicoUsd,0);
     assert.equal(await LiveAttempt.countDocuments({state:'SETTLED'}),3);
-    assert.equal(await LiveAttempt.countDocuments({}),3);
-    console.log('PASS dedicated workspace acceptance: three settled requests, zero outstanding reservations');
+    assert.equal(await LiveAttempt.countDocuments({state:'ACCOUNTED_UNKNOWN'}),1);
+    assert.equal(await LiveAttempt.countDocuments({}),4);
+    console.log('PASS dedicated workspace acceptance: three provider-settled requests, one conservatively accounted unknown, zero outstanding reservations');
   }finally{
     if(mongoose.connection.readyState===1&&mongoose.connection.name===dbName){assertIsolated();await mongoose.connection.dropDatabase();}
     await mongoose.disconnect();
