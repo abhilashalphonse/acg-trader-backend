@@ -327,6 +327,32 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       assert.equal((await LiveControl.findById(tenantId).lean()).actorDailyRequests,100);
       assert.deepEqual(await snapshot(),before);
       assert.equal((await migrateStaffRequestCap({env:expanded})).changed,false);
+      // Exercise the actual mounted access and grant routes after a 100-slot
+      // migration, not just the ledger/bootstrap checks.
+      assert.equal((await wsCall('status')).status,403); // old runtime must fail closed
+      const expandedBootstrap=await loadFundedPilotBootstrap({env:expanded,marketRuntime});
+      assert.equal(expandedBootstrap.dailyRequests,100);
+      const expandedApp=createApp({marketRuntime,tradingRuntime:{enabled:true,health:()=>({enabled:true})},
+        authRuntime:{authService:auth},restrictedPilotBootstrap:{...expandedBootstrap,
+          isolatedWorkspaceLoopback:{port:tls.address().port,ca}}});
+      const expandedServer=await new Promise(resolve=>{const s=expandedApp.listen(0,'127.0.0.1',()=>resolve(s));});
+      try{
+        const expandedRoot='http://127.0.0.1:'+expandedServer.address().port;
+        const expandedBase={...wsBase,connectionId:randomUUID()};
+        const callExpanded=async(op,extra={},token=session.accessToken)=>{
+          const res=await fetch(expandedRoot+'/v1/ai/pilot/'+op,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+token},
+            body:JSON.stringify({...expandedBase,...extra})});return {status:res.status,body:await res.json()};
+        };
+        const status=await callExpanded('status');assert.equal(status.status,200);assert.equal(status.body.mode,'WORKSPACE_CHAT');
+        assert.equal((await callExpanded('status',{},otherSession.accessToken)).status,403);
+        assert.equal((await callExpanded('grant',{expectedRevision:status.body.revision,explicitConsent:true})).status,200);
+        assert.equal((await callExpanded('status')).body.active,true);
+        // Verify expired cap revokes the expanded runtime, without dispatch.
+        const capExpiry=expanded.ACG_AI_FUNDED_STAFF_REQUEST_LIMIT_EXPIRES_AT_MS;
+        expanded.ACG_AI_FUNDED_STAFF_REQUEST_LIMIT_EXPIRES_AT_MS=String(Date.now()-1);
+        assert.ok((await callExpanded('status')).status>=400);
+        expanded.ACG_AI_FUNDED_STAFF_REQUEST_LIMIT_EXPIRES_AT_MS=capExpiry;
+      }finally{expandedServer.closeAllConnections();await new Promise(resolve=>expandedServer.close(resolve));}
       const reverted={...wsEnv,ACG_AI_FUNDED_STAFF_DAILY_REQUEST_LIMIT:'20'};
       assert.equal((await migrateStaffRequestCap({env:reverted})).dailyRequests,20);
       assert.deepEqual(await snapshot(),before);
