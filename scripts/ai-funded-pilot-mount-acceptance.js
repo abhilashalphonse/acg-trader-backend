@@ -461,6 +461,59 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       assert.ok((await wsCall('generate',{...input,operationId:randomUUID()})).status>=400);
       assert.equal(requests,3);
       console.log('PASS actual Funded workspace chat: minimized chart-only export, full account-risk export, real TLS fixture, settled budget, replay and export revocation');
+      // Real isolated ledger: simulate a transport whose final usage was lost,
+      // and recover only the exact, separately approved unknown reservation.
+      const clock=Date.now(),scope={tenantId,actorId:actor.actorId,sessionId:'b'.repeat(24),accountId:ids[0],connectionId:randomUUID()};
+      const binding={descriptorId:ws.descriptor.descriptorId,policyVersion:ws.policy.policyVersion,symbol,timeframe:'1h'};
+      const billing={tenantId,actorId:'d'.repeat(24)};
+      const isolatedAdmission=createLiveAdmission({authorizeSession:async s=>s,authorizeMarket:async()=>true,
+        authorizeAdmin:async()=>false,authorizePlatformAdmin:async()=>false,
+        authorizeReconciliation:async a=>a.tenantId===billing.tenantId&&a.actorId===billing.actorId,
+        resolvePrice:async()=>({...ws.descriptor,approved:true}),now:()=>clock});
+      const consent=await isolatedAdmission.grant(scope,{...binding,expectedRevision:0,explicitConsent:true,expiresAtMs:clock+60000});
+      const opUnknown=randomUUID();
+      const hold=await isolatedAdmission.claim(scope,{...binding,operationId:opUnknown,consentRevision:consent.revision,maxInputTokens:32768,maxOutputTokens:2048});
+      await isolatedAdmission.beginDispatch(scope,opUnknown);
+      await isolatedAdmission.reconcile(billing,{attemptId:hold.attemptId,kind:'UNKNOWN',evidenceId:'d'.repeat(64)});
+      const unknown=await LiveAttempt.findById(hold.attemptId).lean();
+      assert.equal(unknown.state,'HELD_UNKNOWN');
+      const ledgerBefore=await snapshot(),platformBefore=await LivePlatform.findById('platform').lean();
+      const recoveryEnv={...reverted,ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED:'true',ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:String(clock+3600000)};
+      const pin='v1:'+unknown.createdAtMs+':'+unknown.updatedAtMs+':'+unknown.reservedPicoUsd;
+      const recover=(value,at=clock+61000)=>migrateStaffRequestCap({env:{...recoveryEnv,...(value?{ACG_AI_STAFF_HELD_RECOVERY:value}:{})},now:()=>at});
+      await assert.rejects(recover(null));
+      await assert.rejects(recover(pin,clock));
+      await assert.rejects(recover(pin.replace(/:\d+$/,':1')));
+      assert.deepEqual(await snapshot(),ledgerBefore);
+      assert.deepEqual(await LivePlatform.findById('platform').lean(),platformBefore);
+      const result=await recover(pin);
+      assert.equal(result.recovered,true);
+      assert.equal(result.accountedUnknownPicoUsd,unknown.reservedPicoUsd);
+      const accounted=await LiveAttempt.findById(hold.attemptId).lean();
+      assert.equal(accounted.state,'ACCOUNTED_UNKNOWN');
+      assert.equal(accounted.actualPicoUsd,null);assert.equal(accounted.inputTokens,null);assert.equal(accounted.outputTokens,null);
+      assert.equal(accounted.evidenceId,unknown.evidenceId);assert.equal(accounted.accountedUnknownPicoUsd,unknown.reservedPicoUsd);
+      const ledgerAfter=await snapshot();
+      for(const type of ['tenant','platform']){
+        assert.equal(ledgerAfter[type].length,ledgerBefore[type].length);
+        for(const old of ledgerBefore[type]){
+          const current=ledgerAfter[type].find(r=>r._id===old._id);
+          assert.equal(current.requests,old.requests);
+          assert.equal(current.reservedPicoUsd,0);
+          assert.equal(current.settledPicoUsd,old.settledPicoUsd+old.reservedPicoUsd);
+          assert.equal(current.accountedUnknownPicoUsd??0,(old.accountedUnknownPicoUsd??0)+old.reservedPicoUsd);
+        }
+      }
+      const platformAfter=await LivePlatform.findById('platform').lean();
+      assert.equal(platformAfter.outstandingRequests,0);assert.equal(platformAfter.outstandingPicoUsd,0);
+      assert.equal(platformAfter.dailyRequests,platformBefore.dailyRequests);assert.equal(platformAfter.dailyPicoUsd,platformBefore.dailyPicoUsd);
+      const {LiveEvent}=require('../src/modules/ai/providers/live-admission.model');
+      assert.equal(await LiveEvent.countDocuments({kind:'ACCOUNT_UNKNOWN',subject:hold.attemptId}),1);
+      assert.equal((await recover(pin)).alreadyAccounted,true);
+      assert.deepEqual(await snapshot(),ledgerAfter);
+      assert.equal(await LiveEvent.countDocuments({kind:'ACCOUNT_UNKNOWN',subject:hold.attemptId}),1);
+      console.log('PASS exact held-unknown recovery: conservative budget debit, no fabricated usage, one audit event, idempotent replay');
+
     }finally{
       if(tls){tls.closeAllConnections();await new Promise(resolve=>tls.close(resolve));}
       fs.rmSync(dir,{recursive:true,force:true});
