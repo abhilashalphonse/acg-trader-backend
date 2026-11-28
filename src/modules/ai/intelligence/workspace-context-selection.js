@@ -124,4 +124,15 @@ function compressSupportingFrames(market){
       derivedEvidenceUsesOriginalWindow:true};
   }
 }
-module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames};
+// Data minimization at the provider boundary. Account permission is not a
+// requirement to export every financial record. Only narrow standalone chart
+// requests with available market context qualify; never expand the requested
+// scope or omit account data for setups, sizing, exposure or follow-ups.
+const marketOnlyAccountProfiles=new Set(['STRUCTURE','MARKET_OVERVIEW','BOS','FVG','LIQUIDITY','QUOTE','SESSION','CALENDAR']);
+function selectWorkspaceAccount(data,profile){
+  if(data.account&&data.market?.schemaVersion==='adaptive-market-v1'&&
+    Array.isArray(data.market.frames)&&data.market.frames.length>0&&
+    !data.market.sizingCalculation&&Array.isArray(data.history)&&data.history.length===0&&
+    marketOnlyAccountProfiles.has(profile))data.account=null;
+}
+module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames,selectWorkspaceAccount};
