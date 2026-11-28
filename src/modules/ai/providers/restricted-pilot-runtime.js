@@ -137,7 +137,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       const x=await context(token,{...input,action:'revoke'});
       return x.admission.revoke(x.owner,input.expectedRevision);
     },
-    async generate(token,input,{signal,onProgress,onDelta}={}){
+    async generate(token,input,{signal,onProgress,onDelta,onPromptAudit}={}){
       const x=workspaceChat?await workspaceStage('ACCESS',()=>context(token,input)):await context(token,input);
       if(workspaceChat){
         const {safeQuestion,buildWorkspaceBody}=require('./funded-workspace-context');
@@ -155,6 +155,11 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
         const body=await workspaceStage('PROMPT_BUILD',()=>buildWorkspaceBody(d,{question:input.question,history:input.history,...snapshot,market}));
         if(workspaceStreaming&&typeof onDelta==='function'){
           body.stream=true;body.stream_options={include_usage:true};
+        }
+        // Internal callback only; never append audit information to the wire
+        // request or public API. Instrumentation failure cannot change admission.
+        if(typeof onPromptAudit==='function'){
+          try{onPromptAudit(require('../intelligence/workspace-prompt-audit').measureWorkspacePrompt(body));}catch{}
         }
         await allowed();onProgress?.('GENERATING');
         const prompt={packageId:hash(body),expiresAtMs:Date.now()+28000};

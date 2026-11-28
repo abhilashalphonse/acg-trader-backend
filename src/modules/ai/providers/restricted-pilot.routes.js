@@ -26,7 +26,7 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
   router.use(requireTraderSession(authService));
   for(const action of Object.keys(schemas))router.post('/'+action,async(req,res)=>{
     const wantsStream=action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&req.accepts(['application/json','text/event-stream'])==='text/event-stream';
-    let opened=false,aiIntent=null,deltaCount=0,firstDeltaMs=null,startedAt=null;
+    let opened=false,aiIntent=null,deltaCount=0,firstDeltaMs=null,startedAt=null,promptAudit=null;
     const event=(name,payload)=>{
       if(res.destroyed||res.writableEnded)return;
       if(!opened){
@@ -48,7 +48,7 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       const controller=new AbortController(),abort=()=>controller.abort();
       res.once('close',abort);
       try{
-        const value=await runtime[action](bearerToken(req),p.data,{signal:controller.signal,onProgress:wantsStream?stage=>{
+        const value=await runtime[action](bearerToken(req),p.data,{signal:controller.signal,onPromptAudit:aiIntent===null?undefined:audit=>{promptAudit=audit;},onProgress:wantsStream?stage=>{
           if(!controller.signal.aborted&&enabled()===true&&['CONTEXT','GENERATING'].includes(stage))event('progress',{stage});
         }:undefined,onDelta:wantsStream?delta=>{
           if(controller.signal.aborted||enabled()!==true||res.destroyed||res.writableEnded)throw deny('AI_PILOT_DISABLED',404);
@@ -65,12 +65,12 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       }
     });
     if(action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&result.state==='ANSWERED'){
-      req.log?.info({aiIntent,aiOutcome:result.state,aiInputTokens:result.usage?.inputTokens??null,aiOutputTokens:result.usage?.outputTokens??null,aiDurationMs:startedAt===null?null:Date.now()-startedAt,aiStreamRequested:wantsStream,aiDeltaCount:deltaCount,aiFirstDeltaMs:firstDeltaMs,aiAccountUsed:result.context?.accountUsed??null},'AI workspace response completed');
+      req.log?.info({aiIntent,aiOutcome:result.state,aiInputTokens:result.usage?.inputTokens??null,aiOutputTokens:result.usage?.outputTokens??null,aiDurationMs:startedAt===null?null:Date.now()-startedAt,aiStreamRequested:wantsStream,aiDeltaCount:deltaCount,aiFirstDeltaMs:firstDeltaMs,aiAccountUsed:result.context?.accountUsed??null,...promptAudit},'AI workspace response completed');
     }
     if(action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&result.state!=='ANSWERED'){
       // Aggregate diagnosis only. Never log the prompt, answer, account or provider response.
       req.log?.warn({aiOutcome:result.state,aiFailureReason:result.failureReason??'UNCLASSIFIED',
-        aiInputTokens:result.usage?.inputTokens??null,aiOutputTokens:result.usage?.outputTokens??null,aiIntent,aiDurationMs:startedAt===null?null:Date.now()-startedAt,aiStreamRequested:wantsStream,aiDeltaCount:deltaCount,aiFirstDeltaMs:firstDeltaMs,aiAccountUsed:result.context?.accountUsed??null},'AI workspace response incomplete');
+        aiInputTokens:result.usage?.inputTokens??null,aiOutputTokens:result.usage?.outputTokens??null,aiIntent,aiDurationMs:startedAt===null?null:Date.now()-startedAt,aiStreamRequested:wantsStream,aiDeltaCount:deltaCount,aiFirstDeltaMs:firstDeltaMs,aiAccountUsed:result.context?.accountUsed??null,...promptAudit},'AI workspace response incomplete');
     }
     if(action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&result.context?.market){
       req.log?.info({aiQuoteStatus:result.context.quoteStatus,aiQuoteReason:result.context.quoteReason,
