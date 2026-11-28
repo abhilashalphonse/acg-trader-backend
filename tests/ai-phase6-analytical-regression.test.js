@@ -32,6 +32,7 @@ function build(question,market,account,history=[]){
  const body=buildWorkspaceBody(descriptor,{question,history,market,account});
  assert.deepEqual({market,account,history},original);
  assert.ok(Buffer.byteLength(JSON.stringify(body),'utf8')+4096<=descriptor.maxInputTokens);
+ assert.ok(Buffer.byteLength(JSON.stringify({...body,stream:true,stream_options:{include_usage:true}}),'utf8')+4096<=descriptor.maxInputTokens);
  assert.equal(body.store,false);
  assert.equal(body.max_completion_tokens,2048);
  assert.equal(body.tools,undefined);
