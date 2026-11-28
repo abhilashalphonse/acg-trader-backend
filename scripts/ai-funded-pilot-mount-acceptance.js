@@ -386,6 +386,16 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
         assert.equal(drawn.body.receipt.actionId,drawingInput.actionId);
         assert.equal(drawn.body.receipt.context.latestClosedAtMs,end);
         assert.ok(drawn.body.receipt.actions.some(a=>a.geometry.type==='rectangle'&&a.geometry.lower===104&&a.geometry.upper===109));
+        for(const [command,first,last] of [['LIQUIDITY_THEN_FVG','hline','rectangle'],['FVG_THEN_LIQUIDITY','rectangle','hline']]){
+          const ordered=await drawCall('draw',{...drawingInput,actionId:randomUUID(),command});
+          assert.equal(ordered.status,200,JSON.stringify(ordered.body.error??{}));
+          assert.equal(ordered.body.state,'DRAWING_READY');
+          const types=ordered.body.receipt.actions.map(a=>a.geometry.type);
+          assert.equal(types[0],first);assert.equal(types.at(-1),last);
+          assert.deepEqual(types,[...types.filter(t=>t===first),...types.filter(t=>t===last)]);
+          assert.ok(types.length<=6);
+        }
+        assert.equal((await drawCall('draw',{...drawingInput,command:'TRADE'})).status,400);
         assert.ok((await drawCall('draw',{...drawingInput,latestClosedAtMs:end-step})).status>=400);
         assert.equal(await LiveAttempt.countDocuments({tenantId}),priorAttempts);
         assert.equal(requests,2);
