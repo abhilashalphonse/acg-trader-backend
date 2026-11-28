@@ -12,6 +12,7 @@ const schemas={
   status:base,
   grant:base.extend({expectedRevision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER-1),explicitConsent:z.literal(true)}).strict(),
   revoke:base.extend({expectedRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER-1)}).strict(),
+  draw:base.extend({actionId:z.uuid(),command:z.enum(['LIQUIDITY','FVG']),chartContextVersion:z.string().regex(/^[a-f0-9]{64}$/),latestClosedAtMs:z.number().int().positive().max(4102444800000)}).strict(),
   generate:z.union([base.extend({operationId:z.uuid(),intent:z.enum(['HISTORICAL_OVERVIEW','HISTORICAL_STRUCTURE','EDUCATION_STRUCTURE','EDUCATION_LIQUIDITY','EDUCATION_FVG'])}).strict(),
     base.extend({operationId:z.uuid(),intent:z.literal('WORKSPACE_CHAT'),question:z.string().min(1).max(4096),
       history:z.array(z.object({role:z.enum(['user','assistant']),text:z.string().min(1).max(4096)}).strict()).max(6),
