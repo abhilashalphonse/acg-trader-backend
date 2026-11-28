@@ -68,7 +68,7 @@ async function exchange({target,body,key,deadlineMs,beforeWrite,signal,maxDurati
     requireTrue(res.statusCode===200&&(!res.headers['content-encoding']||res.headers['content-encoding']==='identity')&&
       res.headers['content-type']?.split(';')[0].trim().toLowerCase()===(body.stream?'text/event-stream':'application/json'));
     const remaining=Math.floor(duration-(performance.now()-start));requireTrue(remaining>0);
-    if(body.stream)return await readWorkspaceProviderStream(res,{descriptor,signal:controller.signal,timeoutMs:remaining,onDelta:async delta=>{
+    if(body.stream)return await readWorkspaceProviderStream(res,{descriptor,signal:controller.signal,timeoutMs:remaining,minDeltaIntervalMs:120,minDeltaChars:128,onDelta:async delta=>{
       requireTrue(!controller.signal.aborted&&Date.now()<deadlineMs);
       await onDelta?.(delta,controller.signal);
     }});
