@@ -40,7 +40,8 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
   guard([verifyRelease,verifyApproval,resolveMembership,resolveDataRights,validatePayload,countUpperBound,
     resolveBillingActor,authorizeBilling].every(f=>typeof f==='function'));
   const active=()=>env.ACG_AI_RESTRICTED_PILOT_ENABLED==='true'&&verifyRelease()===true;
-  const config=createLiveRuntimeConfig({env,descriptor,secretPort,verifyRelease:active});
+  const workspaceStreaming=workspaceChat&&fundedStaff===true&&policy?.workspaceStreaming===true;
+  const config=createLiveRuntimeConfig({env,descriptor,secretPort,verifyRelease:active,workspaceStreaming});
   const d=config.descriptor;
   guard(policy?.descriptorId===d.descriptorId&&policy?.policyVersion===d.policyVersion&&policy?.enabled===true);
   const expiresAtMs=policy.expiresAtMs;
@@ -136,7 +137,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       const x=await context(token,{...input,action:'revoke'});
       return x.admission.revoke(x.owner,input.expectedRevision);
     },
-    async generate(token,input,{signal,onProgress}={}){
+    async generate(token,input,{signal,onProgress,onDelta}={}){
       const x=workspaceChat?await workspaceStage('ACCESS',()=>context(token,input)):await context(token,input);
       if(workspaceChat){
         const {safeQuestion,buildWorkspaceBody}=require('./funded-workspace-context');
@@ -152,13 +153,16 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
         const snapshot=await workspaceStage('ACCESS',()=>workspaceSource.read({scope,workspace:x.workspace,includeAccount:input.includeAccount,includeMarket:input.includeMarket,authorize:allowed}));
         const market=await workspaceStage('CALENDAR_CONTEXT',()=>attachEconomicCalendar(snapshot.market,readAiCalendarSnapshot));
         const body=await workspaceStage('PROMPT_BUILD',()=>buildWorkspaceBody(d,{question:input.question,history:input.history,...snapshot,market}));
+        if(workspaceStreaming&&typeof onDelta==='function'){
+          body.stream=true;body.stream_options={include_usage:true};
+        }
         await allowed();onProgress?.('GENERATING');
         const prompt={packageId:hash(body),expiresAtMs:Date.now()+28000};
         const transport=createLiveOpenAiTransport({config,admission:x.admission,workspaceChat:true,isolatedLoopback:isolatedWorkspaceLoopback,
           authorizeExport:async request=>isDeepStrictEqual(request.payload,body)&&await pilot.authorizeExport(request),
           countUpperBound,recordUsage:x.recordUsage,verifyCandidate:async()=>({verified:false})});
         const result=await workspaceStage('PROVIDER_ADMISSION_OR_RESPONSE',()=>transport.run({scope:x.owner,workspace:x.workspace,prompt,workspaceBody:body,
-          operationId:input.operationId,authorizeMessage:allowed,signal}));
+          operationId:input.operationId,authorizeMessage:allowed,signal,onDelta:body.stream?onDelta:undefined}));
         if(result.state==='ANSWERED')await workspaceStage('DISCLOSURE',async()=>{await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);});
         return {...result,operationId:input.operationId,workspace:{symbol:input.symbol,timeframe:input.timeframe},
           context:{market:!!snapshot.market,account:!!snapshot.account,marketAsOfMs:snapshot.market?.asOfMs??null,accountAsOfMs:snapshot.account?.asOfMs??null,

@@ -30,9 +30,9 @@ async function consumeBytes(chunks,{signal,timeoutMs=1000,onText}={}){
       if(item.done){done=true;break;}
       if(!(item.value instanceof Uint8Array)||++count>LIMITS.chunks)fail('STREAM_LIMIT');
       bytes+=item.value.byteLength;if(bytes>LIMITS.totalBytes)fail('STREAM_LIMIT');
-      onText(decoder.decode(item.value,{stream:true}));
+      await Promise.race([Promise.resolve().then(()=>onText(decoder.decode(item.value,{stream:true}))),deadline]);
     }
-    onText(decoder.decode());
+    await Promise.race([Promise.resolve().then(()=>onText(decoder.decode())),deadline]);
     if(signal?.aborted)fail('CANCELLED');
     if(performance.now()-start>=timeoutMs)fail('TIMEOUT');
   }finally{
@@ -43,11 +43,11 @@ async function consumeBytes(chunks,{signal,timeoutMs=1000,onText}={}){
 }
 async function consumeSse(chunks,{signal,timeoutMs,onEvent}={}){
   let pending='',data=[],event=null,eventBytes=0,count=0;
-  function line(value){
+  async function line(value){
     if(value===''){
       if(data.length){
         if(++count>LIMITS.events)fail('STREAM_LIMIT');
-        onEvent({event,data:data.join('\n')});
+        await onEvent({event,data:data.join('\n')});
       }
       data=[];event=null;eventBytes=0;return;
     }
@@ -59,7 +59,7 @@ async function consumeSse(chunks,{signal,timeoutMs,onEvent}={}){
       if(field==='data')data.push(text);else event=text;
     }
   }
-  await consumeBytes(chunks,{signal,timeoutMs,onText(text){
+  await consumeBytes(chunks,{signal,timeoutMs,async onText(text){
     pending+=text;
     // Process CR, LF and CRLF, holding a trailing CR until the next chunk.
     let start=0;
@@ -68,14 +68,14 @@ async function consumeSse(chunks,{signal,timeoutMs,onEvent}={}){
       if(pending[i]==='\r'&&i===pending.length-1)break;
       const value=pending.slice(start,i);
       if(Buffer.byteLength(value,'utf8')>LIMITS.eventBytes)fail('STREAM_LIMIT');
-      line(value);
+      await line(value);
       if(pending[i]==='\r'&&pending[i+1]==='\n')i++;
       start=i+1;
     }
     pending=pending.slice(start);
     if(Buffer.byteLength(pending,'utf8')>LIMITS.eventBytes)fail('STREAM_LIMIT');
   }});
-  if(pending.endsWith('\r')){line(pending.slice(0,-1));pending='';}
+  if(pending.endsWith('\r')){await line(pending.slice(0,-1));pending='';}
   if(pending||data.length||event!==null)fail('TRUNCATED_STREAM');
 }
 module.exports={consumeBytes,consumeSse,LIMITS};

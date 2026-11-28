@@ -24,6 +24,7 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
   if(env.ACG_AI_FUNDED_LIVE_ENABLED!=='true'||env.ACG_AI_LIVE_PROVIDER_ENABLED!=='true'||
     env.ACG_AI_RESTRICTED_PILOT_ENABLED!=='true')return null;
   const workspaceChat=env.ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED==='true';
+  const workspaceStreaming=workspaceChat&&env.ACG_AI_FUNDED_WORKSPACE_STREAMING_ENABLED==='true';
   const educationOnly=!workspaceChat&&env.ACG_AI_FUNDED_EDUCATION_ONLY==='true';
   const raw=workspaceChat?env.ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:educationOnly?env.ACG_AI_FUNDED_EDUCATION_EXPIRES_AT_MS:env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON;
   requireTrue(typeof raw==='string'&&Buffer.byteLength(raw)<=8192);
@@ -49,15 +50,15 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
     /^sk-[\x21-\x7e]{20,4090}$/.test(env.ACG_AI_FUNDED_OPENAI_API_KEY));
   const actorId=hash(['funded-staff-ai-v1',a.tenantId,staff]).slice(0,24);
   const billingActor=Object.freeze({tenantId:a.tenantId,actorId:hash(['funded-ai-internal-billing-v1',a.tenantId]).slice(0,24)});
-  const policyFields={enabled:true,expiresAtMs:a.expiresAtMs,members:[{tenantId:a.tenantId,actorId}],instruments:a.instruments,approvalDigest:hash(a),...(workspaceChat?{workspaceChat:true,workspaceReasoningEffort:'low'}:{})};
+  const policyFields={enabled:true,expiresAtMs:a.expiresAtMs,members:[{tenantId:a.tenantId,actorId}],instruments:a.instruments,approvalDigest:hash(a),...(workspaceChat?{workspaceChat:true,workspaceReasoningEffort:'low',...(workspaceStreaming?{workspaceStreaming:true}:{})}:{})};
   const policyVersion=hash(policyFields);
   // Official standard rates reviewed 2026-11-27; pico-USD per token.
   // Treat cached tokens as uncached for the reservation. No tools or other tiers.
   const fields={providerId:'openai',modelId:'gpt-6-luna',policyVersion,inputRatePicoUsd:100000,outputRatePicoUsd:500000,
-    maxInputTokens:32768,maxOutputTokens:workspaceChat?2048:1024,responseMode:'JSON_SCHEMA',store:false,streaming:false,reviewStatus:'APPROVED_LIVE'};
+    maxInputTokens:32768,maxOutputTokens:workspaceChat?2048:1024,responseMode:'JSON_SCHEMA',store:false,streaming:workspaceStreaming,reviewStatus:'APPROVED_LIVE'};
   const descriptor=Object.freeze({...fields,descriptorId:hash(fields)});
   const policy=Object.freeze({...policyFields,policyVersion,descriptorId:descriptor.descriptorId});
-  const active=()=>env.ACG_AI_FUNDED_LIVE_ENABLED==='true'&&env.ACG_AI_STAFF_PREVIEW_ENABLED==='true'&&
+  const active=()=> (env.ACG_AI_FUNDED_WORKSPACE_STREAMING_ENABLED==='true')===workspaceStreaming&&env.ACG_AI_FUNDED_LIVE_ENABLED==='true'&&env.ACG_AI_STAFF_PREVIEW_ENABLED==='true'&&
     env.ACG_AI_LIVE_PROVIDER_ENABLED==='true'&&env.ACG_AI_RESTRICTED_PILOT_ENABLED==='true'&&
     (workspaceChat?env.ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED==='true'&&env.ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED==='true'&&env.ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS===raw:
       env.ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED!=='true'&&(educationOnly?env.ACG_AI_FUNDED_EDUCATION_ONLY==='true'&&env.ACG_AI_FUNDED_EDUCATION_EXPIRES_AT_MS===raw&&!env.ACG_AI_FUNDED_EXPORT_APPROVAL_JSON:
@@ -89,7 +90,7 @@ async function loadFundedPilotBootstrap({env=process.env,marketRuntime,now=Date.
     // historical and education modes retain their previous narrower contracts.
     validatePayload:async({scope,workspace,payload})=>{
       if(!active()||!belongs(scope)||payload.model!==descriptor.modelId||payload.store!==false||
-        payload.stream!==false||payload.max_completion_tokens!==descriptor.maxOutputTokens)return false;
+        typeof payload.stream!=='boolean'||(payload.stream===true&&(!workspaceStreaming||payload.stream_options?.include_usage!==true||Object.keys(payload.stream_options).length!==1))||(payload.stream===false&&Object.hasOwn(payload,'stream_options'))||payload.max_completion_tokens!==descriptor.maxOutputTokens)return false;
       try{
         const data=JSON.parse(payload.messages[1].content);
         const keys=Object.keys(data).sort().join(',');

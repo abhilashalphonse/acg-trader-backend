@@ -36,18 +36,18 @@ function createLiveSessionAuthority({authService,gateway,governanceStore,session
 // registry approval. No secret is read or returned, and no endpoint is
 // configurable. An approved descriptor and secret port must be supplied by
 // trusted deployment composition; the default remains disabled.
-function createLiveRuntimeConfig({env=process.env,descriptor=null,secretPort=null,verifyRelease=null}={}){
+function createLiveRuntimeConfig({env=process.env,descriptor=null,secretPort=null,verifyRelease=null,workspaceStreaming=false}={}){
   if(env.ACG_AI_LIVE_PROVIDER_ENABLED!=='true')return Object.freeze({enabled:false});
   ensure(typeof verifyRelease==='function'&&verifyRelease()===true,'LIVE_AI_RELEASE_NOT_APPROVED');
   ensure(descriptor?.providerId==='openai'&&descriptor.reviewStatus==='APPROVED_LIVE'&&
     typeof descriptor.modelId==='string'&&/^[A-Za-z0-9._-]{1,128}$/.test(descriptor.modelId)&&
     hex(descriptor.descriptorId)&&hex(descriptor.policyVersion)&&positive(descriptor.inputRatePicoUsd)&&positive(descriptor.outputRatePicoUsd)&&
     positive(descriptor.maxInputTokens)&&descriptor.maxInputTokens<=32768&&positive(descriptor.maxOutputTokens)&&descriptor.maxOutputTokens<=4096&&
-    descriptor.responseMode==='JSON_SCHEMA'&&descriptor.store===false&&descriptor.streaming===false,'LIVE_AI_DESCRIPTOR_UNAPPROVED');
+    descriptor.responseMode==='JSON_SCHEMA'&&descriptor.store===false&&descriptor.streaming===workspaceStreaming&&typeof workspaceStreaming==='boolean','LIVE_AI_DESCRIPTOR_UNAPPROVED');
   ensure(typeof secretPort?.withSecret==='function','LIVE_AI_SECRET_UNAVAILABLE');
   const fields={providerId:descriptor.providerId,modelId:descriptor.modelId,policyVersion:descriptor.policyVersion,
     inputRatePicoUsd:descriptor.inputRatePicoUsd,outputRatePicoUsd:descriptor.outputRatePicoUsd,maxInputTokens:descriptor.maxInputTokens,
-    maxOutputTokens:descriptor.maxOutputTokens,responseMode:descriptor.responseMode,store:false,streaming:false,reviewStatus:descriptor.reviewStatus};
+    maxOutputTokens:descriptor.maxOutputTokens,responseMode:descriptor.responseMode,store:false,streaming:descriptor.streaming,reviewStatus:descriptor.reviewStatus};
   const digest=createHash('sha256').update(JSON.stringify(fields)).digest('hex');
   ensure(digest===descriptor.descriptorId,'LIVE_AI_DESCRIPTOR_CHANGED');
   const pinned=Object.freeze({...fields,descriptorId:digest});
