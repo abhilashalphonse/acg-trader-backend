@@ -2,7 +2,7 @@
 const express=require('express');
 const {z}=require('zod');
 const {requireTraderSession,bearerToken}=require('../../auth/auth.middleware');
-const {aiJsonBoundary,aiSafeError,createConcurrencyGate}=require('../ai-http-security');
+const {aiJsonBoundary,aiSafeError,createConcurrencyGate,workspaceFailureDiagnostic}=require('../ai-http-security');
 const {isRestrictedPilotRuntime}=require('./restricted-pilot-runtime');
 const {AppError}=require('../../../shared/errors/app-error');
 const base=z.object({accountId:z.string().regex(/^[a-f0-9]{24}$/),connectionId:z.uuid(),
@@ -24,6 +24,17 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
   router.use((_req,_res,next)=>enabled()===true?next():next(deny('AI_PILOT_DISABLED',404)));
   router.use(requireTraderSession(authService));
   for(const action of Object.keys(schemas))router.post('/'+action,async(req,res)=>{
+    const wantsStream=action==='generate'&&runtime.mode==='WORKSPACE_CHAT'&&req.accepts(['application/json','text/event-stream'])==='text/event-stream';
+    let opened=false;
+    const event=(name,payload)=>{
+      if(res.destroyed||res.writableEnded)return;
+      if(!opened){
+        res.status(200).set({'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store, no-transform','X-Accel-Buffering':'no'});
+        res.vary('Accept');res.flushHeaders();opened=true;
+      }
+      res.write('event: '+name+'\ndata: '+JSON.stringify(payload)+'\n\n');res.flush?.();
+    };
+    try{
     const result=await admit(async()=>{
       if(Object.keys(req.query).length)throw deny('AI_INVALID_REQUEST',400);
       const p=schemas[action].safeParse(req.body);
@@ -33,7 +44,9 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       const controller=new AbortController(),abort=()=>controller.abort();
       res.once('close',abort);
       try{
-        const value=await runtime[action](bearerToken(req),p.data,{signal:controller.signal});
+        const value=await runtime[action](bearerToken(req),p.data,{signal:controller.signal,onProgress:wantsStream?stage=>{
+          if(!controller.signal.aborted&&enabled()===true&&['CONTEXT','GENERATING'].includes(stage))event('progress',{stage});
+        }:undefined});
         if(controller.signal.aborted||enabled()!==true)throw deny('AI_PILOT_DISABLED',404);
         return {contractVersion:'restricted-pilot-v1',mode:runtime.mode,executionAllowed:false,...value};
       }finally{res.removeListener('close',abort);}
@@ -50,7 +63,14 @@ function createRestrictedPilotRouter({runtime,authService,quota,enabled}={}){
       req.log?.info({aiQuoteStatus:result.context.quoteStatus,aiQuoteReason:result.context.quoteReason,
         aiQuoteSessionVerification:result.context.quoteSessionVerification,aiQuoteObservationAvailable:result.context.quoteObservationAvailable},'AI workspace quote evidence');
     }
-    res.json(result);
+    if(wantsStream){if(!res.destroyed&&!res.writableEnded){event('result',result);res.end();}}
+    else res.json(result);
+    }catch(error){
+      if(!opened)throw error;
+      // After headers, do not delegate raw exceptions to Express or expose details.
+      req.log?.warn({statusCode:500,code:'AI_UNAVAILABLE',...workspaceFailureDiagnostic(error)},'AI workspace stream failed');
+      if(!res.destroyed&&!res.writableEnded){event('error',{code:'AI_UNAVAILABLE'});res.end();}
+    }
   });
   router.use(aiSafeError);return router;
 }
