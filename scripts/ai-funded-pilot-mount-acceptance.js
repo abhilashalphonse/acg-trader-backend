@@ -185,7 +185,22 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.equal(data.market.schemaVersion,'adaptive-market-v1');
           assert.equal(data.market.contextSelection.profile,'STRUCTURE');
           assert.deepEqual(data.market.frames.map(f=>f.timeframe),['1m','5m','15m','1h']);
-          assert.ok(data.market.frames.every(f=>f.closedCandles.length>=16&&f.closedCandles.every(b=>b.length===5)));
+          for(const frame of data.market.frames){
+            const eligible=frame.timeframe!=='1m'&&frame.status==='HISTORICAL_ONLY'&&
+              frame.quality?.status==='RECENT_CLOSED_BAR'&&frame.quality.gaps===0&&
+              frame.quality.exclusions?.synthetic===0&&frame.quality.contiguousCount>=20&&
+              frame.freshness?.state==='LATEST_EXPECTED_UTC_BUCKET'&&frame.coverage?.outOfSessionBars===0;
+            assert.ok(frame.closedCandles.every(b=>b.length===5));
+            if(eligible){
+              assert.equal(frame.closedCandles.length,8);
+              assert.equal(frame.rawHistoryProjection.mode,'HIGHER_FRAME_SUMMARY_WITH_EXACT_TAIL');
+              assert.equal(frame.rawHistoryProjection.derivedEvidenceUsesOriginalWindow,true);
+              assert.equal(frame.omittedClosedBars,frame.availableClosedBars-8);
+            }else{
+              assert.ok(frame.closedCandles.length>=16);
+              assert.equal(frame.rawHistoryProjection,undefined);
+            }
+          }
           assert.ok(data.market.frames.every(f=>f.activeCandle?.complete===false));
           assert.ok(data.market.frames.every(f=>f.advanced.methodVersion==='advanced-market-intelligence-v1'));
           assert.ok(data.market.frames.every(f=>f.advanced.regime.state==='TRENDING_UP'));
@@ -243,11 +258,11 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       const stream=await fetch(wsRoot+'/v1/ai/pilot/generate',{method:'POST',headers:{'content-type':'application/json',accept:'text/event-stream',authorization:'Bearer '+session.accessToken},body:JSON.stringify({...wsBase,...input})});
       assert.ok(stream.headers.get('content-type').startsWith('text/event-stream'));
       const events=(await stream.text()).trim().split('\n\n').map(block=>{const [kind,data]=block.split('\n');return {kind:kind.slice(7),data:JSON.parse(data.slice(6))};});
+      if(wireError)throw wireError;
       assert.deepEqual(events.map(e=>e.kind),['progress','progress','delta','delta','result']);
       assert.equal(events.filter(e=>e.kind==='delta').map(e=>e.data.text).join(''),'Synthetic workspace answer.');
       assert.deepEqual(events.slice(0,2).map(e=>e.data),[{stage:'CONTEXT'},{stage:'GENERATING'}]);
       const answer={status:stream.status,body:events.at(-1).data};
-      if(wireError)throw wireError;
       assert.equal(answer.status,200,JSON.stringify(answer.body.error??{}));
       assert.equal(answer.body.state,'ANSWERED',JSON.stringify(answer.body));
       assert.equal(answer.body.answer,'Synthetic workspace answer.');assert.equal(answer.body.context.account,true);assert.equal(answer.body.context.market,true);

@@ -7,7 +7,7 @@ const {createMarketContextSource}=require('../intelligence/context-source');
 const {readAdaptiveMarket}=require('../intelligence/adaptive-market-context');
 const {selectKnowledge}=require('../intelligence/knowledge-catalog');
 const {sizingEvidence}=require('../intelligence/workspace-sizing');
-const {workspaceEvidenceProfile,selectWorkspaceEvidence}=require('../intelligence/workspace-context-selection');
+const {workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames}=require('../intelligence/workspace-context-selection');
 const {workspaceStage}=require('../ai-http-security');
 const {createHash}=require('node:crypto');
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
@@ -70,6 +70,7 @@ function createWorkspaceContext({marketRuntime}){
   });
 }
 const POLICY=Object.freeze([
+  'When rawHistoryProjection is present, the raw higher-timeframe candles are only a recent tail. Derived structure, range and liquidity use the original validated evidence window; do not reinterpret omitted bars as absent or infer full-window facts from the shorter tail.',
   'You are ACG AI, a read-only trading workspace assistant.',
   'Answer the actual trading question first. For entry questions, identify market regime, location in the range and the evidence for waiting or considering a setup. Explain long and short conditional scenarios when meaningful.',
   'Use the supplied raw candle sequences as well as computed observations; the observations are aids, not the only permitted interpretation. Compare higher-timeframe context with the selected chart and lower-timeframe confirmation. Do not infer a confirmed higher-timeframe trend from a lower-timeframe chart.',
@@ -102,6 +103,7 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
     if(sizing)data.market.sizingCalculation=sizing;
   }
   selectWorkspaceEvidence(data,workspaceEvidenceProfile(question,history,data.market));
+  compressSupportingFrames(data.market);
   const body={model:descriptor.modelId,store:false,stream:false,n:1,service_tier:'default',reasoning_effort:'low',max_completion_tokens:descriptor.maxOutputTokens,
     messages:[{role:'system',content:JSON.stringify(POLICY)},{role:'user',content:JSON.stringify(data)}],
     response_format:{type:'json_schema',json_schema:{name:'acg_workspace_answer',strict:true,schema:SCHEMA}}};

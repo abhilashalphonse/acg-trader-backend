@@ -97,4 +97,31 @@ function selectWorkspaceEvidence(data,profile){
   market.contextSelection={profile,scope:'QUESTION_FOCUSED_PROJECTION',omittedEvidenceIsNotAbsent:true};
   data.knowledge=data.knowledge.filter(k=>knowledgeIds[profile].includes(k.id));
 }
-module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence};
+// 6C: keep recent raw context for the primary/lower frame and use a
+// smaller exact tail for healthy higher frames with derived full-window
+// evidence. This is a projection, never a resampling or price approximation.
+const frameRank=['1m','5m','15m','30m','1h','4h','1d','1w'];
+const compressionProfiles=new Set(['STRUCTURE','MARKET_OVERVIEW','BOS','FVG','LIQUIDITY']);
+function compressSupportingFrames(market){
+  if(market?.schemaVersion!=='adaptive-market-v1'||!compressionProfiles.has(market.contextSelection?.profile)||!Array.isArray(market.frames))return;
+  const primary=frameRank.indexOf(market.selectedTimeframe);
+  if(primary<0)return;
+  for(const frame of market.frames){
+    const higher=frameRank.indexOf(frame.timeframe)>primary;
+    const bars=frame.closedCandles,q=frame.quality,a=frame.advanced;
+    // Preserve existing evidence on stale, incomplete, gapped or ambiguous
+    // snapshots. Do not shorten the lower confirmation timeframe.
+    if(!higher||frame.status!=='HISTORICAL_ONLY'||q?.status!=='RECENT_CLOSED_BAR'||
+      q.gaps!==0||q.exclusions?.synthetic!==0||!Number.isSafeInteger(q.contiguousCount)||q.contiguousCount<20||
+      frame.freshness?.state!=='LATEST_EXPECTED_UTC_BUCKET'||
+      frame.coverage?.outOfSessionBars!==0||!a?.regime||!a?.dealingRange||
+      !Array.isArray(bars)||bars.length<=8||!Number.isSafeInteger(frame.availableClosedBars)||
+      frame.availableClosedBars<bars.length)continue;
+    const priorCount=bars.length;
+    frame.closedCandles=bars.slice(-8);
+    frame.omittedClosedBars=frame.availableClosedBars-frame.closedCandles.length;
+    frame.rawHistoryProjection={mode:'HIGHER_FRAME_SUMMARY_WITH_EXACT_TAIL',omittedAdditionalBars:priorCount-8,
+      derivedEvidenceUsesOriginalWindow:true};
+  }
+}
+module.exports={classifyWorkspaceQuestion,classifyWorkspaceIntent,workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames};
