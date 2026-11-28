@@ -75,7 +75,14 @@ async function main() {
     await client.close();
   }
 }
-main().catch(error=>{
+if (process.argv.includes('--comprehensive')) {
+  // Preserve the disposable release guard behavior; opt in to the stronger
+  // snapshot-consistent production audit only when explicitly requested.
+  require('./pr72-production-readonly-audit').main().catch(error => {
+    console.error('PR72_COMPREHENSIVE_AUDIT_ERROR', error.code || error.name || 'unknown');
+    process.exitCode = 2;
+  });
+} else main().catch(error=>{
   console.error('PR72_RELEASE_INVENTORY_ERROR',error.code||error.name||'unknown');
   process.exitCode=2;
 });

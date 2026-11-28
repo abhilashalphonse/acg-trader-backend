@@ -1,0 +1,28 @@
+name: ACG production readiness check (5 minute)
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-readiness-smoke
+  cancel-in-progress: false
+
+jobs:
+  readiness:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: GET-only readiness check, no customer sessions
+        env:
+          ACG_PRODUCTION_READINESS_URL: https://acg-trader-backend-production.up.railway.app/health/ready
+        run: node scripts/pr72-production-health-smoke.js
