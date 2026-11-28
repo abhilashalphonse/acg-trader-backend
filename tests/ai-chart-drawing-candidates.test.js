@@ -45,3 +45,27 @@ test('same FVG source remains stable when a subsequent closed bar extends its ri
  const next=createDrawingCandidateRegistry({market:m,scope,chartContextVersion,nowMs:m.asOfMs});
  assert.equal(next.list().find(c=>c.kind==='FVG_ZONE').sourceId,fvg.sourceId);
 });
+
+test('real structure detector output resolves without model-supplied geometry',()=>{
+ const {analyzeStructure}=require('../src/modules/ai/intelligence/structure-liquidity');
+ // Closed contiguous five-minute fixture: confirmed swing low and a
+ // bullish three-bar imbalance that remains uninvalidated.
+ const rows=[[102,104,100,103],[103,105,101,104],[104,105,95,101],[101,104,100,103],[103,106,102,105],[110,112,109,111],[111,113,110,112],[112,114,110,113]];
+ const candles=rows.map(([open,high,low,close],i)=>({symbol:'BTCUSD',timeframe:'5m',openTimeMs:through-(rows.length-i)*300000,closeTimeMs:through-(rows.length-i-1)*300000,open,high,low,close,complete:true,synthetic:false,source:'LIVE',provider:'twelve-data'}));
+ const structure=analyzeStructure({symbol:'BTCUSD',timeframe:'5m',asOfMs:nowMs,candles});
+ const m=fixture();m.frames[0].quality=structure.quality;
+ // Match the existing compactReference projection from prompt-compiler.
+ const pick=(o,ks)=>Object.fromEntries(ks.filter(k=>Object.hasOwn(o,k)).map(k=>[k,o[k]]));
+ m.frames[0].observations=[
+ ...structure.activeReferences.map(o=>({type:'LIQUIDITY_REFERENCE',...pick(o,['id','side','level','pivotOpenTimeMs','confirmedAtMs','swept','broken','sweptAtMs','brokenAtMs'])})),
+ ...structure.zones.slice(-4).map(o=>({type:'FVG_ZONE',...pick(o,['id','direction','lower','upper','formedAtMs','firstTouchAtMs','deepest','touchState','invalidatedAtMs','invalidationType'])}))];
+ const r=registry(m),items=r.list();
+ const low=items.find(c=>c.kind==='LIQUIDITY_REFERENCE'&&c.evidence.side==='LOW');
+ const gap=items.find(c=>c.kind==='FVG_ZONE'&&c.evidence.direction==='BULLISH');
+ assert.ok(low);assert.ok(gap);
+ const result=r.resolve(proposal([low.sourceId,gap.sourceId]),ctx());
+ assert.equal(result.actions[0].geometry.price,95);
+ const source=structure.zones.find(z=>z.id===gap.evidence.detectorId);
+ assert.equal(result.actions[1].geometry.lower,Number(source.lower));
+ assert.equal(result.actions[1].geometry.upper,Number(source.upper));
+});
