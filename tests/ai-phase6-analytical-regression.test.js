@@ -32,6 +32,7 @@ function build(question,market,account,history=[]){
  const body=buildWorkspaceBody(descriptor,{question,history,market,account});
  assert.deepEqual({market,account,history},original);
  assert.ok(Buffer.byteLength(JSON.stringify(body),'utf8')+4096<=descriptor.maxInputTokens);
+ assert.ok(Buffer.byteLength(JSON.stringify({...body,stream:true,stream_options:{include_usage:true}}),'utf8')+4096<=descriptor.maxInputTokens);
  assert.equal(body.store,false);
  assert.equal(body.max_completion_tokens,2048);
  assert.equal(body.tools,undefined);
@@ -55,7 +56,10 @@ test('6G integrated focused market matrix preserves task-critical facts across c
      for(const type of required)assert.deepEqual(f.observations.filter(o=>o.type===type),source.observations.filter(o=>o.type===type));
      for(const key of ['advanced','quality','coverage','freshness','activeCandle'])assert.deepEqual(f[key],source[key]);
      assert.deepEqual(f.closedCandles,source.closedCandles.slice(-f.closedCandles.length));
-     assert.equal(f.closedCandles.length,i===0?32:i===1?16:8);
+     const narrow=['BOS','FVG','LIQUIDITY'].includes(profile);
+     assert.equal(f.closedCandles.length,narrow?(i===0?24:i===1?8:4):(i===0?32:i===1?16:8));
+     if(narrow)assert.equal(f.narrowRawHistoryProjection.derivedEvidenceUsesOriginalWindow,true);
+     else assert.equal(f.narrowRawHistoryProjection,undefined);
    }
  }
 });
@@ -104,4 +108,19 @@ test('6G compound, risk, setup and conversational requests retain financial scop
  assert.deepEqual(data.history,history);assert.deepEqual(data.account,account);
  assert.match(policy,/Revalidate prior market conclusions and account values/);
  assert.equal(build('Review my account risk',null,null).data.account,null);
+});
+
+test('streaming wire overhead is reserved even at an exact pre-stream budget boundary',()=>{
+ const {market,account}=fixture();
+ const input={question:'Identify the latest BOS',history:[],market,account};
+ const wide=buildWorkspaceBody({...descriptor,maxInputTokens:65536},input);
+ const budget=Buffer.byteLength(JSON.stringify(wide),'utf8')+4096;
+ const streamed=b=>({...b,stream:true,stream_options:{include_usage:true}});
+ assert.ok(Buffer.byteLength(JSON.stringify(streamed(wide)),'utf8')+4096>budget);
+ const fitted=buildWorkspaceBody({...descriptor,maxInputTokens:budget},input);
+ assert.ok(Buffer.byteLength(JSON.stringify(streamed(fitted)),'utf8')+4096<=budget);
+ const data=JSON.parse(fitted.messages[1].content);
+ assert.equal(data.market.contextSelection.profile,'BOS');
+ assert.equal(data.account,null);
+ assert.deepEqual(data.market.quote,market.quote);
 });
