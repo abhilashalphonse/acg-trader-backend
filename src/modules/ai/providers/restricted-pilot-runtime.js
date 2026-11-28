@@ -143,7 +143,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       return x.admission.revoke(x.owner,input.expectedRevision);
     },
     async draw(token,input,{signal}={}){
-      guard(drawingEnabled()&&!signal?.aborted&&['LIQUIDITY','FVG'].includes(input.command));
+      guard(drawingEnabled()&&!signal?.aborted&&['LIQUIDITY','FVG','LIQUIDITY_THEN_FVG','FVG_THEN_LIQUIDITY'].includes(input.command));
       const x=await context(token,input),pinned=await x.admission.assertConsent(x.owner,x.binding);
       const allowed=async()=>{guard(drawingEnabled()&&!signal?.aborted);await x.allowed();await x.admission.assertConsent(x.owner,{...x.binding,consentRevision:pinned.consentRevision});guard(drawingEnabled()&&!signal?.aborted);return true;};
       const scope=Object.fromEntries(['tenantId','actorId','sessionId','accountId'].map(k=>[k,x.owner[k]]));
@@ -152,8 +152,8 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       const {createDrawingCandidateRegistry,VERSION}=require('../intelligence/chart-drawing-candidates');
       const registry=createDrawingCandidateRegistry({market,scope,chartContextVersion:input.chartContextVersion,nowMs:Date.now()});
       guard(registry.context.latestClosedAtMs===input.latestClosedAtMs);
-      const kind=input.command==='FVG'?'FVG_ZONE':'LIQUIDITY_REFERENCE';
-      const actions=registry.list({limit:20}).filter(c=>c.kind===kind).slice(0,6).map(c=>({action:'draw',sourceId:c.sourceId}));
+      const {planChartActionSequence}=require('../intelligence/chart-action-sequence');
+      const actions=planChartActionSequence(input.command,registry);
       await allowed();
       const receipt=actions.length?registry.resolve({contractVersion:VERSION,actionId:input.actionId,chartContextVersion:input.chartContextVersion,actions},{scope,chartContextVersion:input.chartContextVersion,nowMs:Date.now(),signal,complete:true}):null;
       guard(!signal?.aborted&&drawingEnabled()&&Date.now()<registry.context.expiresAtMs);
