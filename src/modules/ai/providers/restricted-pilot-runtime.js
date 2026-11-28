@@ -165,7 +165,7 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
           operationId:input.operationId,authorizeMessage:allowed,signal,onDelta:body.stream?onDelta:undefined}));
         if(result.state==='ANSWERED')await workspaceStage('DISCLOSURE',async()=>{await allowed();await x.admission.assertDisclosure(x.owner,input.operationId);});
         return {...result,operationId:input.operationId,workspace:{symbol:input.symbol,timeframe:input.timeframe},
-          context:{market:!!snapshot.market,account:!!snapshot.account,marketAsOfMs:snapshot.market?.asOfMs??null,accountAsOfMs:snapshot.account?.asOfMs??null,
+          context:{market:!!snapshot.market,account:!!snapshot.account,accountUsed:JSON.parse(body.messages[1].content).account!==null,marketAsOfMs:snapshot.market?.asOfMs??null,accountAsOfMs:snapshot.account?.asOfMs??null,
             quoteStatus:snapshot.market?.quote?.status??null,quoteReason:snapshot.market?.quote?.reason??null,
             quoteSessionVerification:snapshot.market?.quote?.sessionVerification??null,quoteObservationAvailable:!!snapshot.market?.quote?.observedQuote}};
       }
