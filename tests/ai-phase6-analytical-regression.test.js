@@ -109,3 +109,18 @@ test('6G compound, risk, setup and conversational requests retain financial scop
  assert.match(policy,/Revalidate prior market conclusions and account values/);
  assert.equal(build('Review my account risk',null,null).data.account,null);
 });
+
+test('streaming wire overhead is reserved even at an exact pre-stream budget boundary',()=>{
+ const {market,account}=fixture();
+ const input={question:'Identify the latest BOS',history:[],market,account};
+ const wide=buildWorkspaceBody({...descriptor,maxInputTokens:65536},input);
+ const budget=Buffer.byteLength(JSON.stringify(wide),'utf8')+4096;
+ const streamed=b=>({...b,stream:true,stream_options:{include_usage:true}});
+ assert.ok(Buffer.byteLength(JSON.stringify(streamed(wide)),'utf8')+4096>budget);
+ const fitted=buildWorkspaceBody({...descriptor,maxInputTokens:budget},input);
+ assert.ok(Buffer.byteLength(JSON.stringify(streamed(fitted)),'utf8')+4096<=budget);
+ const data=JSON.parse(fitted.messages[1].content);
+ assert.equal(data.market.contextSelection.profile,'BOS');
+ assert.equal(data.account,null);
+ assert.deepEqual(data.market.quote,market.quote);
+});
