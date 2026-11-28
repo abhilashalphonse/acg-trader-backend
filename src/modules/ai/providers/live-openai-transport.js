@@ -5,6 +5,7 @@ const {performance}=require('node:perf_hooks');
 const {createHash}=require('node:crypto');
 const {publicIPv4}=require('./openai-live-smoke');
 const {consumeBytes}=require('./bounded-stream');
+const {readWorkspaceProviderStream}=require('./workspace-provider-stream');
 const {mapUsage}=require('./provider-response');
 const {CANDIDATE_JSON_SCHEMA}=require('./provider-contract');
 const {assertLiveRuntime,withLiveSecret}=require('./live-runtime-config');
@@ -44,7 +45,7 @@ function parseResponse(raw,d){
 }
 // Shared bounded HTTP mechanics. Target is determined by the two internal
 // factories, never by a customer or caller-supplied URL.
-async function exchange({target,body,key,deadlineMs,beforeWrite,signal,maxDurationMs=10000}){
+async function exchange({target,body,key,deadlineMs,beforeWrite,signal,maxDurationMs=10000,descriptor,onDelta}){
   requireTrue(Buffer.isBuffer(key)&&key.length>=20&&key.length<=4096&&key.every(v=>v>=33&&v<=126));
   requireTrue(integer(deadlineMs)&&deadlineMs>Date.now()&&deadlineMs-Date.now()<=maxDurationMs&&maxDurationMs<=30000);
   const controller=new AbortController(),start=performance.now(),duration=deadlineMs-Date.now();
@@ -61,12 +62,16 @@ async function exchange({target,body,key,deadlineMs,beforeWrite,signal,maxDurati
     res=await new Promise((resolve,reject)=>{
       req=https.request({...route,method:'POST',path:PATH,agent:false,minVersion:'TLSv1.2',rejectUnauthorized:true,
         signal:controller.signal,maxHeaderSize:16384,headers:{authorization:'Bearer '+key.toString('ascii'),
-          'content-type':'application/json','accept':'application/json','accept-encoding':'identity','content-length':bytes.length}},resolve);
+          'content-type':'application/json','accept':body.stream?'text/event-stream':'application/json','accept-encoding':'identity','content-length':bytes.length}},resolve);
       req.on('error',reject);req.end(bytes);
     });
     requireTrue(res.statusCode===200&&(!res.headers['content-encoding']||res.headers['content-encoding']==='identity')&&
-      res.headers['content-type']?.split(';')[0].trim().toLowerCase()==='application/json');
+      res.headers['content-type']?.split(';')[0].trim().toLowerCase()===(body.stream?'text/event-stream':'application/json'));
     const remaining=Math.floor(duration-(performance.now()-start));requireTrue(remaining>0);
+    if(body.stream)return await readWorkspaceProviderStream(res,{descriptor,signal:controller.signal,timeoutMs:remaining,onDelta:async delta=>{
+      requireTrue(!controller.signal.aborted&&Date.now()<deadlineMs);
+      await onDelta?.(delta,controller.signal);
+    }});
     let text='';await consumeBytes(res,{signal:controller.signal,timeoutMs:remaining,onText:t=>{text+=t;}});
     requireTrue(!controller.signal.aborted&&Date.now()<deadlineMs);
     return JSON.parse(text);
@@ -102,11 +107,12 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
     target=async()=>{assertIsolated();return {hostname:'127.0.0.1',port,ca};};
   }
   return Object.freeze({
-    async run({scope,workspace,prompt,ticket,operationId,authorizeMessage,signal,workspaceBody=null}){
+    async run({scope,workspace,prompt,ticket,operationId,authorizeMessage,signal,workspaceBody=null,onDelta}){
       assertLiveRuntime(config);
       requireTrue(typeof authorizeMessage==='function'&&hex(prompt?.packageId));
       if(workspaceChat){
-        requireTrue(!educationOnly&&workspaceBody?.model===d.modelId&&workspaceBody.store===false&&workspaceBody.stream===false&&
+        requireTrue(!educationOnly&&workspaceBody?.model===d.modelId&&workspaceBody.store===false&&typeof workspaceBody.stream==='boolean'&&
+          (workspaceBody.stream===false?!Object.hasOwn(workspaceBody,'stream_options'):d.streaming===true&&typeof onDelta==='function'&&workspaceBody.stream_options?.include_usage===true&&Object.keys(workspaceBody.stream_options).length===1)&&
           workspaceBody.n===1&&workspaceBody.service_tier==='default'&&workspaceBody.reasoning_effort==='low'&&workspaceBody.max_completion_tokens===d.maxOutputTokens&&
           workspaceBody.response_format?.json_schema?.name==='acg_workspace_answer'&&
           digest(workspaceBody)===prompt.packageId&&workspaceBody.messages?.length===2&&
@@ -140,7 +146,11 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
         const raw=await withLiveSecret(config,async key=>{
           requireTrue(!invoked);invoked=true;
           const copy=Buffer.isBuffer(key)?Buffer.from(key):null;
-          try{return await exchange({target,body,key:copy,deadlineMs,signal,maxDurationMs:workspaceChat?30000:10000,beforeWrite:async()=>{
+          try{return await exchange({target,body,key:copy,deadlineMs,signal,descriptor:d,onDelta:body.stream?async(delta,wireSignal)=>{
+            await check();await admission.assertDisclosure(scope,operationId);
+            requireTrue(!wireSignal.aborted&&!signal?.aborted&&Date.now()<deadlineMs);
+            await onDelta(delta);
+          }:undefined,maxDurationMs:workspaceChat?30000:10000,beforeWrite:async()=>{
             await check();await admission.assertDispatch(scope,operationId);await check();
           }});}finally{copy?.fill(0);}
         });
