@@ -50,7 +50,7 @@ async function migrateStaffRequestCap({env=process.env,now=Date.now}={}){
      {$set:{tenantDailyRequests:target,actorDailyRequests:target,revision:t.revision+1,fence:t.fence+1}},{session,runValidators:true,maxTimeMS:2000});
    check(a.matchedCount===1&&b.matchedCount===1);
    await E.create([{_id:randomUUID(),tenantId,actorId,kind:'PLATFORM_CONTROL',subject:'platform',revision:p.revision+1,atMs:clock},
-     {_id:randomUUID(),tenantId,actorId,kind:'CONTROL',subject:tenantId,revision:t.revision+1,atMs:clock}],{session});
+     {_id:randomUUID(),tenantId,actorId,kind:'CONTROL',subject:tenantId,revision:t.revision+1,atMs:clock}],{session,ordered:true});
    return {changed:true,previousDailyRequests:from,dailyRequests:target,dailyUsd:1,maxConcurrent:1};
  },{readConcern:{level:'snapshot'},writeConcern:{w:'majority'},readPreference:'primary',maxCommitTimeMS:2000});
 }
