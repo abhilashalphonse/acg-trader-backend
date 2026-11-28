@@ -162,7 +162,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
     quoteStore.set({symbol,providerSymbol:'TEST/USD',source:'twelve-data',bid:123.99,ask:124.01,
       providerTimestampMs:tickTime,receivedAtMs:tickTime,isStale:false,sessionOpen:true,isSyntheticSpread:true});
     const wsEnv={...flags,ACG_AI_FUNDED_WORKSPACE_STREAMING_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED:'true',
-      ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:String(Date.now()+120000),ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-workspace-'.padEnd(40,'x')};
+      ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:String(Date.now()+(process.env.ACG_AI_PAIRED_BROWSER==='true'?600000:120000)),ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-workspace-'.padEnd(40,'x')};
     const ws=await loadFundedPilotBootstrap({env:wsEnv,marketRuntime});
     assert.equal(ws.workspaceChat,true);assert.equal(ws.educationOnly,false);
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'acg-ws-tls-'));
@@ -402,6 +402,29 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
         }
         assert.equal((await drawCall('draw',{...drawingInput,command:'TRADE'})).status,400);
         assert.ok((await drawCall('draw',{...drawingInput,latestClosedAtMs:end-step})).status>=400);
+        if(process.env.ACG_AI_PAIRED_BROWSER==='true'){
+          assertIsolated();
+          // CI only: real authenticated endpoint, private ephemeral fixture.
+          // Asynchronous child process keeps the mounted HTTP server responsive.
+          const {promisify}=require('node:util');
+          const run=promisify(require('node:child_process').execFile);
+          const frontend=path.resolve(__dirname,'../../frontend');
+          const privateFile=path.join(dir,'paired-drawing-private.json');
+          fs.writeFileSync(privateFile,JSON.stringify({root:wsRoot,token:session.accessToken,accountId:ids[0],symbol,timeframe:'1h',end,step,rows}),{mode:0o600});
+          const {Order}=require('../src/modules/trading/order.model');
+          const {Position}=require('../src/modules/trading/position.model');
+          const beforeOrders=await Order.countDocuments({}),beforePositions=await Position.countDocuments({});
+          const beforeAccount=await TradingAccount.findById(ids[0]).lean();
+          try{
+            const output=await run(process.execPath,['tests/ui/ai-paired-drawing.mjs'],{cwd:frontend,timeout:90000,
+              env:{PATH:process.env.PATH,HOME:process.env.HOME,CI:'true',ACG_AI_PAIRED_PRIVATE:privateFile}});
+            console.log(output.stdout.trim());
+          }catch{throw Error('Paired native chart browser acceptance failed (private fixture not logged)');}
+          finally{fs.rmSync(privateFile,{force:true});}
+          assert.equal(await Order.countDocuments({}),beforeOrders);
+          assert.equal(await Position.countDocuments({}),beforePositions);
+          assert.deepEqual(await TradingAccount.findById(ids[0]).lean(),beforeAccount);
+        }
         assert.equal(await LiveAttempt.countDocuments({tenantId}),priorAttempts);
         assert.equal(requests,2);
       }finally{
