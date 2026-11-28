@@ -161,7 +161,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
     const tickTime=Date.now()-5;
     quoteStore.set({symbol,providerSymbol:'TEST/USD',source:'twelve-data',bid:123.99,ask:124.01,
       providerTimestampMs:tickTime,receivedAtMs:tickTime,isStale:false,sessionOpen:true,isSyntheticSpread:true});
-    const wsEnv={...flags,ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED:'true',
+    const wsEnv={...flags,ACG_AI_FUNDED_WORKSPACE_STREAMING_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_CHAT_ENABLED:'true',ACG_AI_FUNDED_WORKSPACE_EXPORT_AUTHORIZED:'true',
       ACG_AI_FUNDED_WORKSPACE_EXPIRES_AT_MS:String(Date.now()+120000),ACG_AI_FUNDED_OPENAI_API_KEY:'sk-synthetic-workspace-'.padEnd(40,'x')};
     const ws=await loadFundedPilotBootstrap({env:wsEnv,marketRuntime});
     assert.equal(ws.workspaceChat,true);assert.equal(ws.educationOnly,false);
@@ -176,7 +176,7 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           requests++;
           const parts=[];for await(const p of req)parts.push(p);
           const raw=Buffer.concat(parts).toString(),body=JSON.parse(raw),data=JSON.parse(body.messages[1].content);
-          assert.equal(body.model,'gpt-6-luna');assert.equal(body.store,false);assert.equal(body.stream,false);
+          assert.equal(body.model,'gpt-6-luna');assert.equal(body.store,false);assert.equal(body.stream,true);assert.deepEqual(body.stream_options,{include_usage:true});
           assert.equal(body.reasoning_effort,'low');assert.equal(body.max_completion_tokens,2048);
           assert.equal(body.response_format.json_schema.name,'acg_workspace_answer');
           assert.equal(data.question,'Analyse the current market structure.');
@@ -211,10 +211,15 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
           assert.equal(data.market.economicCalendar.events[0].timing,'UPCOMING');
           for(const value of [tenantId,actor.actorId,staff,...ids,'staff-owner',wsEnv.ACG_AI_FUNDED_OPENAI_API_KEY])
             assert.ok(!raw.includes(value));
-          res.writeHead(200,{'content-type':'application/json'});
-          res.end(JSON.stringify({id:'workspace-fixture-'+randomUUID(),model:'gpt-6-luna',service_tier:'default',
-            choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:JSON.stringify({answer:'Synthetic workspace answer.'})}}],
-            usage:{prompt_tokens:1000,completion_tokens:40,total_tokens:1040}}));
+          res.writeHead(200,{'content-type':'text/event-stream'});
+          const id='workspace-fixture-'+randomUUID();
+          const emit=(choices,usage=null)=>res.write('data: '+JSON.stringify({id,object:'chat.completion.chunk',model:'gpt-6-luna',service_tier:'default',choices,usage})+'\n\n');
+          emit([{index:0,finish_reason:null,delta:{role:'assistant',content:'{"answer":"Synthetic '}}]);
+          await new Promise(resolve=>setTimeout(resolve,100));
+          emit([{index:0,finish_reason:null,delta:{content:'workspace answer."}'}}]);
+          emit([{index:0,finish_reason:'stop',delta:{}}]);
+          emit([],{prompt_tokens:1000,completion_tokens:40,total_tokens:1040});
+          res.end('data: [DONE]\n\n');
         }catch(e){wireError=e;res.destroy();}
       });
       await new Promise(resolve=>tls.listen(0,'127.0.0.1',resolve));
@@ -238,9 +243,10 @@ async function runFundedPilotMountAcceptance({auth,foreignToken}){
       const stream=await fetch(wsRoot+'/v1/ai/pilot/generate',{method:'POST',headers:{'content-type':'application/json',accept:'text/event-stream',authorization:'Bearer '+session.accessToken},body:JSON.stringify({...wsBase,...input})});
       assert.ok(stream.headers.get('content-type').startsWith('text/event-stream'));
       const events=(await stream.text()).trim().split('\n\n').map(block=>{const [kind,data]=block.split('\n');return {kind:kind.slice(7),data:JSON.parse(data.slice(6))};});
-      assert.deepEqual(events.map(e=>e.kind),['progress','progress','result']);
+      assert.deepEqual(events.map(e=>e.kind),['progress','progress','delta','delta','result']);
+      assert.equal(events.filter(e=>e.kind==='delta').map(e=>e.data.text).join(''),'Synthetic workspace answer.');
       assert.deepEqual(events.slice(0,2).map(e=>e.data),[{stage:'CONTEXT'},{stage:'GENERATING'}]);
-      const answer={status:stream.status,body:events[2].data};
+      const answer={status:stream.status,body:events.at(-1).data};
       if(wireError)throw wireError;
       assert.equal(answer.status,200,JSON.stringify(answer.body.error??{}));
       assert.equal(answer.body.state,'ANSWERED',JSON.stringify(answer.body));
