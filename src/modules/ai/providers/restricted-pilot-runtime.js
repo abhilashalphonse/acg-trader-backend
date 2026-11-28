@@ -35,12 +35,15 @@ const runtimes=new WeakSet();
 // public config, no externally supplied model, prompt, token cap or tools.
 function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretPort,verifyRelease,verifyApproval,
   resolveMembership,resolveDataRights,validatePayload,countUpperBound,resolveBillingActor,authorizeBilling,
-  authService,gateway,governanceStore,marketRuntime,readAiCalendarSnapshot=null,fundedStaff=false,educationOnly=false,workspaceChat=false,isolatedWorkspaceLoopback=null}={}){
+  authService,gateway,governanceStore,marketRuntime,readAiCalendarSnapshot=null,fundedStaff=false,educationOnly=false,workspaceChat=false,dailyRequests=20,isolatedWorkspaceLoopback=null}={}){
   if(env.ACG_AI_LIVE_PROVIDER_ENABLED!=='true'||env.ACG_AI_RESTRICTED_PILOT_ENABLED!=='true')return null;
   guard([verifyRelease,verifyApproval,resolveMembership,resolveDataRights,validatePayload,countUpperBound,
     resolveBillingActor,authorizeBilling].every(f=>typeof f==='function'));
   const active=()=>env.ACG_AI_RESTRICTED_PILOT_ENABLED==='true'&&verifyRelease()===true;
   const workspaceStreaming=workspaceChat&&fundedStaff===true&&policy?.workspaceStreaming===true;
+  // Only the trusted staff workspace bootstrap may pin an expanded cap.
+  guard(dailyRequests===20||(dailyRequests===100&&workspaceChat===true&&fundedStaff===true));
+  const actorRequestCeiling=dailyRequests;
   const config=createLiveRuntimeConfig({env,descriptor,secretPort,verifyRelease:active,workspaceStreaming});
   const d=config.descriptor;
   guard(policy?.descriptorId===d.descriptorId&&policy?.policyVersion===d.policyVersion&&policy?.enabled===true);
@@ -95,7 +98,8 @@ function createRestrictedPilotRuntime({env=process.env,descriptor,policy,secretP
       const t=await LiveControl.findById(owner.tenantId).read('primary').readConcern('majority').maxTimeMS(2000).lean();
       guard(p?.enabled===true&&t?.enabled===true&&p.dailyPicoUsd<=1000000000000&&
         p.maxOutstandingPicoUsd<=1000000000000&&p.maxOutstandingRequests===1&&p.dailyRequests<=100&&
-        t.tenantDailyPicoUsd<=1000000000000&&t.actorDailyPicoUsd<=1000000000000&&t.actorDailyRequests<=20);
+        t.tenantDailyPicoUsd<=1000000000000&&t.actorDailyPicoUsd<=1000000000000&&t.actorDailyRequests<=actorRequestCeiling&&
+        (actorRequestCeiling===20||t.tenantDailyRequests<=actorRequestCeiling));
     }
     async function allowed(purpose='CLAIM'){
       assertLiveRuntime(config);await checkPilotLimits();
