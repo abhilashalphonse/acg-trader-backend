@@ -69,3 +69,11 @@ test('real structure detector output resolves without model-supplied geometry',(
  assert.equal(result.actions[1].geometry.lower,Number(source.lower));
  assert.equal(result.actions[1].geometry.upper,Number(source.upper));
 });
+
+test('same action ID is replay-safe within a registry, conflicting reuse denied',()=>{
+ const r=registry(),[a,b]=r.list(),p=proposal([a.sourceId]);
+ const first=r.resolve(p,ctx());
+ assert.equal(r.resolve(p,ctx()),first);
+ assert.throws(()=>r.resolve(proposal([b.sourceId]),ctx()),{code:'AI_DRAWING_CANDIDATE_DENIED'});
+ assert.throws(()=>r.resolve(p,ctx({signal:{aborted:true}})),{code:'AI_DRAWING_CANDIDATE_DENIED'});
+});
