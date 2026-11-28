@@ -9,7 +9,7 @@ const {selectKnowledge}=require('../intelligence/knowledge-catalog');
 const {sizingEvidence}=require('../intelligence/workspace-sizing');
 const {workspaceEvidenceProfile,selectWorkspaceEvidence,compressSupportingFrames,selectWorkspaceAccount,aliasFocusedReferenceIds}=require('../intelligence/workspace-context-selection');
 const {compactWorkspaceHistory,dropOldestExchange,protectedTailSize}=require('../intelligence/workspace-conversation-context');
-const {addWorkspacePresentation,compactRepeatedMetadata}=require('../intelligence/workspace-presentation-context');
+const {addWorkspacePresentation,compactRepeatedMetadata,compactNarrowRawHistory}=require('../intelligence/workspace-presentation-context');
 const {workspaceStage}=require('../ai-http-security');
 const {createHash}=require('node:crypto');
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
@@ -72,7 +72,7 @@ function createWorkspaceContext({marketRuntime}){
   });
 }
 const POLICY=Object.freeze([
-  'When rawHistoryProjection is present, the raw higher-timeframe candles are only a recent tail. Derived structure, range and liquidity use the original validated evidence window; do not reinterpret omitted bars as absent or infer full-window facts from the shorter tail.',
+  'When rawHistoryProjection or narrowRawHistoryProjection is present, the raw candles in that frame are only a recent tail. Derived structure, range and liquidity use the original validated evidence window; do not reinterpret omitted bars as absent or infer full-window facts from the shorter tail.',
   'You are ACG AI, a read-only trading workspace assistant.',
   'Answer the actual trading question first. For entry questions, identify market regime, location in the range and the evidence for waiting or considering a setup. Explain long and short conditional scenarios when meaningful.',
   'Use the supplied raw candle sequences as well as computed observations; the observations are aids, not the only permitted interpretation. Compare higher-timeframe context with the selected chart and lower-timeframe confirmation. Do not infer a confirmed higher-timeframe trend from a lower-timeframe chart.',
@@ -114,6 +114,7 @@ function buildWorkspaceBody(descriptor,{question,history,market,account}){
   selectWorkspaceAccount(data,profile,history);
   compressSupportingFrames(data.market);
   aliasFocusedReferenceIds(data.market);
+  compactNarrowRawHistory(data.market);
   addWorkspacePresentation(data.market);
   compactRepeatedMetadata(data.market);
   const body={model:descriptor.modelId,store:false,stream:false,n:1,service_tier:'default',reasoning_effort:'low',max_completion_tokens:descriptor.maxOutputTokens,
