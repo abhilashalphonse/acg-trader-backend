@@ -229,11 +229,25 @@ test('phase 7 routes a new explicit market question in an existing chart-only co
    ['Identify the latest BOS.',[{role:'assistant',text:'Earlier answer'}]],
    ['Identify the latest BOS.',[{role:'user',text:'Use only ICT and H4 structure'},{role:'assistant',text:'Understood'}]]
  ]){
-   const d=JSON.parse(buildWorkspaceBody(descriptor,{question,history:h,market,account}).messages[1].content);
+   // Test exact conversational retention separately from the established
+   // hard-bound eviction path. The reduced fixture fits without pressure.
+   const smallMarket={...market,frames:market.frames.slice(0,1)};
+   const d=JSON.parse(buildWorkspaceBody(descriptor,{question,history:h,market:smallMarket,account}).messages[1].content);
    assert.equal(d.market.contextSelection,undefined,question);
    assert.deepEqual(d.account,account);
    assert.deepEqual(d.history,h);
  }
+ // With the larger multi-frame fixture, existing budget handling can
+ // discard older complete exchanges; it must not change routing or the
+ // latest retained question/answer or omit the financial scope.
+ const body=buildWorkspaceBody(descriptor,{question:'What about that level?',history,market,account});
+ const pressured=JSON.parse(body.messages[1].content);
+ assert.equal(pressured.market.contextSelection,undefined);
+ assert.deepEqual(pressured.account,account);
+ assert.ok(pressured.history.length>=2);
+ assert.deepEqual(pressured.history,history.slice(-pressured.history.length));
+ assert.equal(pressured.history.length%2,0);
+ assert.ok(Buffer.byteLength(JSON.stringify(body),'utf8')+4096<=descriptor.maxInputTokens);
 });
 test('phase 7 focused reference aliases retain all relationships and exact values with smaller payload',()=>{
  const market=compressionFixture(),id='a'.repeat(64),id2='b'.repeat(64);
