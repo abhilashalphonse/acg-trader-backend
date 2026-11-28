@@ -41,3 +41,14 @@ test('verified and session-unverified observations are preserved without grantin
     assert.match(policy,/qualify its unverified session/);
   }
 });
+
+test('chart setups and conversational follow-ups must end with market intelligence rather than diagnostics',()=>{
+  for(const question of ['Can I enter a short here?','Explain the retest','What is the next target?']){
+    const policy=build(question,{status:'UNAVAILABLE',reason:'SESSION_CLOSED_OR_UNKNOWN',observedQuote:{bid:60199,ask:60200,providerTimestampMs:1795824000000,executable:false}});
+    assert.match(policy,/conditional setups and follow-up questions about levels/);
+    assert.match(policy,/Do not add a quote-status footer/);
+    assert.match(policy,/Do not substitute a paraphrase of the same irrelevant caveat/);
+    assert.match(policy,/Conclude with the market interpretation, conditional trigger or invalidation/);
+    assert.match(policy,/If a material gap genuinely prevents the requested analysis/);
+  }
+});
