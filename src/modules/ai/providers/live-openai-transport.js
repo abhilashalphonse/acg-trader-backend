@@ -107,7 +107,7 @@ function createLiveOpenAiTransport({config,admission,authorizeExport,countUpperB
       requireTrue(typeof authorizeMessage==='function'&&hex(prompt?.packageId));
       if(workspaceChat){
         requireTrue(!educationOnly&&workspaceBody?.model===d.modelId&&workspaceBody.store===false&&workspaceBody.stream===false&&
-          workspaceBody.n===1&&workspaceBody.service_tier==='default'&&workspaceBody.max_completion_tokens===d.maxOutputTokens&&
+          workspaceBody.n===1&&workspaceBody.service_tier==='default'&&workspaceBody.reasoning_effort==='low'&&workspaceBody.max_completion_tokens===d.maxOutputTokens&&
           workspaceBody.response_format?.json_schema?.name==='acg_workspace_answer'&&
           digest(workspaceBody)===prompt.packageId&&workspaceBody.messages?.length===2&&
           !Object.hasOwn(workspaceBody,'tools')&&!Object.hasOwn(workspaceBody,'functions'));
